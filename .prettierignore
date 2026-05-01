@@ -1,0 +1,10 @@
+node_modules/
+dist/
+out/
+build/
+.vite/
+**/wasm/
+pnpm-lock.yaml
+packages/anyfs-native/build/
+examples/*/public/wasm/
+examples/*/public/disks/

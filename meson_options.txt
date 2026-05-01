@@ -1,0 +1,11 @@
+option('lkl_root', type: 'string',
+    value: '',
+    description: 'Path to LKL build directory (contains liblkl.a and include/)')
+
+option('glib_root', type: 'string',
+    value: '',
+    description: 'Path to GLib source tree (must have build-static/ with .a files)')
+
+option('enable_gio', type: 'boolean',
+    value: false,
+    description: 'Enable GIO block backend (requires glib_root)')

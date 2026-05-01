@@ -1,0 +1,23 @@
+# Meson build directories
+builddir/
+build/
+
+# Compiled objects
+*.o
+*.a
+*.so
+*.so.*
+*.dll
+*.dylib
+
+# Test artifacts
+/tmp/test_*.img
+
+# Editor
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
