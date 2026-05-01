@@ -817,3 +817,56 @@ struct lkl_dev_blk_ops {
 |------|-------|-----------|------|
 | Sequential Read | 4KB | 70.19 MB/s | 17970 |
 | Random Read | 4KB | 24.92 MB/s | 6380 |
+
+---
+
+## 15. 已实现：QEMU Block Backend - Phase 3a (2026-05)
+
+### 15.1 概述
+
+通过链接 QEMU 的 `libblock.a` 静态库，在 LKL 的 `request()` 回调中直接调用
+`blk_pread`/`blk_pwrite`，从而支持 qcow2、vmdk、vdi 等虚拟磁盘格式。
+
+### 15.2 支持的格式
+
+qcow2, vmdk, vdi, vhdx, vpc (VHD), dmg, parallels, raw, qed, luks
+
+### 15.3 关键实现细节
+
+**AioContext 线程问题**: LKL 创建多个宿主机线程，`request()` 可能从任意线程调用。
+QEMU 的 `blk_pread` 内部使用协程 (ucontext)，需要当前线程有 AioContext。
+解决方案：在 `request()` 入口用 `__thread` guard 设置 AioContext。
+
+**格式驱动注册**: QEMU 格式驱动用 `block_init()` 宏注册（等同 `__attribute__((constructor))`）。
+链接时必须用 `--whole-archive` 对 `libblock.a`，否则未引用的驱动对象不会被拉入。
+
+**QEMU 构建要求**: 需禁用 iscsi/nfs/ssh/curl 等网络块驱动以避免外部依赖：
+```bash
+./scripts/build_qemu.sh ~/qemu
+```
+
+### 15.4 构建命令
+
+```bash
+# 1. 构建 QEMU 静态库
+./scripts/build_qemu.sh ~/qemu
+
+# 2. 配置 anyfs-reader
+meson setup builddir \
+  -Dlkl_root=~/linux/tools/lkl \
+  -Dqemu_root=~/qemu \
+  -Dqemu_build=~/qemu/build-anyfs2 \
+  -Denable_qemu=true
+
+# 3. 构建
+ninja -C builddir
+
+# 4. 测试
+./builddir/test_qemu_mount /path/to/image.qcow2 ext4
+```
+
+### 15.5 已知限制
+
+- 可执行文件较大 (~154MB) 因链接了整个 QEMU block layer
+- 同步模式：每个 I/O 阻塞等待完成，与 raw pread 性能等同
+- 不支持网络块设备 (NBD/iSCSI/NFS) — 需重新启用对应库
