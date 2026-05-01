@@ -15,9 +15,16 @@
  */
 #include "gio_async_blk_backend.h"
 
+#include <fcntl.h>
 #include <gio/gio.h>
 #include <lkl.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <sys/stat.h>
+
+#ifndef BLKGETSIZE64
+#define BLKGETSIZE64 _IOR(0x12, 114, size_t)
+#endif
 
 /* Per-request state (heap-allocated, freed in completion) */
 typedef struct {
@@ -171,6 +178,15 @@ int gio_async_blk_open(const char* path, int readonly,
 
 	uint64_t capacity = (uint64_t)g_file_info_get_size(info);
 	g_object_unref(info);
+
+	/* For block devices, g_file_info_get_size returns 0 */
+	if (capacity == 0) {
+		int fd = open(path, O_RDONLY);
+		if (fd >= 0) {
+			ioctl(fd, BLKGETSIZE64, &capacity);
+			close(fd);
+		}
+	}
 
 	GFileInputStream* stream = g_file_read(file, NULL, &error);
 	if (!stream) {

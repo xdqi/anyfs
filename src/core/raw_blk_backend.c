@@ -6,9 +6,16 @@
 #include <lkl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
 #include <unistd.h>
+
+/* BLKGETSIZE64 ioctl number (avoid including linux/fs.h which conflicts with
+ * LKL) */
+#ifndef BLKGETSIZE64
+#define BLKGETSIZE64 _IOR(0x12, 114, size_t)
+#endif
 
 struct raw_blk_ctx {
 	int fd;
@@ -73,13 +80,23 @@ int raw_blk_open(const char* path, int readonly, struct lkl_disk* disk_out)
 		return -1;
 	}
 
+	uint64_t capacity;
+	if (S_ISBLK(st.st_mode)) {
+		if (ioctl(fd, BLKGETSIZE64, &capacity) < 0) {
+			close(fd);
+			return -1;
+		}
+	} else {
+		capacity = (uint64_t)st.st_size;
+	}
+
 	struct raw_blk_ctx* ctx = calloc(1, sizeof(*ctx));
 	if (!ctx) {
 		close(fd);
 		return -1;
 	}
 	ctx->fd = fd;
-	ctx->capacity = (uint64_t)st.st_size;
+	ctx->capacity = capacity;
 
 	memset(disk_out, 0, sizeof(*disk_out));
 	disk_out->handle = ctx;

@@ -23,6 +23,9 @@ int main(int argc, char** argv)
 	} else if (argc > 1 && strcmp(argv[1], "--aio") == 0) {
 		use_aio = 1;
 		argoff = 2;
+	} else if (argc > 1 && strcmp(argv[1], "--raw") == 0) {
+		/* explicit raw — just skip the flag */
+		argoff = 2;
 	}
 
 	if (argc - argoff < 3) {
