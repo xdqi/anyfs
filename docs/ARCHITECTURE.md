@@ -769,3 +769,51 @@ struct lkl_dev_blk_ops {
 | **真实场景价值** | NVMe SSD + 高并发 | 大多数场景够用 |
 
 **建议**: Phase 3 先用方案 D (零修改，快速交付)。Phase 5 Server 模式（高并发 NFS/SMB 服务）时再实施方案 B。
+
+---
+
+## 14. 已实现：Threadless AIO 后端 (2026-05)
+
+### 14.1 架构
+
+```
+宿主机进程 (单线程，无 pthread)
+├── LKL 内核 (单 vCPU)
+│   └── virtio_blk → ops->request() → io_submit()
+└── posix_idle 事件循环
+    ├── pipe fd (sem_up 通知)
+    ├── timer fd (定时器)
+    └── eventfd (AIO 完成通知) ← io_getevents → lkl_disk_complete_req
+```
+
+### 14.2 关键修改
+
+**LKL 侧 (`linux/tools/lkl/`):**
+- `lib/posix-host.c`: posix_idle 改为 for(;;) 事件循环 + `idle_add_event`/`idle_del_event` API
+- `lib/virtio_blk.c`: 导出 `lkl_disk_complete_req()` 供外部 AIO 后端调用
+- `include/lkl_host.h`: `lkl_host_operations` 新增 `idle_add_event`/`idle_del_event`
+
+**anyfs-reader 侧:**
+- `src/core/aio_blk_backend.c`: 用 Linux AIO (io_setup/io_submit/io_getevents) + eventfd，无线程
+
+### 14.3 I/O 完成路径
+
+1. `virtio_queue_rq` → `ops->request()` → `io_submit()` (非阻塞)
+2. 内核线程 `schedule()` → idle task 获得 CPU
+3. `posix_idle()` poll eventfd → 有事件
+4. `aio_idle_handler()`: `io_getevents()` 收割完成 → `lkl_disk_complete_req(req, 0)`
+5. 内核唤醒等待 I/O 的任务 → `sem_up(idle_sem)` → posix_idle 退出循环
+
+### 14.4 已知限制
+
+- **O_DIRECT 必需**: Linux AIO 对 buffered I/O 退化为同步。O_DIRECT 绕过 host page cache，导致 mount 阶段比 raw 后端慢 ~6x（无 readahead）
+- **单 vCPU 串行**: 多个 `lkl_sys_read` 无法并行，AIO 优势仅在内核内部多 bio in-flight 时体现
+- **bench_raw_io AIO 模式挂起**: partition scan 阶段的 I/O 完成无法 reap（待修复）
+- **适用场景**: ksmbd/NFS server 多客户端并发请求时，readahead + 批量 I/O 可受益
+
+### 14.5 性能数据 (raw 后端, /dev/sda 200GB SSD)
+
+| Test | Block | Throughput | IOPS |
+|------|-------|-----------|------|
+| Sequential Read | 4KB | 70.19 MB/s | 17970 |
+| Random Read | 4KB | 24.92 MB/s | 6380 |
