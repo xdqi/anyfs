@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include "aio_blk_backend.h"
 #include "anyfs_api.h"
 #include "raw_blk_backend.h"
 #ifdef ANYFS_HAS_GIO
@@ -6,11 +7,13 @@
 #include "gio_blk_backend.h"
 #endif
 
+#include <fcntl.h>
 #include <lkl.h>
 #include <lkl_host.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* Internal structures (hidden from public API) */
 
@@ -18,6 +21,7 @@ enum backend_type {
 	BACKEND_RAW = 0,
 	BACKEND_GIO_SYNC,
 	BACKEND_GIO_ASYNC,
+	BACKEND_AIO,
 };
 
 struct AnyfsContext {
@@ -108,6 +112,10 @@ ANYFS_API void ANYFS_CALL anyfs_destroy(AnyfsContext* ctx)
 			gio_async_blk_destroy(&ctx->disk);
 			break;
 #endif
+		case BACKEND_AIO:
+			aio_blk_teardown();
+			close(ctx->disk.fd);
+			break;
 		default:
 			raw_blk_destroy(&ctx->disk);
 			break;
@@ -139,7 +147,23 @@ ANYFS_API int32_t ANYFS_CALL anyfs_open_image(AnyfsContext* ctx,
 		ctx->backend = BACKEND_GIO_SYNC;
 	} else
 #endif
-	{
+	    if (flags & ANYFS_OPEN_AIO) {
+		/* AIO backend requires O_DIRECT for true async. */
+		int open_flags = readonly ? O_RDONLY : O_RDWR;
+		open_flags |= O_DIRECT;
+		int fd = open(image_path, open_flags);
+		if (fd < 0) {
+			/* O_DIRECT may fail on some FS; fall back without it */
+			open_flags &= ~O_DIRECT;
+			fd = open(image_path, open_flags);
+		}
+		if (fd < 0)
+			return ANYFS_ERR_IO;
+		ctx->disk.fd = fd;
+		ctx->disk.ops = &aio_blk_ops;
+		ctx->backend = BACKEND_AIO;
+		ret = 0;
+	} else {
 		ret = raw_blk_open(image_path, readonly, &ctx->disk);
 		ctx->backend = BACKEND_RAW;
 	}

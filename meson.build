@@ -79,6 +79,7 @@ anyfs_inc = include_directories('include')
 anyfs_core_sources = files(
     'src/core/anyfs_core.c',
     'src/core/raw_blk_backend.c',
+    'src/core/aio_blk_backend.c',
 )
 
 if enable_gio

@@ -26,9 +26,9 @@ log_pass() { echo "  [PASS] $1"; PASS=$((PASS+1)); }
 log_fail() { echo "  [FAIL] $1: $2"; FAIL=$((FAIL+1)); }
 
 # Determine available backends
-BACKENDS=("raw")
+BACKENDS=("raw" "aio")
 if "$TEST_BIN" --gio /dev/null ext4 0 2>&1 | grep -q "GIO backend not compiled"; then
-    echo "NOTE: GIO backend not compiled, testing raw only."
+    echo "NOTE: GIO backend not compiled, testing raw + aio only."
 else
     BACKENDS+=("gio" "gio-async")
 fi
@@ -40,6 +40,7 @@ run_test() {
     local backend_flag=""
     [[ "$backend" == "gio" ]] && backend_flag="--gio"
     [[ "$backend" == "gio-async" ]] && backend_flag="--gio-async"
+    [[ "$backend" == "aio" ]] && backend_flag="--aio"
 
     local full_label="[$backend] $label"
     echo ""

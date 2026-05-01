@@ -1,16 +1,17 @@
 /*
- * GIO async block backend.
+ * GIO async block backend (true async via LKL_DEV_BLK_STATUS_PENDING).
  *
  * Architecture:
  *   - A dedicated I/O thread runs a GMainLoop (owns a private GMainContext).
  *   - LKL kernel threads call request() which:
- *     1. Packages the request into a struct
- *     2. Attaches a GSource (idle) to the I/O thread's context
- *     3. Blocks on a GMutex+GCond until the async completion fires
- *   - The I/O thread processes the source, calls g_input_stream_read_async()
- *   - On completion callback (same I/O thread), signals the waiting LKL thread.
+ *     1. Packages the request (saving opaque + status_ptr)
+ *     2. Attaches an idle GSource to the I/O thread's context
+ *     3. Returns LKL_DEV_BLK_STATUS_PENDING immediately
+ *   - The I/O thread's idle callback performs synchronous GIO reads
+ *     (serialized via stream_lock), then calls lkl_disk_complete_req()
+ *     to deliver the IRQ and wake the waiting LKL kernel thread.
  *
- * This proves the async bridge pattern needed for Phase 3 (QEMU).
+ * This is a true async backend — the LKL thread is freed during I/O.
  */
 #include "gio_async_blk_backend.h"
 
@@ -18,30 +19,17 @@
 #include <lkl.h>
 #include <string.h>
 
-/* Per-request state (allocated per I/O operation) */
+/* Per-request state (heap-allocated, freed in completion) */
 typedef struct {
-	/* Input */
 	goffset offset;
-	void* buffer;
-	gsize length;
+	struct iovec* bufs;
+	int buf_count;
 
-	/* Completion synchronization */
-	GMutex mutex;
-	GCond cond;
-	gboolean done;
+	void* virtio_opaque; /* from lkl_blk_req.opaque */
+	void* status_ptr;    /* from lkl_blk_req.status_ptr */
 
-	/* Output */
-	gssize bytes_read;
-	GError* error;
-} AsyncReqState;
-
-/* Per-iov chunk tracking for multi-iov requests */
-typedef struct {
-	AsyncReqState* state;
-	GInputStream* stream;
-	GSeekable* seekable;
-	GMutex* stream_lock; /* protect seek+read_async atomicity */
-} AsyncChunkCtx;
+	struct gio_async_blk_ctx* ctx;
+} AsyncReq;
 
 struct gio_async_blk_ctx {
 	GFile* file;
@@ -66,114 +54,53 @@ static gpointer io_thread_func(gpointer data)
 	return NULL;
 }
 
-/* ---- Async read completion callback (runs on I/O thread) ---- */
-
-static void read_complete_cb(GObject* source, GAsyncResult* res,
-			     gpointer user_data)
-{
-	AsyncReqState* state = user_data;
-	GInputStream* stream = G_INPUT_STREAM(source);
-
-	state->bytes_read =
-	    g_input_stream_read_finish(stream, res, &state->error);
-
-	/* Signal the waiting LKL thread */
-	g_mutex_lock(&state->mutex);
-	state->done = TRUE;
-	g_cond_signal(&state->cond);
-	g_mutex_unlock(&state->mutex);
-}
-
-/* ---- Idle source callback: dispatches async read (runs on I/O thread) ---- */
-
-typedef struct {
-	struct gio_async_blk_ctx* ctx;
-	AsyncReqState* state;
-} IdleData;
+/* ---- Idle source callback: performs sync read on I/O thread, then completes
+ * ---- */
 
 static gboolean dispatch_read_idle(gpointer user_data)
 {
-	IdleData* id = user_data;
-	struct gio_async_blk_ctx* ctx = id->ctx;
-	AsyncReqState* state = id->state;
+	AsyncReq* ar = user_data;
+	struct gio_async_blk_ctx* ctx = ar->ctx;
+	uint8_t status = LKL_DEV_BLK_STATUS_OK;
 
-	/* Seek + start async read (under lock for seek atomicity) */
 	g_mutex_lock(&ctx->stream_lock);
 
-	GError* seek_err = NULL;
-	if (!g_seekable_seek(G_SEEKABLE(ctx->stream), state->offset, G_SEEK_SET,
-			     NULL, &seek_err)) {
-		/* Seek failed — complete immediately with error */
-		g_mutex_lock(&state->mutex);
-		state->error = seek_err;
-		state->bytes_read = -1;
-		state->done = TRUE;
-		g_cond_signal(&state->cond);
-		g_mutex_unlock(&state->mutex);
-		g_mutex_unlock(&ctx->stream_lock);
-		g_free(id);
-		return G_SOURCE_REMOVE;
-	}
+	for (int i = 0; i < ar->buf_count; i++) {
+		GError* error = NULL;
 
-	/* Dispatch async read — completion will fire on this same context */
-	g_input_stream_read_async(G_INPUT_STREAM(ctx->stream), state->buffer,
-				  state->length, G_PRIORITY_HIGH,
-				  NULL, /* no cancellable */
-				  read_complete_cb, state);
+		if (!g_seekable_seek(G_SEEKABLE(ctx->stream), ar->offset,
+				     G_SEEK_SET, NULL, &error)) {
+			if (error)
+				g_error_free(error);
+			status = LKL_DEV_BLK_STATUS_IOERR;
+			break;
+		}
+
+		gsize bytes_read = 0;
+		if (!g_input_stream_read_all(
+			G_INPUT_STREAM(ctx->stream), ar->bufs[i].iov_base,
+			ar->bufs[i].iov_len, &bytes_read, NULL, &error)) {
+			if (error)
+				g_error_free(error);
+			status = LKL_DEV_BLK_STATUS_IOERR;
+			break;
+		}
+		if (bytes_read < ar->bufs[i].iov_len) {
+			status = LKL_DEV_BLK_STATUS_IOERR;
+			break;
+		}
+
+		ar->offset += ar->bufs[i].iov_len;
+	}
 
 	g_mutex_unlock(&ctx->stream_lock);
-	g_free(id);
+
+	/* Set status and complete the virtio request */
+	*(uint8_t*)ar->status_ptr = status;
+	lkl_disk_complete_req(ar->virtio_opaque);
+	g_free(ar);
+
 	return G_SOURCE_REMOVE;
-}
-
-/* ---- Submit one async read and wait for completion ---- */
-
-static int submit_and_wait(struct gio_async_blk_ctx* ctx, goffset offset,
-			   void* buf, gsize len)
-{
-	AsyncReqState state = {
-	    .offset = offset,
-	    .buffer = buf,
-	    .length = len,
-	    .done = FALSE,
-	    .bytes_read = 0,
-	    .error = NULL,
-	};
-	g_mutex_init(&state.mutex);
-	g_cond_init(&state.cond);
-
-	/* Package the request and attach to I/O thread's context */
-	IdleData* id = g_new(IdleData, 1);
-	id->ctx = ctx;
-	id->state = &state;
-
-	GSource* source = g_idle_source_new();
-	g_source_set_callback(source, dispatch_read_idle, id, NULL);
-	g_source_set_priority(source, G_PRIORITY_HIGH);
-	g_source_attach(source, ctx->io_context);
-	g_source_unref(source);
-
-	/* Block until I/O thread completes the read */
-	g_mutex_lock(&state.mutex);
-	while (!state.done)
-		g_cond_wait(&state.cond, &state.mutex);
-	g_mutex_unlock(&state.mutex);
-
-	g_mutex_clear(&state.mutex);
-	g_cond_clear(&state.cond);
-
-	if (state.error) {
-		g_warning("gio_async read @%ld: %s", (long)offset,
-			  state.error->message);
-		g_error_free(state.error);
-		return -1;
-	}
-	if (state.bytes_read < (gssize)len) {
-		/* Short read — acceptable for end-of-file, but treat as error
-		 * for block */
-		return -1;
-	}
-	return 0;
 }
 
 /* ---- LKL block device callbacks ---- */
@@ -188,7 +115,6 @@ static int gio_async_get_capacity(struct lkl_disk disk, unsigned long long* res)
 static int gio_async_request(struct lkl_disk disk, struct lkl_blk_req* req)
 {
 	struct gio_async_blk_ctx* ctx = disk.handle;
-	goffset offset = (goffset)req->sector * 512;
 
 	if (req->type == LKL_DEV_BLK_TYPE_FLUSH ||
 	    req->type == LKL_DEV_BLK_TYPE_FLUSH_OUT) {
@@ -199,15 +125,23 @@ static int gio_async_request(struct lkl_disk disk, struct lkl_blk_req* req)
 		return LKL_DEV_BLK_STATUS_IOERR; /* read-only */
 	}
 
-	/* LKL_DEV_BLK_TYPE_READ: submit each iov chunk asynchronously */
-	for (int i = 0; i < req->count; i++) {
-		int ret = submit_and_wait(ctx, offset, req->buf[i].iov_base,
-					  req->buf[i].iov_len);
-		if (ret < 0)
-			return LKL_DEV_BLK_STATUS_IOERR;
-		offset += (goffset)req->buf[i].iov_len;
-	}
-	return LKL_DEV_BLK_STATUS_OK;
+	/* Allocate async request context */
+	AsyncReq* ar = g_new0(AsyncReq, 1);
+	ar->offset = (goffset)req->sector * 512;
+	ar->bufs = req->buf;
+	ar->buf_count = req->count;
+	ar->virtio_opaque = req->opaque;
+	ar->status_ptr = req->status_ptr;
+	ar->ctx = ctx;
+
+	/* Dispatch to I/O thread */
+	GSource* source = g_idle_source_new();
+	g_source_set_callback(source, dispatch_read_idle, ar, NULL);
+	g_source_set_priority(source, G_PRIORITY_HIGH);
+	g_source_attach(source, ctx->io_context);
+	g_source_unref(source);
+
+	return LKL_DEV_BLK_STATUS_PENDING;
 }
 
 static struct lkl_dev_blk_ops gio_async_ops = {
