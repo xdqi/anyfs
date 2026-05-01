@@ -118,3 +118,10 @@ bench_backends = executable('bench_backends',
     dependencies: [anyfs_dep],
     c_args: gio_args,
 )
+
+bench_concurrent = executable('bench_concurrent',
+    'tests/bench_concurrent.c',
+    include_directories: anyfs_inc,
+    dependencies: [anyfs_dep],
+    c_args: gio_args,
+)
