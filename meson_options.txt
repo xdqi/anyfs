@@ -9,3 +9,15 @@ option('glib_root', type: 'string',
 option('enable_gio', type: 'boolean',
     value: false,
     description: 'Enable GIO block backend (requires glib_root)')
+
+option('qemu_root', type: 'string',
+    value: '',
+    description: 'Path to QEMU source tree')
+
+option('qemu_build', type: 'string',
+    value: '',
+    description: 'Path to QEMU build directory (contains libblock.a etc.)')
+
+option('enable_qemu', type: 'boolean',
+    value: false,
+    description: 'Enable QEMU block backend (requires qemu_root and qemu_build)')

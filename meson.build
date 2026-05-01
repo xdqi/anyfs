@@ -1,7 +1,7 @@
 project('anyfs-reader', 'c',
     version: '0.1.0',
     default_options: [
-        'c_std=c11',
+        'c_std=gnu11',
         'warning_level=2',
         'b_pie=true',
     ],
@@ -74,6 +74,62 @@ endif
 # Public include directory
 anyfs_inc = include_directories('include')
 
+# --- QEMU Block Backend (optional) ---
+enable_qemu = get_option('enable_qemu')
+if enable_qemu
+    qemu_root = get_option('qemu_root')
+    qemu_build = get_option('qemu_build')
+
+    qemu_inc = include_directories(
+        qemu_root / 'include',
+        qemu_build,
+        qemu_build / 'qapi',
+        qemu_build / 'trace',
+    )
+    # System headers from QEMU's bundled linux-headers
+    qemu_sys_inc = include_directories(
+        qemu_root / 'linux-headers',
+        qemu_build / 'linux-headers',
+        is_system: true,
+    )
+
+    qemu_libs = []
+    foreach libname : ['qemuutil', 'io', 'qom', 'authz', 'crypto', 'event-loop-base']
+        qemu_libs += cc.find_library(libname, dirs: [qemu_build], static: true)
+    endforeach
+
+    # libblock.a needs --whole-archive to pull in format driver constructors
+    qemu_block_link_args = [
+        '-Wl,--whole-archive',
+        qemu_build / 'libblock.a',
+        '-Wl,--no-whole-archive',
+        '-lm',  # needed by some block drivers
+        '-lbz2', # needed by dmg driver
+    ]
+
+    # External deps needed by QEMU
+    zstd_dep = dependency('libzstd', required: true)
+    uring_dep = dependency('liburing', required: false)
+    aio_lib = cc.find_library('aio', required: true)
+    pixman_dep = dependency('pixman-1', required: true)
+    glib_sys_dep = dependency('glib-2.0', required: true)
+    gthread_dep = dependency('gthread-2.0', required: true)
+    z_dep = dependency('zlib', required: true)
+
+    qemu_dep = declare_dependency(
+        include_directories: [qemu_inc, qemu_sys_inc],
+        dependencies: qemu_libs + [zstd_dep, aio_lib, pixman_dep,
+                                    glib_sys_dep, gthread_dep, z_dep,
+                                    thread_dep, rt_dep] +
+                      (uring_dep.found() ? [uring_dep] : []),
+        link_args: qemu_block_link_args,
+    )
+    qemu_args = ['-DANYFS_HAS_QEMU=1']
+else
+    qemu_dep = []
+    qemu_args = []
+endif
+
 # --- Core library ---
 
 anyfs_core_sources = files(
@@ -89,18 +145,28 @@ if enable_gio
     )
 endif
 
-anyfs_core = both_libraries('anyfs_core',
+if enable_qemu
+    anyfs_core_sources += files(
+        'src/core/qemu_blk_backend.c',
+        'src/core/qemu_stubs.c',
+    )
+endif
+
+# QEMU sources need gnu11 due to osdep.h macros using __COUNTER__
+qemu_c_args = enable_qemu ? ['-std=gnu11'] : []
+
+anyfs_core = static_library('anyfs_core',
     anyfs_core_sources,
     include_directories: [anyfs_inc, include_directories('src/core')],
-    dependencies: [lkl_dep, gio_dep],
-    c_args: ['-DANYFS_CORE_BUILDING', '-fvisibility=hidden'] + gio_args,
+    dependencies: [lkl_dep, gio_dep] + (enable_qemu ? [qemu_dep] : []),
+    c_args: ['-DANYFS_CORE_BUILDING', '-fvisibility=hidden'] + gio_args + qemu_args,
     install: true,
 )
 
 anyfs_dep = declare_dependency(
     include_directories: anyfs_inc,
-    link_with: anyfs_core.get_static_lib(),
-    dependencies: [lkl_dep, gio_dep],
+    link_with: anyfs_core,
+    dependencies: [lkl_dep, gio_dep] + (enable_qemu ? [qemu_dep] : []),
 )
 
 # --- Tests ---
@@ -132,3 +198,12 @@ bench_raw_io = executable('bench_raw_io',
     dependencies: [anyfs_dep],
     c_args: gio_args,
 )
+
+if enable_qemu
+    test_qemu_mount = executable('test_qemu_mount',
+        'tests/test_qemu_mount.c',
+        include_directories: [anyfs_inc, include_directories('src/core')],
+        dependencies: [anyfs_dep],
+        c_args: qemu_args,
+    )
+endif
