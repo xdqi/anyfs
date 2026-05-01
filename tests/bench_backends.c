@@ -121,6 +121,7 @@ int main(int argc, char** argv)
 
 	BackendDef backends[] = {
 	    {"raw", ANYFS_OPEN_READONLY},
+	    {"aio", ANYFS_OPEN_READONLY | ANYFS_OPEN_AIO},
 #ifdef ANYFS_HAS_GIO
 	    {"gio-sync", ANYFS_OPEN_READONLY | ANYFS_OPEN_GIO},
 	    {"gio-async", ANYFS_OPEN_READONLY | ANYFS_OPEN_GIO_ASYNC},
