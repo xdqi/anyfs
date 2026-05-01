@@ -1,27 +1,29 @@
 /*
- * aio_blk_backend.c - True async block backend using Linux AIO + eventfd +
- * epoll.
+ * aio_blk_backend.c - True async block backend using Linux AIO + eventfd.
  *
- * Architecture:
+ * Architecture (threadless):
  *   - LKL's request() returns LKL_DEV_BLK_STATUS_PENDING immediately
- *   - I/O is submitted via io_submit() (kernel AIO)
- *   - A dedicated reaper thread waits on epoll (eventfd from AIO context)
- *   - On completion, reaper calls lkl_disk_complete_req() to wake LKL
+ *   - I/O is submitted via io_submit() (kernel AIO) with IOCB_FLAG_RESFD
+ *   - The eventfd is registered with lkl_host_ops.idle_add_event()
+ *   - LKL's idle loop polls the eventfd and calls our handler to reap
+ *   - Completions call lkl_disk_complete_req() directly from idle context
+ *
+ * NO separate reaper thread — completions fire in LKL's idle path.
  *
  * Requirements:
  *   - O_DIRECT fd (AIO requires it for truly async behavior)
  *   - Linux >= 4.18 (for eventfd-based AIO notification)
+ *   - LKL host_ops.idle + idle_add_event must be provided
  */
 
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/aio_abi.h>
-#include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -72,27 +74,21 @@ struct aio_req {
 static struct {
 	aio_context_t aio_ctx;
 	int event_fd;
-	int epoll_fd;
-	pthread_t reaper_thread;
-	volatile int running;
+	int initialized;
 	/* Simple pool of aio_req to avoid malloc per I/O */
 	struct aio_req pool[AIO_MAX_INFLIGHT];
 	volatile int pool_used[AIO_MAX_INFLIGHT]; /* 0=free, 1=in-use */
-	pthread_mutex_t pool_lock;
 } g_aio;
 
 static struct aio_req* alloc_aio_req(void)
 {
-	pthread_mutex_lock(&g_aio.pool_lock);
 	for (int i = 0; i < AIO_MAX_INFLIGHT; i++) {
 		if (!g_aio.pool_used[i]) {
 			g_aio.pool_used[i] = 1;
-			pthread_mutex_unlock(&g_aio.pool_lock);
 			memset(&g_aio.pool[i], 0, sizeof(struct aio_req));
 			return &g_aio.pool[i];
 		}
 	}
-	pthread_mutex_unlock(&g_aio.pool_lock);
 	return NULL; /* all slots busy */
 }
 
@@ -103,76 +99,60 @@ static void free_aio_req(struct aio_req* r)
 		r->bounce_buf = NULL;
 	}
 	int idx = (int)(r - g_aio.pool);
-	__sync_synchronize();
 	g_aio.pool_used[idx] = 0;
 }
 
-/* Reaper thread: waits on epoll for eventfd notifications from AIO */
-static void* aio_reaper_thread(void* arg)
+/*
+ * Idle event handler: called from LKL's idle loop when eventfd is readable.
+ * Reaps completed AIO requests and calls lkl_disk_complete_req().
+ */
+static void aio_idle_handler(void* arg)
 {
 	(void)arg;
-	struct epoll_event ev;
 	struct io_event events[AIO_REAP_BATCH];
 
-	while (g_aio.running) {
-		int nfds = epoll_wait(g_aio.epoll_fd, &ev, 1, 100);
-		if (nfds <= 0)
-			continue;
+	/* Consume the eventfd counter */
+	uint64_t val;
+	if (read(g_aio.event_fd, &val, sizeof(val)) < 0)
+		return;
 
-		/* Consume the eventfd counter */
-		uint64_t val;
-		if (read(g_aio.event_fd, &val, sizeof(val)) < 0)
-			continue;
+	/* Reap completed I/Os (non-blocking) */
+	struct timespec ts = {0, 0};
+	int n = io_getevents(g_aio.aio_ctx, 1, AIO_REAP_BATCH, events, &ts);
 
-		/* Reap completed I/Os */
-		struct timespec ts = {0, 0};
-		int n =
-		    io_getevents(g_aio.aio_ctx, 1, AIO_REAP_BATCH, events, &ts);
+	for (int i = 0; i < n; i++) {
+		struct aio_req* r = (struct aio_req*)events[i].obj;
+		long res = (long)events[i].res;
 
-		for (int i = 0; i < n; i++) {
-			struct aio_req* r = (struct aio_req*)events[i].obj;
-			long res = (long)events[i].res;
-
-			/* Set status in virtio trailer */
-			uint8_t* status = (uint8_t*)r->status_ptr;
-			if (res >= 0) {
-				*status = LKL_DEV_BLK_STATUS_OK;
-				/* Copy from bounce buffer to user buffer on
-				 * read */
-				if (r->is_read && r->bounce_buf && r->user_buf)
-					memcpy(r->user_buf, r->bounce_buf,
-					       r->user_len);
-			} else {
-				*status = LKL_DEV_BLK_STATUS_IOERR;
-			}
-
-			/* Complete the virtio request (wakes LKL) */
-			lkl_disk_complete_req(r->virtio_opaque);
-
-			free_aio_req(r);
+		/* Set status in virtio trailer */
+		uint8_t* status = (uint8_t*)r->status_ptr;
+		if (res >= 0) {
+			*status = LKL_DEV_BLK_STATUS_OK;
+			/* Copy from bounce buffer to user buffer on read */
+			if (r->is_read && r->bounce_buf && r->user_buf)
+				memcpy(r->user_buf, r->bounce_buf, r->user_len);
+		} else {
+			*status = LKL_DEV_BLK_STATUS_IOERR;
 		}
+
+		/* Complete the virtio request (wakes LKL thread) */
+		lkl_disk_complete_req(r->virtio_opaque);
+		free_aio_req(r);
 	}
-	return NULL;
 }
 
 static int aio_init_once(void)
 {
 	static int initialized;
-	static pthread_mutex_t init_lock = PTHREAD_MUTEX_INITIALIZER;
 
-	pthread_mutex_lock(&init_lock);
-	if (initialized) {
-		pthread_mutex_unlock(&init_lock);
+	if (initialized)
 		return 0;
-	}
 
 	memset(&g_aio, 0, sizeof(g_aio));
-	pthread_mutex_init(&g_aio.pool_lock, NULL);
 
 	/* Create AIO context */
 	if (io_setup(AIO_MAX_INFLIGHT, &g_aio.aio_ctx) < 0) {
 		perror("io_setup");
-		pthread_mutex_unlock(&init_lock);
 		return -1;
 	}
 
@@ -181,57 +161,35 @@ static int aio_init_once(void)
 	if (g_aio.event_fd < 0) {
 		perror("eventfd");
 		io_destroy(g_aio.aio_ctx);
-		pthread_mutex_unlock(&init_lock);
 		return -1;
 	}
 
-	/* Create epoll for the reaper thread */
-	g_aio.epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-	if (g_aio.epoll_fd < 0) {
-		perror("epoll_create1");
-		close(g_aio.event_fd);
-		io_destroy(g_aio.aio_ctx);
-		pthread_mutex_unlock(&init_lock);
-		return -1;
-	}
-
-	struct epoll_event ev = {.events = EPOLLIN, .data.fd = g_aio.event_fd};
-	if (epoll_ctl(g_aio.epoll_fd, EPOLL_CTL_ADD, g_aio.event_fd, &ev) < 0) {
-		perror("epoll_ctl");
-		close(g_aio.epoll_fd);
-		close(g_aio.event_fd);
-		io_destroy(g_aio.aio_ctx);
-		pthread_mutex_unlock(&init_lock);
-		return -1;
-	}
-
-	/* Start reaper thread */
-	g_aio.running = 1;
-	if (pthread_create(&g_aio.reaper_thread, NULL, aio_reaper_thread,
-			   NULL)) {
-		perror("pthread_create");
-		g_aio.running = 0;
-		close(g_aio.epoll_fd);
-		close(g_aio.event_fd);
-		io_destroy(g_aio.aio_ctx);
-		pthread_mutex_unlock(&init_lock);
-		return -1;
+	/* Register eventfd with LKL's idle loop */
+	if (lkl_host_ops.idle_add_event) {
+		lkl_host_ops.idle_add_event((void*)(intptr_t)g_aio.event_fd,
+					    aio_idle_handler, NULL);
+	} else {
+		fprintf(stderr, "aio_blk: WARNING: no idle_add_event, "
+				"completions may not fire\n");
 	}
 
 	initialized = 1;
-	pthread_mutex_unlock(&init_lock);
+	g_aio.initialized = 1;
 	return 0;
 }
 
 void aio_blk_teardown(void)
 {
-	if (!g_aio.running)
+	if (!g_aio.initialized)
 		return;
-	g_aio.running = 0;
-	pthread_join(g_aio.reaper_thread, NULL);
-	close(g_aio.epoll_fd);
+
+	/* Unregister from idle loop */
+	if (lkl_host_ops.idle_del_event)
+		lkl_host_ops.idle_del_event((void*)(intptr_t)g_aio.event_fd);
+
 	close(g_aio.event_fd);
 	io_destroy(g_aio.aio_ctx);
+	g_aio.initialized = 0;
 }
 
 static int aio_get_capacity(struct lkl_disk disk, unsigned long long* res)

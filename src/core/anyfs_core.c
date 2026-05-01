@@ -148,7 +148,10 @@ ANYFS_API int32_t ANYFS_CALL anyfs_open_image(AnyfsContext* ctx,
 	} else
 #endif
 	    if (flags & ANYFS_OPEN_AIO) {
-		/* AIO backend requires O_DIRECT for true async. */
+		/* AIO backend uses O_DIRECT for true async I/O.
+		 * Trade-off: bypasses host page cache (slower for repeated
+		 * reads of same data during mount), but enables I/O overlap for
+		 * concurrent workloads. */
 		int open_flags = readonly ? O_RDONLY : O_RDWR;
 		open_flags |= O_DIRECT;
 		int fd = open(image_path, open_flags);

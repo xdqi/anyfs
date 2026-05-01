@@ -125,3 +125,10 @@ bench_concurrent = executable('bench_concurrent',
     dependencies: [anyfs_dep],
     c_args: gio_args,
 )
+
+bench_raw_io = executable('bench_raw_io',
+    'tests/bench_raw_io.c',
+    include_directories: [anyfs_inc, include_directories('src/core')],
+    dependencies: [anyfs_dep],
+    c_args: gio_args,
+)
