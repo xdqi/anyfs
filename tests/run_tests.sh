@@ -201,6 +201,57 @@ fi
 run_test_all_backends "$IMG" vfat  4 "GPT_VFAT.TXT"  "GPT part=4 vfat"
 
 # ============================================================
+# Test 6: QEMU block backend (qcow2, vmdk, vdi)
+# ============================================================
+QEMU_BIN="${SCRIPT_DIR}/../builddir/test_qemu_mount"
+QEMU_IMG="${SCRIPT_DIR}/../builddir/../scripts/../builddir/test_qemu_mount"
+
+if [[ -x "${SCRIPT_DIR}/../builddir/test_qemu_mount" ]]; then
+    echo ""
+    echo "================================================================"
+    echo "=== Test 6: QEMU block backend (qcow2, vmdk, vdi) ==="
+    echo "================================================================"
+
+    # Create a raw ext4 image as source
+    QEMU_RAW="$TMPDIR/qemu_source.img"
+    dd if=/dev/zero of="$QEMU_RAW" bs=1M count=32 status=none
+    /usr/sbin/mkfs.ext4 -F -q "$QEMU_RAW"
+    sudo mount -o loop "$QEMU_RAW" "$TMPDIR/mnt"
+    echo "qemu_test_content" | sudo tee "$TMPDIR/mnt/qemu_test.txt" > /dev/null
+    sudo umount "$TMPDIR/mnt"
+
+    # Find qemu-img
+    QEMU_IMG_BIN=""
+    for p in ${QEMU_SRC}/build-anyfs2/qemu-img /usr/bin/qemu-img; do
+        [[ -x "$p" ]] && QEMU_IMG_BIN="$p" && break
+    done
+
+    if [[ -n "$QEMU_IMG_BIN" ]]; then
+        for fmt in qcow2 vmdk vdi; do
+            QIMG="$TMPDIR/test.$fmt"
+            "$QEMU_IMG_BIN" convert -f raw -O "$fmt" "$QEMU_RAW" "$QIMG" 2>/dev/null
+
+            echo ""
+            echo "--- Running: [qemu] $fmt ext4 ---"
+            OUTPUT=$("${SCRIPT_DIR}/../builddir/test_qemu_mount" "$QIMG" ext4 2>&1)
+            echo "$OUTPUT" | grep -v "^\[" | head -5
+            echo ""
+
+            if echo "$OUTPUT" | grep -q "qemu_test.txt"; then
+                log_pass "[qemu] $fmt ext4"
+            else
+                log_fail "[qemu] $fmt ext4" "expected 'qemu_test.txt' in output"
+            fi
+        done
+    else
+        echo "  [SKIP] qemu-img not found, cannot convert formats"
+    fi
+else
+    echo ""
+    echo "  [SKIP] QEMU backend not compiled (test_qemu_mount not found)"
+fi
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""
