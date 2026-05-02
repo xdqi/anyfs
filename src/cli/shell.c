@@ -570,23 +570,58 @@ static int tokenize(char* line, char** argv, int max_args)
 
 /* --- Main --- */
 
+static void usage(const char* prog)
+{
+	fprintf(stderr, "Usage: %s [options] [image fstype [part]]\n", prog);
+	fprintf(stderr, "Options:\n");
+	fprintf(stderr,
+		"  -v, --verbose   Show kernel messages (loglevel=7)\n");
+	fprintf(stderr, "  -m MB           Set kernel memory (default: 64)\n");
+	fprintf(stderr, "  -h, --help      Show this help\n");
+}
+
 int main(int argc, char** argv)
 {
-	int32_t rc = anyfs_init(&g_ctx, NULL);
+	AnyfsInitOpts opts = {
+	    .size = sizeof(opts), .mem_mb = 64, .loglevel = 0};
+
+	/* Parse options */
+	int argi = 1;
+	while (argi < argc && argv[argi][0] == '-') {
+		if (strcmp(argv[argi], "-v") == 0 ||
+		    strcmp(argv[argi], "--verbose") == 0) {
+			opts.loglevel = 7;
+			argi++;
+		} else if (strcmp(argv[argi], "-m") == 0 && argi + 1 < argc) {
+			opts.mem_mb = (uint32_t)atoi(argv[++argi]);
+			argi++;
+		} else if (strcmp(argv[argi], "-h") == 0 ||
+			   strcmp(argv[argi], "--help") == 0) {
+			usage(argv[0]);
+			return 0;
+		} else {
+			fprintf(stderr, "Unknown option: %s\n", argv[argi]);
+			usage(argv[0]);
+			return 1;
+		}
+	}
+
+	int32_t rc = anyfs_init(&g_ctx, &opts);
 	if (rc != ANYFS_OK) {
 		fprintf(stderr, "anyfs_init failed: %d\n", rc);
 		return 1;
 	}
 
 	/* If args provided on command line: open <image> <fstype> [part] */
-	if (argc >= 3) {
-		char* args_open[] = {"open", argv[1], NULL};
+	if (argi + 1 < argc) {
+		char* args_open[] = {"open", argv[argi], NULL};
 		cmd_open(2, args_open);
 
 		char part_str[16] = "0";
-		if (argc >= 4)
-			snprintf(part_str, sizeof(part_str), "%s", argv[3]);
-		char* args_mount[] = {"mount", argv[2], part_str, NULL};
+		if (argi + 2 < argc)
+			snprintf(part_str, sizeof(part_str), "%s",
+				 argv[argi + 2]);
+		char* args_mount[] = {"mount", argv[argi + 1], part_str, NULL};
 		cmd_mount(3, args_mount);
 	}
 
