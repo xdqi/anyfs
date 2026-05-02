@@ -4,9 +4,10 @@
 
 | 决策項 | 结论 | 原因 |
 |--------|------|------|
-| Host Operations | 保持原生 posix-host/nt-host | 不引入 GLib 替换 |
+| API 风格 | 薄封装 + 直接 LKL syscall | 旧 API 是无意义的 passthrough |
+| Host Operations | 保持原生 posix-host | 不引入 GLib 替换 |
 | QEMU 集成 | 直接静态链接 libblock.a | blk_pread 同步调用，零 LKL 修改 |
-| I/O 模式 | **纯同步** | LKL 异步支持坑太大 (idle loop/IRQ 唤醒问题) |
+| I/O 模式 | **纯同步** | LKL 异步支持坑太大 |
 | MMU | CONFIG_MMU=n | 文件系统不需要 MMU |
 | LKL 修改 | **不改 LKL** | 同步方案无需任何修改 |
 
@@ -16,12 +17,15 @@
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  应用 (CLI / GUI / Server)                       │
+│  应用 (anyfs-shell / 自定义程序)                  │
+│  直接调用 LKL syscalls:                          │
+│    lkl_sys_open, lkl_sys_read, lkl_sys_lstat,   │
+│    lkl_opendir, lkl_sys_statfs, ...              │
 ├─────────────────────────────────────────────────┤
-│  anyfs_api.h  (ABI 防火墙, 纯 stdint.h 类型)    │
+│  anyfs.h  (4 函数: init/halt + disk_add/remove) │
 ├─────────────────────────────────────────────────┤
 │  libanyfs_core.a                                 │
-│  ├── anyfs_core.c      API 实现, LKL 生命周期    │
+│  ├── anyfs.c             内核生命周期 + 磁盘管理  │
 │  ├── raw_blk_backend.c   pread 后端 (.img)      │
 │  ├── gio_blk_backend.c   GIO 同步后端 (跨平台)   │
 │  └── qemu_blk_backend.c  QEMU blk_pread (qcow2) │
@@ -31,6 +35,16 @@
 │  libblock.a + libqemuutil.a (QEMU block layer)  │
 └─────────────────────────────────────────────────┘
 ```
+
+### API 设计哲学
+
+旧设计 (`anyfs_api.h`) 封装了 `anyfs_open/read/close/opendir/readdir/closedir` 等十几个函数——但它们只是 `lkl_sys_*` 的 1:1 wrapper，没有附加价值。
+
+新设计 (`anyfs.h`) 只封装两件事：
+1. **内核生命周期** — `anyfs_kernel_init/halt`（隐藏 `lkl_init` + `lkl_start_kernel` 的参数处理）
+2. **多后端磁盘注册** — `anyfs_disk_add/remove`（根据 flags 选择 raw/gio/qemu ops，调 `lkl_disk_add`）
+
+之后用户直接使用 LKL 的完整 syscall API，没有功能限制。
 
 ---
 
@@ -43,7 +57,7 @@ lkl_sys_read()
   → VFS → submit_bio()
   → virtqueue_notify → writel(QUEUE_NOTIFY)
   → iomem_access → virtio_process_queue
-  → ops->request(disk, &req)   ← 我们的后端在这里执行
+  → ops->request(disk, &req)   ← 后端在这里执行
   → virtio_req_complete → lkl_trigger_irq
   → writel 返回 → bio 完成
 ```
@@ -58,18 +72,24 @@ lkl_sys_read()
 ## 4. 块后端接口
 
 ```c
+// LKL 的块设备接口 (来自 lkl_host.h)
 struct lkl_dev_blk_ops {
     int (*get_capacity)(struct lkl_disk disk, unsigned long long *res);
     int (*request)(struct lkl_disk disk, struct lkl_blk_req *req);
 };
 
-struct lkl_blk_req {
-    unsigned int type;          // READ=0, WRITE=1, FLUSH=4
-    unsigned long long sector;  // 偏移 (512B 扇区)
-    struct iovec *buf;
-    int count;
+// anyfs 后端抽象 (src/core/anyfs_backend.h)
+struct anyfs_backend_ops {
+    const char *name;
+    int (*open)(const char *path, int readonly, struct lkl_disk *disk_out);
+    void (*close)(struct lkl_disk *disk);
 };
 ```
+
+`anyfs_disk_add()` 内部：
+1. 根据 flags 选择 `anyfs_backend_ops`（默认 QEMU > raw）
+2. 调用 `ops->open()` 得到填充好的 `lkl_disk`（包含 `lkl_dev_blk_ops`）
+3. 调用 `lkl_disk_add()` 注册到 LKL 内核
 
 ---
 
@@ -78,7 +98,6 @@ struct lkl_blk_req {
 ### 5.1 符号隔离
 
 - 编译 `libanyfs_core.a` 时 `-fvisibility=hidden`
-- 仅 `anyfs_api.h` 中的函数用 `ANYFS_API` 导出
 - QEMU 内部数千符号全部 hidden
 
 ### 5.2 AioContext 线程问题
@@ -99,7 +118,7 @@ if (!aio_ctx_set) {
 QEMU 格式驱动用 `block_init()` 注册 (`__attribute__((constructor))`)。
 链接时必须 `--whole-archive libblock.a`。
 
-### 5.4 构建
+### 5.4 QEMU 构建
 
 ```bash
 cd ~/qemu && mkdir -p build-anyfs2 && cd build-anyfs2
@@ -113,34 +132,26 @@ ninja libqemuutil.a libqom.a libauthz.a libcrypto.a libio.a \
 
 ---
 
-## 6. ABI 设计规则
+## 6. 性能数据
 
-- 固定宽度整数: `int32_t`, `int64_t`, `uint32_t`, `uint64_t`
-- 绝无 `long`, `size_t` (Win32 LLP64 vs Linux LP64 宽度不同)
-- 不透明句柄: `AnyfsContext*`, `AnyfsMount*`, `AnyfsDir*`
-- Windows: `__cdecl` 调用约定 + `__declspec(dllexport)`
+### 后端吞吐量 (150 文件, ~150MB, 64K 读)
 
----
+| Backend | Raw image | qcow2 |
+|---------|-----------|-------|
+| raw (pread) | 1295 MB/s | — |
+| gio | 1071 MB/s | — |
+| qemu | 722 MB/s | 818 MB/s |
 
-## 7. 性能数据
+### 微观延迟 (单次 4KB 顺序读)
 
-大文件 (128MB ext4, 超过 LKL 64MB page cache):
-
-| Backend | 10000 reads (4KB seq) | per-op |
-|---------|----------------------|--------|
-| raw | 286 ms | 29 µs |
-| gio-sync | 343 ms | 34 µs |
-
-小文件 (page cache 命中):
-
-| Backend | 10000 open+read+close | per-op |
-|---------|----------------------|--------|
-| raw | 477 ms | 48 µs |
-| gio-sync | 142 ms | 14 µs |
+| Backend | per-op |
+|---------|--------|
+| raw | ~29 µs |
+| gio | ~34 µs |
 
 ---
 
-## 8. 放弃异步的原因
+## 7. 放弃异步的原因
 
 尝试过的异步方案：
 1. **GIO async backend** — 线程桥接开销 +15µs/op，对同步 LKL 无收益
@@ -154,7 +165,7 @@ ninja libqemuutil.a libqom.a libauthz.a libcrypto.a libio.a \
 
 ---
 
-## 9. 路线图
+## 8. 路线图
 
 | Phase | 内容 | 状态 |
 |-------|------|:----:|
@@ -162,5 +173,7 @@ ninja libqemuutil.a libqom.a libauthz.a libcrypto.a libio.a \
 | 2 | anyfs API + raw 后端 | ✅ |
 | 2a | GIO 同步后端 | ✅ |
 | 3 | QEMU block 后端 (qcow2/vmdk/vdi) | ✅ |
-| 4 | CLI Shell | 待定 |
-| 5 | Server 模式 (ksmbd/nfsd) | 待定 |
+| 4 | CLI Shell (guestfish 风格) | ✅ |
+| 5 | API 精简 (anyfs.h 4 函数) | ✅ |
+| 6 | lkl-busybox (文件操作 applet) | 构想中 |
+| 7 | Server 模式 (ksmbd/nfsd) | 待定 |
