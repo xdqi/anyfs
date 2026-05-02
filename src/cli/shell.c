@@ -15,7 +15,6 @@
 
 #include "anyfs.h"
 #include <lkl/asm-generic/fcntl.h>
-#include <lkl/linux/mount.h>
 #include <lkl/linux/stat.h>
 
 /* d_type values (same as Linux DT_*) */
@@ -68,8 +67,8 @@ static int cmd_quit(int argc, char** argv);
 static struct command commands[] = {
     {"open", "open <image> [backend]",
      "Open a disk image (backend: raw, gio, qemu)", cmd_open},
-    {"mount", "mount <fstype> [part]",
-     "Mount filesystem (e.g. ext4, xfs, btrfs)", cmd_mount},
+    {"mount", "mount [fstype] [part]",
+     "Mount filesystem (auto-detect if no fstype)", cmd_mount},
     {"umount", "umount", "Unmount current filesystem", cmd_umount},
     {"ls", "ls [path]", "List directory contents", cmd_ls},
     {"ll", "ll [path]", "Long listing (type, size, name)", cmd_ll},
@@ -168,10 +167,6 @@ static int cmd_open(int argc, char** argv)
 
 static int cmd_mount(int argc, char** argv)
 {
-	if (argc < 2) {
-		fprintf(stderr, "Usage: mount <fstype> [partition_index]\n");
-		return -1;
-	}
 	if (g_mounted) {
 		fprintf(stderr, "Already mounted. Use 'umount' first.\n");
 		return -1;
@@ -182,23 +177,50 @@ static int cmd_mount(int argc, char** argv)
 	}
 
 	uint32_t part = 0;
+	const char* fstype = NULL;
+
+	/* mount [fstype] [part] — fstype is optional for auto-detect */
+	if (argc >= 2) {
+		/* If first arg is numeric, it's a partition number */
+		if (argv[1][0] >= '0' && argv[1][0] <= '9')
+			part = (uint32_t)atoi(argv[1]);
+		else
+			fstype = argv[1];
+	}
 	if (argc >= 3)
 		part = (uint32_t)atoi(argv[2]);
 
-	const char* opts = NULL;
-	if (strcmp(argv[1], "xfs") == 0)
-		opts = "norecovery";
-
-	long ret = lkl_mount_dev(g_disk_id, part, argv[1], LKL_MS_RDONLY, opts,
-				 g_mount_point, sizeof(g_mount_point));
-	if (ret) {
-		fprintf(stderr, "Mount failed: %ld\n", ret);
-		return -1;
+	if (fstype) {
+		/* Explicit filesystem type */
+		AnyfsMount mnt_info;
+		int ret = anyfs_mount(g_disk_id, part, fstype, "shell",
+				      ANYFS_MOUNT_RDONLY, &mnt_info);
+		if (ret) {
+			fprintf(stderr, "Mount failed: %d\n", ret);
+			return -1;
+		}
+		strncpy(g_mount_point, mnt_info.mount_point,
+			sizeof(g_mount_point) - 1);
+		strncpy(g_fstype, mnt_info.fstype, sizeof(g_fstype) - 1);
+	} else {
+		/* Auto-detect filesystem type */
+		AnyfsMount mnt_info;
+		int ret = anyfs_mount(g_disk_id, part, NULL, "shell",
+				      ANYFS_MOUNT_RDONLY, &mnt_info);
+		if (ret) {
+			fprintf(
+			    stderr,
+			    "Mount failed (no supported filesystem found)\n");
+			return -1;
+		}
+		strncpy(g_mount_point, mnt_info.mount_point,
+			sizeof(g_mount_point) - 1);
+		strncpy(g_fstype, mnt_info.fstype, sizeof(g_fstype) - 1);
 	}
+
 	g_mounted = 1;
-	snprintf(g_fstype, sizeof(g_fstype), "%s", argv[1]);
 	strcpy(g_cwd, "/");
-	printf("Mounted %s (partition %u) at %s\n", argv[1], part,
+	printf("Mounted %s (partition %u) at %s\n", g_fstype, part,
 	       g_mount_point);
 	return 0;
 }
@@ -211,11 +233,13 @@ static int cmd_umount(int argc, char** argv)
 		fprintf(stderr, "Not mounted.\n");
 		return -1;
 	}
-	long ret = lkl_umount_dev(g_disk_id, 0, 0, 1000);
+	/* Unmount using anyfs_umount (mount name is "shell") */
+	int ret = anyfs_umount("shell");
 	if (ret)
 		fprintf(stderr, "Warning: umount returned %ld\n", ret);
 	g_mounted = 0;
 	g_fstype[0] = '\0';
+	g_mount_point[0] = '\0';
 	strcpy(g_cwd, "/");
 	printf("Unmounted.\n");
 	return 0;
@@ -1013,7 +1037,7 @@ done:
 		free(history_file);
 	}
 	if (g_mounted) {
-		lkl_umount_dev(g_disk_id, 0, 0, 1000);
+		anyfs_umount("shell");
 	}
 	if (g_disk_id >= 0)
 		anyfs_disk_remove(g_disk_id);
