@@ -1,29 +1,31 @@
 /*
- * Test: mount a raw disk image via anyfs API, list root directory.
- * Usage: test_raw_mount [--gio] <image> <fstype> <part>
+ * Test: mount a raw disk image via anyfs + LKL, list root directory.
+ * Usage: test_raw_mount [--gio|--raw] <image> <fstype> <part>
  */
-#include "anyfs_api.h"
+#include "anyfs.h"
+#include <lkl/asm-generic/fcntl.h>
+#include <lkl/linux/mount.h>
+#include <lkl/linux/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 int main(int argc, char** argv)
 {
-	int use_gio = 0;
+	uint32_t backend_flag = 0;
 	int argoff = 1;
 
 	if (argc > 1 && strcmp(argv[1], "--gio") == 0) {
-		use_gio = 1;
+		backend_flag = ANYFS_BACKEND_GIO;
 		argoff = 2;
 	} else if (argc > 1 && strcmp(argv[1], "--raw") == 0) {
+		backend_flag = ANYFS_BACKEND_RAW;
 		argoff = 2;
 	}
 
 	if (argc - argoff < 3) {
 		fprintf(stderr,
-			"usage: %s [--gio] <image> <fstype> <part>\n"
-			"  --gio   use GIO sync backend\n"
-			"  part=0 for whole disk, 1+ for partition number\n",
+			"usage: %s [--gio|--raw] <image> <fstype> <part>\n",
 			argv[0]);
 		return 1;
 	}
@@ -32,87 +34,73 @@ int main(int argc, char** argv)
 	const char* fstype = argv[argoff + 1];
 	uint32_t part = (uint32_t)atoi(argv[argoff + 2]);
 
-	AnyfsContext* ctx = NULL;
-	int32_t ret = anyfs_init(&ctx, NULL);
-	if (ret != ANYFS_OK) {
-		fprintf(stderr, "anyfs_init failed: %d\n", ret);
+	if (anyfs_kernel_init(NULL) < 0) {
+		fprintf(stderr, "kernel init failed\n");
 		return 1;
 	}
 
-	uint32_t flags = ANYFS_OPEN_READONLY;
-	if (use_gio) {
-#ifdef ANYFS_HAS_GIO
-		flags |= ANYFS_OPEN_GIO;
-		printf("Using GIO sync backend.\n");
-#else
-		fprintf(stderr, "GIO backend not compiled in.\n");
-		anyfs_destroy(ctx);
+	uint32_t flags = ANYFS_DISK_READONLY | backend_flag;
+	int disk_id = anyfs_disk_add(image, flags);
+	if (disk_id < 0) {
+		fprintf(stderr, "anyfs_disk_add(%s) failed\n", image);
+		anyfs_kernel_halt();
 		return 1;
-#endif
-	} else {
-		printf("Using raw (pread) backend.\n");
 	}
 
-	ret = anyfs_open_image(ctx, image, flags);
-	if (ret != ANYFS_OK) {
-		fprintf(stderr, "anyfs_open_image(%s) failed: %d\n", image,
-			ret);
-		goto out;
+	char mount_point[32];
+	long ret = lkl_mount_dev(disk_id, part, fstype, LKL_MS_RDONLY, NULL,
+				 mount_point, sizeof(mount_point));
+	if (ret) {
+		fprintf(stderr, "lkl_mount_dev failed: %ld\n", ret);
+		anyfs_disk_remove(disk_id);
+		anyfs_kernel_halt();
+		return 1;
 	}
 
-	AnyfsMount* mnt = NULL;
-	ret = anyfs_mount(ctx, fstype, part, &mnt);
-	if (ret != ANYFS_OK) {
-		fprintf(stderr, "anyfs_mount(fs=%s, part=%u) failed: %d\n",
-			fstype, part, ret);
-		goto out;
-	}
-
-	printf("Mounted %s (part=%u, fs=%s) successfully.\n", image, part,
-	       fstype);
+	printf("Mounted %s (part=%u, fs=%s) at %s\n", image, part, fstype,
+	       mount_point);
 	printf("Root directory listing:\n");
 
-	AnyfsDir* dir = anyfs_opendir(mnt, "");
-	if (!dir) {
-		fprintf(stderr, "anyfs_opendir(\"/\") failed\n");
-		goto umount;
-	}
-
-	AnyfsEntry entry;
-	while (anyfs_readdir(dir, &entry) == ANYFS_OK) {
-		const char* type_str;
-		switch (entry.type) {
-		case 4:
-			type_str = "DIR ";
-			break;
-		case 8:
-			type_str = "FILE";
-			break;
-		case 10:
-			type_str = "LINK";
-			break;
-		default:
-			type_str = "????";
-			break;
+	int err;
+	struct lkl_dir* dir = lkl_opendir(mount_point, &err);
+	if (dir) {
+		struct lkl_linux_dirent64* de;
+		while ((de = lkl_readdir(dir)) != NULL) {
+			const char* type_str;
+			switch (de->d_type) {
+			case 4:
+				type_str = "DIR ";
+				break;
+			case 8:
+				type_str = "FILE";
+				break;
+			case 10:
+				type_str = "LINK";
+				break;
+			default:
+				type_str = "????";
+				break;
+			}
+			printf("  [%s] %s (ino=%lu)\n", type_str, de->d_name,
+			       (unsigned long)de->d_ino);
 		}
-		printf("  [%s] %s (ino=%lu)\n", type_str, entry.name,
-		       (unsigned long)entry.inode);
+		lkl_closedir(dir);
 	}
-	anyfs_closedir(dir);
 
 	/* Test reading a file */
-	anyfs_fd_t fd = anyfs_open(mnt, "hello.txt", 0);
+	char fpath[256];
+	snprintf(fpath, sizeof(fpath), "%s/hello.txt", mount_point);
+	long fd = lkl_sys_open(fpath, LKL_O_RDONLY, 0);
 	if (fd >= 0) {
 		char buf[256] = {0};
-		int64_t n = anyfs_read(mnt, fd, buf, sizeof(buf) - 1);
+		long n = lkl_sys_read(fd, buf, sizeof(buf) - 1);
 		if (n > 0)
 			printf("\nhello.txt content: %s\n", buf);
-		anyfs_close(mnt, fd);
+		lkl_sys_close(fd);
 	}
 
-umount:
-	anyfs_umount(mnt);
-out:
-	anyfs_destroy(ctx);
-	return (ret == ANYFS_OK) ? 0 : 1;
+	lkl_umount_dev(disk_id, part, 0, 1000);
+	anyfs_disk_remove(disk_id);
+	anyfs_kernel_halt();
+	return 0;
 }

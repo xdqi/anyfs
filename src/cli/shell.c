@@ -1,6 +1,6 @@
 /*
  * anyfs-shell: interactive filesystem image explorer
- * Uses anyfs_api.h to mount and browse filesystem images.
+ * Uses anyfs.h for kernel/disk management, then LKL syscalls directly.
  */
 
 #include <ctype.h>
@@ -13,11 +13,24 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "anyfs_api.h"
+#include "anyfs.h"
+#include <lkl/asm-generic/fcntl.h>
+#include <lkl/linux/mount.h>
+#include <lkl/linux/stat.h>
+
+/* d_type values (same as Linux DT_*) */
+#define DT_DIR 4
+#define DT_REG 8
+#define DT_LNK 10
+
+/* LKL_SEEK_SET if not defined */
+#ifndef LKL_SEEK_SET
+#define LKL_SEEK_SET 0
+#endif
 
 /* Shell state */
-static AnyfsContext* g_ctx;
-static AnyfsMount* g_mnt;
+static int g_disk_id = -1;
+static char g_mount_point[32];
 static char g_cwd[4096] = "/";
 static char g_image_path[4096];
 static char g_fstype[64];
@@ -53,8 +66,8 @@ static int cmd_help(int argc, char** argv);
 static int cmd_quit(int argc, char** argv);
 
 static struct command commands[] = {
-    {"open", "open <image> [flags]",
-     "Open a disk image (flags: raw, gio, qemu)", cmd_open},
+    {"open", "open <image> [backend]",
+     "Open a disk image (backend: raw, gio, qemu)", cmd_open},
     {"mount", "mount <fstype> [part]",
      "Mount filesystem (e.g. ext4, xfs, btrfs)", cmd_mount},
     {"umount", "umount", "Unmount current filesystem", cmd_umount},
@@ -93,137 +106,16 @@ static void resolve_path(const char* input, char* out, size_t outlen)
 		else
 			snprintf(out, outlen, "%s/%s", g_cwd, input);
 	}
-	/* Simple normalization: remove trailing slash */
 	size_t len = strlen(out);
 	while (len > 1 && out[len - 1] == '/')
 		out[--len] = '\0';
 }
 
-/* --- Command implementations --- */
-
-static int cmd_open(int argc, char** argv)
+/* Build full LKL path: mount_point + guest_path */
+static void full_path(const char* guest_path, char* out, size_t outlen)
 {
-	if (argc < 2) {
-		fprintf(stderr, "Usage: open <image> [flags...]\n");
-		return -1;
-	}
-	if (g_mnt) {
-		fprintf(stderr, "Already mounted. Use 'umount' first.\n");
-		return -1;
-	}
-
-	uint32_t flags = ANYFS_OPEN_READONLY;
-	int explicit_backend = 0;
-	for (int i = 2; i < argc; i++) {
-		if (strcmp(argv[i], "gio") == 0) {
-			flags |= ANYFS_OPEN_GIO;
-			explicit_backend = 1;
-		} else if (strcmp(argv[i], "qemu") == 0) {
-			flags |= ANYFS_OPEN_QEMU;
-			explicit_backend = 1;
-		} else if (strcmp(argv[i], "raw") == 0) {
-			explicit_backend = 1; /* explicitly use raw */
-		}
-	}
-
-	/* Default backend: prefer QEMU if available, else raw */
-	if (!explicit_backend) {
-#ifdef ANYFS_HAS_QEMU
-		flags |= ANYFS_OPEN_QEMU;
-#endif
-	}
-
-	int32_t rc = anyfs_open_image(g_ctx, argv[1], flags);
-	if (rc != ANYFS_OK) {
-		fprintf(stderr, "Failed to open image: error %d\n", rc);
-		return -1;
-	}
-	snprintf(g_image_path, sizeof(g_image_path), "%s", argv[1]);
-	printf("Opened: %s\n", argv[1]);
-	return 0;
-}
-
-static int cmd_mount(int argc, char** argv)
-{
-	if (argc < 2) {
-		fprintf(stderr, "Usage: mount <fstype> [partition_index]\n");
-		return -1;
-	}
-	if (g_mnt) {
-		fprintf(stderr, "Already mounted. Use 'umount' first.\n");
-		return -1;
-	}
-
-	uint32_t part = 0;
-	if (argc >= 3)
-		part = (uint32_t)atoi(argv[2]);
-
-	int32_t rc = anyfs_mount(g_ctx, argv[1], part, &g_mnt);
-	if (rc != ANYFS_OK) {
-		fprintf(stderr, "Mount failed: error %d\n", rc);
-		return -1;
-	}
-	g_mounted = 1;
-	snprintf(g_fstype, sizeof(g_fstype), "%s", argv[1]);
-	strcpy(g_cwd, "/");
-	printf("Mounted %s (partition %u)\n", argv[1], part);
-	return 0;
-}
-
-static int cmd_umount(int argc, char** argv)
-{
-	(void)argc;
-	(void)argv;
-	if (!g_mnt) {
-		fprintf(stderr, "Not mounted.\n");
-		return -1;
-	}
-	anyfs_umount(g_mnt);
-	g_mnt = NULL;
-	g_mounted = 0;
-	g_fstype[0] = '\0';
-	strcpy(g_cwd, "/");
-	printf("Unmounted.\n");
-	return 0;
-}
-
-static int cmd_ls(int argc, char** argv)
-{
-	if (!g_mnt) {
-		fprintf(stderr, "Not mounted.\n");
-		return -1;
-	}
-
-	char path[4096];
-	resolve_path(argc >= 2 ? argv[1] : NULL, path, sizeof(path));
-
-	AnyfsDir* dir = anyfs_opendir(g_mnt, path);
-	if (!dir) {
-		fprintf(stderr, "Cannot open directory: %s\n", path);
-		return -1;
-	}
-
-	AnyfsEntry entry;
-	while (anyfs_readdir(dir, &entry) == ANYFS_OK) {
-		char indicator = ' ';
-		switch (entry.type) {
-		case 4:
-			indicator = '/';
-			break;
-		case 10:
-			indicator = '@';
-			break;
-		}
-		if (entry.type == 4)
-			printf("%s/\n", entry.name);
-		else if (entry.type == 10)
-			printf("%s@\n", entry.name);
-		else
-			printf("%s\n", entry.name);
-		(void)indicator;
-	}
-	anyfs_closedir(dir);
-	return 0;
+	snprintf(out, outlen, "%s%s%s", g_mount_point,
+		 (guest_path[0] == '/') ? "" : "/", guest_path);
 }
 
 static const char* human_size(uint64_t size, char* buf, size_t buflen)
@@ -239,33 +131,156 @@ static const char* human_size(uint64_t size, char* buf, size_t buflen)
 	return buf;
 }
 
-static int cmd_ll(int argc, char** argv)
+/* --- Command implementations --- */
+
+static int cmd_open(int argc, char** argv)
 {
-	if (!g_mnt) {
+	if (argc < 2) {
+		fprintf(stderr, "Usage: open <image> [backend]\n");
+		return -1;
+	}
+	if (g_disk_id >= 0) {
+		fprintf(stderr,
+			"Image already open. Use 'umount' then close.\n");
+		return -1;
+	}
+
+	uint32_t flags = ANYFS_DISK_READONLY;
+	for (int i = 2; i < argc; i++) {
+		if (strcmp(argv[i], "raw") == 0)
+			flags |= ANYFS_BACKEND_RAW;
+		else if (strcmp(argv[i], "gio") == 0)
+			flags |= ANYFS_BACKEND_GIO;
+		else if (strcmp(argv[i], "qemu") == 0)
+			flags |= ANYFS_BACKEND_QEMU;
+	}
+
+	int id = anyfs_disk_add(argv[1], flags);
+	if (id < 0) {
+		fprintf(stderr, "Failed to open image: %s\n", argv[1]);
+		return -1;
+	}
+	g_disk_id = id;
+	snprintf(g_image_path, sizeof(g_image_path), "%s", argv[1]);
+	printf("Opened: %s (disk_id=%d)\n", argv[1], id);
+	return 0;
+}
+
+static int cmd_mount(int argc, char** argv)
+{
+	if (argc < 2) {
+		fprintf(stderr, "Usage: mount <fstype> [partition_index]\n");
+		return -1;
+	}
+	if (g_mounted) {
+		fprintf(stderr, "Already mounted. Use 'umount' first.\n");
+		return -1;
+	}
+	if (g_disk_id < 0) {
+		fprintf(stderr, "No image open. Use 'open' first.\n");
+		return -1;
+	}
+
+	uint32_t part = 0;
+	if (argc >= 3)
+		part = (uint32_t)atoi(argv[2]);
+
+	const char* opts = NULL;
+	if (strcmp(argv[1], "xfs") == 0)
+		opts = "norecovery";
+
+	long ret = lkl_mount_dev(g_disk_id, part, argv[1], LKL_MS_RDONLY, opts,
+				 g_mount_point, sizeof(g_mount_point));
+	if (ret) {
+		fprintf(stderr, "Mount failed: %ld\n", ret);
+		return -1;
+	}
+	g_mounted = 1;
+	snprintf(g_fstype, sizeof(g_fstype), "%s", argv[1]);
+	strcpy(g_cwd, "/");
+	printf("Mounted %s (partition %u) at %s\n", argv[1], part,
+	       g_mount_point);
+	return 0;
+}
+
+static int cmd_umount(int argc, char** argv)
+{
+	(void)argc;
+	(void)argv;
+	if (!g_mounted) {
+		fprintf(stderr, "Not mounted.\n");
+		return -1;
+	}
+	long ret = lkl_umount_dev(g_disk_id, 0, 0, 1000);
+	if (ret)
+		fprintf(stderr, "Warning: umount returned %ld\n", ret);
+	g_mounted = 0;
+	g_fstype[0] = '\0';
+	strcpy(g_cwd, "/");
+	printf("Unmounted.\n");
+	return 0;
+}
+
+static int cmd_ls(int argc, char** argv)
+{
+	if (!g_mounted) {
 		fprintf(stderr, "Not mounted.\n");
 		return -1;
 	}
 
-	char path[4096];
-	resolve_path(argc >= 2 ? argv[1] : NULL, path, sizeof(path));
+	char gpath[4096], fpath[4096];
+	resolve_path(argc >= 2 ? argv[1] : NULL, gpath, sizeof(gpath));
+	full_path(gpath, fpath, sizeof(fpath));
 
-	AnyfsDir* dir = anyfs_opendir(g_mnt, path);
+	int err;
+	struct lkl_dir* dir = lkl_opendir(fpath, &err);
 	if (!dir) {
-		fprintf(stderr, "Cannot open directory: %s\n", path);
+		fprintf(stderr, "Cannot open directory: %s\n", gpath);
 		return -1;
 	}
 
-	AnyfsEntry entry;
-	while (anyfs_readdir(dir, &entry) == ANYFS_OK) {
+	struct lkl_linux_dirent64* de;
+	while ((de = lkl_readdir(dir)) != NULL) {
+		if (de->d_type == DT_DIR)
+			printf("%s/\n", de->d_name);
+		else if (de->d_type == DT_LNK)
+			printf("%s@\n", de->d_name);
+		else
+			printf("%s\n", de->d_name);
+	}
+	lkl_closedir(dir);
+	return 0;
+}
+
+static int cmd_ll(int argc, char** argv)
+{
+	if (!g_mounted) {
+		fprintf(stderr, "Not mounted.\n");
+		return -1;
+	}
+
+	char gpath[4096], fpath[4096];
+	resolve_path(argc >= 2 ? argv[1] : NULL, gpath, sizeof(gpath));
+	full_path(gpath, fpath, sizeof(fpath));
+
+	int err;
+	struct lkl_dir* dir = lkl_opendir(fpath, &err);
+	if (!dir) {
+		fprintf(stderr, "Cannot open directory: %s\n", gpath);
+		return -1;
+	}
+
+	struct lkl_linux_dirent64* de;
+	while ((de = lkl_readdir(dir)) != NULL) {
 		char type_ch;
-		switch (entry.type) {
-		case 4:
+		switch (de->d_type) {
+		case DT_DIR:
 			type_ch = 'd';
 			break;
-		case 8:
+		case DT_REG:
 			type_ch = '-';
 			break;
-		case 10:
+		case DT_LNK:
 			type_ch = 'l';
 			break;
 		default:
@@ -273,37 +288,27 @@ static int cmd_ll(int argc, char** argv)
 			break;
 		}
 
-		/* Get actual size for regular files */
-		uint64_t size = entry.size;
-		if (entry.type == 8 && size == 0) {
-			char full[4096];
-			if (strcmp(path, "/") == 0)
-				snprintf(full, sizeof(full), "/%s", entry.name);
-			else
-				snprintf(full, sizeof(full), "%s/%s", path,
-					 entry.name);
-			anyfs_fd_t fd = anyfs_open(g_mnt, full, 0);
-			if (fd >= 0) {
-				char rbuf[65536];
-				int64_t n;
-				while ((n = anyfs_read(g_mnt, fd, rbuf,
-						       sizeof(rbuf))) > 0)
-					size += (uint64_t)n;
-				anyfs_close(g_mnt, fd);
-			}
+		uint64_t size = 0;
+		if (de->d_type == DT_REG) {
+			char entry_path[4096];
+			snprintf(entry_path, sizeof(entry_path), "%s/%s", fpath,
+				 de->d_name);
+			struct lkl_stat st;
+			if (lkl_sys_lstat(entry_path, &st) == 0)
+				size = (uint64_t)st.st_size;
 		}
 
 		char sbuf[32];
 		human_size(size, sbuf, sizeof(sbuf));
-		printf("%c %8s %s\n", type_ch, sbuf, entry.name);
+		printf("%c %8s %s\n", type_ch, sbuf, de->d_name);
 	}
-	anyfs_closedir(dir);
+	lkl_closedir(dir);
 	return 0;
 }
 
 static int cmd_cat(int argc, char** argv)
 {
-	if (!g_mnt) {
+	if (!g_mounted) {
 		fprintf(stderr, "Not mounted.\n");
 		return -1;
 	}
@@ -312,27 +317,27 @@ static int cmd_cat(int argc, char** argv)
 		return -1;
 	}
 
-	char path[4096];
-	resolve_path(argv[1], path, sizeof(path));
+	char gpath[4096], fpath[4096];
+	resolve_path(argv[1], gpath, sizeof(gpath));
+	full_path(gpath, fpath, sizeof(fpath));
 
-	anyfs_fd_t fd = anyfs_open(g_mnt, path, 0);
+	long fd = lkl_sys_open(fpath, LKL_O_RDONLY, 0);
 	if (fd < 0) {
-		fprintf(stderr, "Cannot open: %s\n", path);
+		fprintf(stderr, "Cannot open: %s\n", gpath);
 		return -1;
 	}
 
 	char buf[4096];
-	int64_t n;
-	while ((n = anyfs_read(g_mnt, fd, buf, sizeof(buf))) > 0) {
+	long n;
+	while ((n = lkl_sys_read(fd, buf, sizeof(buf))) > 0)
 		fwrite(buf, 1, (size_t)n, stdout);
-	}
-	anyfs_close(g_mnt, fd);
+	lkl_sys_close(fd);
 	return 0;
 }
 
 static int cmd_stat(int argc, char** argv)
 {
-	if (!g_mnt) {
+	if (!g_mounted) {
 		fprintf(stderr, "Not mounted.\n");
 		return -1;
 	}
@@ -341,48 +346,45 @@ static int cmd_stat(int argc, char** argv)
 		return -1;
 	}
 
-	char path[4096];
-	resolve_path(argv[1], path, sizeof(path));
+	char gpath[4096], fpath[4096];
+	resolve_path(argv[1], gpath, sizeof(gpath));
+	full_path(gpath, fpath, sizeof(fpath));
 
-	/* Try as directory first */
-	AnyfsDir* dir = anyfs_opendir(g_mnt, path);
-	if (dir) {
-		printf("  Path: %s\n", path);
-		printf("  Type: directory\n");
-		/* Count entries */
-		AnyfsEntry entry;
-		int count = 0;
-		while (anyfs_readdir(dir, &entry) == ANYFS_OK)
-			count++;
-		printf("  Entries: %d\n", count);
-		anyfs_closedir(dir);
-		return 0;
-	}
-
-	anyfs_fd_t fd = anyfs_open(g_mnt, path, 0);
-	if (fd < 0) {
-		fprintf(stderr, "Cannot stat: %s (not found)\n", path);
+	struct lkl_stat st;
+	long ret = lkl_sys_lstat(fpath, &st);
+	if (ret < 0) {
+		fprintf(stderr, "Cannot stat: %s\n", gpath);
 		return -1;
 	}
 
-	/* Read to determine size */
-	char buf[65536];
-	int64_t total = 0, n;
-	while ((n = anyfs_read(g_mnt, fd, buf, sizeof(buf))) > 0)
-		total += n;
-	anyfs_close(g_mnt, fd);
+	const char* type = "unknown";
+	if (LKL_S_ISREG(st.st_mode))
+		type = "regular file";
+	else if (LKL_S_ISDIR(st.st_mode))
+		type = "directory";
+	else if (LKL_S_ISLNK(st.st_mode))
+		type = "symbolic link";
+	else if (LKL_S_ISBLK(st.st_mode))
+		type = "block device";
+	else if (LKL_S_ISCHR(st.st_mode))
+		type = "character device";
 
 	char sbuf[32];
-	printf("  Path: %s\n", path);
-	printf("  Type: regular file\n");
-	printf("  Size: %lld (%s)\n", (long long)total,
-	       human_size((uint64_t)total, sbuf, sizeof(sbuf)));
+	printf("  Path: %s\n", gpath);
+	printf("  Type: %s\n", type);
+	printf("  Size: %lld (%s)\n", (long long)st.st_size,
+	       human_size((uint64_t)st.st_size, sbuf, sizeof(sbuf)));
+	printf("  Inode: %llu\n", (unsigned long long)st.st_ino);
+	printf("  Links: %llu\n", (unsigned long long)st.st_nlink);
+	printf("  Mode: %04o\n", (unsigned)(st.st_mode & 07777));
+	printf("  Uid: %u  Gid: %u\n", (unsigned)st.st_uid,
+	       (unsigned)st.st_gid);
 	return 0;
 }
 
 static int cmd_hexdump(int argc, char** argv)
 {
-	if (!g_mnt) {
+	if (!g_mounted) {
 		fprintf(stderr, "Not mounted.\n");
 		return -1;
 	}
@@ -391,37 +393,27 @@ static int cmd_hexdump(int argc, char** argv)
 		return -1;
 	}
 
-	char path[4096];
-	resolve_path(argv[1], path, sizeof(path));
+	char gpath[4096], fpath[4096];
+	resolve_path(argv[1], gpath, sizeof(gpath));
+	full_path(gpath, fpath, sizeof(fpath));
 
 	int64_t offset = argc >= 3 ? atoll(argv[2]) : 0;
 	int64_t length = argc >= 4 ? atoll(argv[3]) : 256;
 
-	anyfs_fd_t fd = anyfs_open(g_mnt, path, 0);
+	long fd = lkl_sys_open(fpath, LKL_O_RDONLY, 0);
 	if (fd < 0) {
-		fprintf(stderr, "Cannot open: %s\n", path);
+		fprintf(stderr, "Cannot open: %s\n", gpath);
 		return -1;
 	}
 
-	/* Skip to offset */
-	char skip_buf[4096];
-	int64_t to_skip = offset;
-	while (to_skip > 0) {
-		int64_t chunk = to_skip > (int64_t)sizeof(skip_buf)
-				    ? (int64_t)sizeof(skip_buf)
-				    : to_skip;
-		int64_t n = anyfs_read(g_mnt, fd, skip_buf, (uint64_t)chunk);
-		if (n <= 0)
-			break;
-		to_skip -= n;
-	}
+	if (offset > 0)
+		lkl_sys_lseek(fd, offset, LKL_SEEK_SET);
 
-	/* Read and display */
 	uint8_t buf[16];
 	int64_t pos = offset;
 	while (length > 0) {
 		int64_t chunk = length > 16 ? 16 : length;
-		int64_t n = anyfs_read(g_mnt, fd, buf, (uint64_t)chunk);
+		long n = lkl_sys_read(fd, buf, (int)chunk);
 		if (n <= 0)
 			break;
 
@@ -438,13 +430,13 @@ static int cmd_hexdump(int argc, char** argv)
 		pos += n;
 		length -= n;
 	}
-	anyfs_close(g_mnt, fd);
+	lkl_sys_close(fd);
 	return 0;
 }
 
 static int cmd_head(int argc, char** argv)
 {
-	if (!g_mnt) {
+	if (!g_mounted) {
 		fprintf(stderr, "Not mounted.\n");
 		return -1;
 	}
@@ -452,44 +444,44 @@ static int cmd_head(int argc, char** argv)
 	int nlines = 10;
 	const char* filepath = NULL;
 	for (int i = 1; i < argc; i++) {
-		if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
+		if (strcmp(argv[i], "-n") == 0 && i + 1 < argc)
 			nlines = atoi(argv[++i]);
-		} else {
+		else
 			filepath = argv[i];
-		}
 	}
 	if (!filepath) {
 		fprintf(stderr, "Usage: head [-n N] <path>\n");
 		return -1;
 	}
 
-	char path[4096];
-	resolve_path(filepath, path, sizeof(path));
+	char gpath[4096], fpath[4096];
+	resolve_path(filepath, gpath, sizeof(gpath));
+	full_path(gpath, fpath, sizeof(fpath));
 
-	anyfs_fd_t fd = anyfs_open(g_mnt, path, 0);
+	long fd = lkl_sys_open(fpath, LKL_O_RDONLY, 0);
 	if (fd < 0) {
-		fprintf(stderr, "Cannot open: %s\n", path);
+		fprintf(stderr, "Cannot open: %s\n", gpath);
 		return -1;
 	}
 
 	int lines_printed = 0;
 	char buf[4096];
-	int64_t n;
+	long n;
 	while (lines_printed < nlines &&
-	       (n = anyfs_read(g_mnt, fd, buf, sizeof(buf))) > 0) {
-		for (int64_t i = 0; i < n && lines_printed < nlines; i++) {
+	       (n = lkl_sys_read(fd, buf, sizeof(buf))) > 0) {
+		for (long i = 0; i < n && lines_printed < nlines; i++) {
 			putchar(buf[i]);
 			if (buf[i] == '\n')
 				lines_printed++;
 		}
 	}
-	anyfs_close(g_mnt, fd);
+	lkl_sys_close(fd);
 	return 0;
 }
 
 static int cmd_tail(int argc, char** argv)
 {
-	if (!g_mnt) {
+	if (!g_mounted) {
 		fprintf(stderr, "Not mounted.\n");
 		return -1;
 	}
@@ -497,51 +489,50 @@ static int cmd_tail(int argc, char** argv)
 	int nlines = 10;
 	const char* filepath = NULL;
 	for (int i = 1; i < argc; i++) {
-		if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
+		if (strcmp(argv[i], "-n") == 0 && i + 1 < argc)
 			nlines = atoi(argv[++i]);
-		} else {
+		else
 			filepath = argv[i];
-		}
 	}
 	if (!filepath) {
 		fprintf(stderr, "Usage: tail [-n N] <path>\n");
 		return -1;
 	}
 
-	char path[4096];
-	resolve_path(filepath, path, sizeof(path));
+	char gpath[4096], fpath[4096];
+	resolve_path(filepath, gpath, sizeof(gpath));
+	full_path(gpath, fpath, sizeof(fpath));
 
-	anyfs_fd_t fd = anyfs_open(g_mnt, path, 0);
+	long fd = lkl_sys_open(fpath, LKL_O_RDONLY, 0);
 	if (fd < 0) {
-		fprintf(stderr, "Cannot open: %s\n", path);
+		fprintf(stderr, "Cannot open: %s\n", gpath);
 		return -1;
 	}
 
-	/* Read entire file into memory to get last N lines */
+	/* Read entire file to get last N lines */
 	size_t cap = 65536, len = 0;
 	char* data = malloc(cap);
 	if (!data) {
-		anyfs_close(g_mnt, fd);
+		lkl_sys_close(fd);
 		return -1;
 	}
 
-	int64_t n;
-	while ((n = anyfs_read(g_mnt, fd, data + len, cap - len)) > 0) {
+	long n;
+	while ((n = lkl_sys_read(fd, data + len, cap - len)) > 0) {
 		len += (size_t)n;
 		if (len >= cap) {
 			cap *= 2;
 			char* tmp = realloc(data, cap);
 			if (!tmp) {
 				free(data);
-				anyfs_close(g_mnt, fd);
+				lkl_sys_close(fd);
 				return -1;
 			}
 			data = tmp;
 		}
 	}
-	anyfs_close(g_mnt, fd);
+	lkl_sys_close(fd);
 
-	/* Find the start of the last N lines */
 	int count = 0;
 	size_t start = len;
 	while (start > 0 && count <= nlines) {
@@ -559,7 +550,7 @@ static int cmd_tail(int argc, char** argv)
 
 static int cmd_download(int argc, char** argv)
 {
-	if (!g_mnt) {
+	if (!g_mounted) {
 		fprintf(stderr, "Not mounted.\n");
 		return -1;
 	}
@@ -568,12 +559,13 @@ static int cmd_download(int argc, char** argv)
 		return -1;
 	}
 
-	char path[4096];
-	resolve_path(argv[1], path, sizeof(path));
+	char gpath[4096], fpath[4096];
+	resolve_path(argv[1], gpath, sizeof(gpath));
+	full_path(gpath, fpath, sizeof(fpath));
 
-	anyfs_fd_t fd = anyfs_open(g_mnt, path, 0);
+	long fd = lkl_sys_open(fpath, LKL_O_RDONLY, 0);
 	if (fd < 0) {
-		fprintf(stderr, "Cannot open: %s\n", path);
+		fprintf(stderr, "Cannot open: %s\n", gpath);
 		return -1;
 	}
 
@@ -581,21 +573,22 @@ static int cmd_download(int argc, char** argv)
 	if (!out) {
 		fprintf(stderr, "Cannot create local file: %s: %s\n", argv[2],
 			strerror(errno));
-		anyfs_close(g_mnt, fd);
+		lkl_sys_close(fd);
 		return -1;
 	}
 
 	char buf[65536];
-	int64_t n, total = 0;
-	while ((n = anyfs_read(g_mnt, fd, buf, sizeof(buf))) > 0) {
+	long n;
+	int64_t total = 0;
+	while ((n = lkl_sys_read(fd, buf, sizeof(buf))) > 0) {
 		fwrite(buf, 1, (size_t)n, out);
 		total += n;
 	}
 	fclose(out);
-	anyfs_close(g_mnt, fd);
+	lkl_sys_close(fd);
 
 	char sbuf[32];
-	printf("%s -> %s (%s)\n", path, argv[2],
+	printf("%s -> %s (%s)\n", gpath, argv[2],
 	       human_size((uint64_t)total, sbuf, sizeof(sbuf)));
 	return 0;
 }
@@ -604,21 +597,21 @@ static int cmd_df(int argc, char** argv)
 {
 	(void)argc;
 	(void)argv;
-	if (!g_mnt) {
+	if (!g_mounted) {
 		fprintf(stderr, "Not mounted.\n");
 		return -1;
 	}
 
-	AnyfsStatvfs st;
-	int32_t rc = anyfs_statvfs(g_mnt, &st);
-	if (rc != ANYFS_OK) {
-		fprintf(stderr, "statvfs failed: %d\n", rc);
+	struct lkl_statfs st;
+	long ret = lkl_sys_statfs(g_mount_point, &st);
+	if (ret < 0) {
+		fprintf(stderr, "statfs failed: %ld\n", ret);
 		return -1;
 	}
 
-	uint64_t total = st.f_blocks * st.f_bsize;
-	uint64_t free_b = st.f_bfree * st.f_bsize;
-	uint64_t avail = st.f_bavail * st.f_bsize;
+	uint64_t total = (uint64_t)st.f_blocks * st.f_bsize;
+	uint64_t free_b = (uint64_t)st.f_bfree * st.f_bsize;
+	uint64_t avail = (uint64_t)st.f_bavail * st.f_bsize;
 	uint64_t used = total - free_b;
 
 	printf("Filesystem: %s (%s)\n", g_image_path, g_fstype);
@@ -633,49 +626,53 @@ static int cmd_df(int argc, char** argv)
 	return 0;
 }
 
-static void find_recursive(const char* path, int depth)
+static void find_recursive(const char* fpath, const char* gpath, int depth)
 {
-	AnyfsDir* dir = anyfs_opendir(g_mnt, path);
+	int err;
+	struct lkl_dir* dir = lkl_opendir(fpath, &err);
 	if (!dir)
 		return;
 
-	AnyfsEntry entry;
-	while (anyfs_readdir(dir, &entry) == ANYFS_OK) {
-		if (strcmp(entry.name, ".") == 0 ||
-		    strcmp(entry.name, "..") == 0)
+	struct lkl_linux_dirent64* de;
+	while ((de = lkl_readdir(dir)) != NULL) {
+		if (strcmp(de->d_name, ".") == 0 ||
+		    strcmp(de->d_name, "..") == 0)
 			continue;
 
-		char full[4096];
-		if (strcmp(path, "/") == 0)
-			snprintf(full, sizeof(full), "/%s", entry.name);
+		char gfull[4096], ffull[4096];
+		if (strcmp(gpath, "/") == 0)
+			snprintf(gfull, sizeof(gfull), "/%s", de->d_name);
 		else
-			snprintf(full, sizeof(full), "%s/%s", path, entry.name);
+			snprintf(gfull, sizeof(gfull), "%s/%s", gpath,
+				 de->d_name);
+		snprintf(ffull, sizeof(ffull), "%s/%s", fpath, de->d_name);
 
-		printf("%s\n", full);
+		printf("%s\n", gfull);
 
-		if (entry.type == 4 && depth < 64) /* DT_DIR */
-			find_recursive(full, depth + 1);
+		if (de->d_type == DT_DIR && depth < 64)
+			find_recursive(ffull, gfull, depth + 1);
 	}
-	anyfs_closedir(dir);
+	lkl_closedir(dir);
 }
 
 static int cmd_find(int argc, char** argv)
 {
-	if (!g_mnt) {
+	if (!g_mounted) {
 		fprintf(stderr, "Not mounted.\n");
 		return -1;
 	}
 
-	char path[4096];
-	resolve_path(argc >= 2 ? argv[1] : NULL, path, sizeof(path));
+	char gpath[4096], fpath[4096];
+	resolve_path(argc >= 2 ? argv[1] : NULL, gpath, sizeof(gpath));
+	full_path(gpath, fpath, sizeof(fpath));
 
-	find_recursive(path, 0);
+	find_recursive(fpath, gpath, 0);
 	return 0;
 }
 
 static int cmd_cd(int argc, char** argv)
 {
-	if (!g_mnt) {
+	if (!g_mounted) {
 		fprintf(stderr, "Not mounted.\n");
 		return -1;
 	}
@@ -684,18 +681,19 @@ static int cmd_cd(int argc, char** argv)
 		return -1;
 	}
 
-	char path[4096];
-	resolve_path(argv[1], path, sizeof(path));
+	char gpath[4096], fpath[4096];
+	resolve_path(argv[1], gpath, sizeof(gpath));
+	full_path(gpath, fpath, sizeof(fpath));
 
 	/* Verify it's a directory */
-	AnyfsDir* dir = anyfs_opendir(g_mnt, path);
-	if (!dir) {
-		fprintf(stderr, "Not a directory: %s\n", path);
+	struct lkl_stat st;
+	long ret = lkl_sys_lstat(fpath, &st);
+	if (ret < 0 || !LKL_S_ISDIR(st.st_mode)) {
+		fprintf(stderr, "Not a directory: %s\n", gpath);
 		return -1;
 	}
-	anyfs_closedir(dir);
 
-	snprintf(g_cwd, sizeof(g_cwd), "%s", path);
+	snprintf(g_cwd, sizeof(g_cwd), "%s", gpath);
 	return 0;
 }
 
@@ -745,7 +743,7 @@ static int cmd_quit(int argc, char** argv)
 {
 	(void)argc;
 	(void)argv;
-	return 1; /* special: exit shell */
+	return 1;
 }
 
 /* --- Readline completion --- */
@@ -768,60 +766,58 @@ static char* command_generator(const char* text, int state)
 
 static char* path_generator(const char* text, int state)
 {
-	static AnyfsDir* dir;
-	static char dir_path[4096];
+	static struct lkl_dir* dir;
+	static char dir_fpath[4096];
 	static char prefix[4096];
 	static size_t prefix_len;
 
 	if (!state) {
-		/* Split text into directory part and basename prefix */
 		char resolved[4096];
 		resolve_path(text, resolved, sizeof(resolved));
 
-		/* Find last '/' */
+		char dir_gpath[4096];
 		char* slash = strrchr(resolved, '/');
 		if (slash == resolved) {
-			strcpy(dir_path, "/");
+			strcpy(dir_gpath, "/");
 			snprintf(prefix, sizeof(prefix), "%s", resolved + 1);
 		} else if (slash) {
 			*slash = '\0';
-			strcpy(dir_path, resolved);
+			strcpy(dir_gpath, resolved);
 			snprintf(prefix, sizeof(prefix), "%s", slash + 1);
 		} else {
-			resolve_path("", dir_path, sizeof(dir_path));
+			resolve_path("", dir_gpath, sizeof(dir_gpath));
 			snprintf(prefix, sizeof(prefix), "%s", resolved);
 		}
 		prefix_len = strlen(prefix);
 
+		full_path(dir_gpath, dir_fpath, sizeof(dir_fpath));
 		if (dir)
-			anyfs_closedir(dir);
-		dir = g_mnt ? anyfs_opendir(g_mnt, dir_path) : NULL;
+			lkl_closedir(dir);
+		int err;
+		dir = g_mounted ? lkl_opendir(dir_fpath, &err) : NULL;
 	}
 
 	if (!dir)
 		return NULL;
 
-	AnyfsEntry entry;
-	while (anyfs_readdir(dir, &entry) == ANYFS_OK) {
-		if (strcmp(entry.name, ".") == 0 ||
-		    strcmp(entry.name, "..") == 0)
+	struct lkl_linux_dirent64* de;
+	while ((de = lkl_readdir(dir)) != NULL) {
+		if (strcmp(de->d_name, ".") == 0 ||
+		    strcmp(de->d_name, "..") == 0)
 			continue;
-		if (strncmp(entry.name, prefix, prefix_len) == 0) {
-			/* Build completion string relative to input */
+		if (strncmp(de->d_name, prefix, prefix_len) == 0) {
 			char result[4096];
-			const char* input_dir = "";
 			const char* last_slash = strrchr(text, '/');
 			if (last_slash) {
 				size_t dlen = (size_t)(last_slash - text + 1);
 				snprintf(result, dlen + 1, "%s", text);
 				snprintf(result + dlen, sizeof(result) - dlen,
-					 "%s", entry.name);
+					 "%s", de->d_name);
 			} else {
 				snprintf(result, sizeof(result), "%s",
-					 entry.name);
+					 de->d_name);
 			}
-			(void)input_dir;
-			if (entry.type == 4) {
+			if (de->d_type == DT_DIR) {
 				size_t rlen = strlen(result);
 				result[rlen] = '/';
 				result[rlen + 1] = '\0';
@@ -830,7 +826,7 @@ static char* path_generator(const char* text, int state)
 		}
 	}
 
-	anyfs_closedir(dir);
+	lkl_closedir(dir);
 	dir = NULL;
 	return NULL;
 }
@@ -843,7 +839,7 @@ static char** shell_completion(const char* text, int start, int end)
 	if (start == 0)
 		return rl_completion_matches(text, command_generator);
 
-	if (g_mnt)
+	if (g_mounted)
 		return rl_completion_matches(text, path_generator);
 
 	return NULL;
@@ -895,10 +891,8 @@ static void usage(const char* prog)
 
 int main(int argc, char** argv)
 {
-	AnyfsInitOpts opts = {
-	    .size = sizeof(opts), .mem_mb = 64, .loglevel = 0};
+	AnyfsKernelOpts opts = {.mem_mb = 64, .loglevel = 0};
 
-	/* Parse options */
 	int argi = 1;
 	while (argi < argc && argv[argi][0] == '-') {
 		if (strcmp(argv[argi], "-v") == 0 ||
@@ -919,9 +913,8 @@ int main(int argc, char** argv)
 		}
 	}
 
-	int32_t rc = anyfs_init(&g_ctx, &opts);
-	if (rc != ANYFS_OK) {
-		fprintf(stderr, "anyfs_init failed: %d\n", rc);
+	if (anyfs_kernel_init(&opts) < 0) {
+		fprintf(stderr, "Kernel init failed\n");
 		return 1;
 	}
 
@@ -938,7 +931,6 @@ int main(int argc, char** argv)
 		cmd_mount(3, args_mount);
 	}
 
-	/* Setup readline */
 	rl_readline_name = "anyfs";
 	rl_attempted_completion_function = shell_completion;
 	using_history();
@@ -952,12 +944,11 @@ int main(int argc, char** argv)
 		read_history(history_file);
 	}
 
-	printf("anyfs-shell v0.1 — type 'help' for commands\n");
+	printf("anyfs-shell v0.2 — type 'help' for commands\n");
 
 	char prompt[512];
 	char* line;
 	for (;;) {
-		/* Build dynamic prompt */
 		if (g_mounted) {
 			const char* basename = strrchr(g_image_path, '/');
 			basename = basename ? basename + 1 : g_image_path;
@@ -974,7 +965,6 @@ int main(int argc, char** argv)
 		line = readline(prompt);
 		if (!line)
 			break;
-		/* Skip empty lines */
 		char* trimmed = line;
 		while (*trimmed && isspace((unsigned char)*trimmed))
 			trimmed++;
@@ -985,14 +975,12 @@ int main(int argc, char** argv)
 
 		add_history(line);
 
-		/* Shell escape */
 		if (trimmed[0] == '!') {
 			system(trimmed + 1);
 			free(line);
 			continue;
 		}
 
-		/* Parse and dispatch */
 		char* cmd_argv[64];
 		int cmd_argc = tokenize(trimmed, cmd_argv, 64);
 		if (cmd_argc == 0) {
@@ -1004,7 +992,7 @@ int main(int argc, char** argv)
 		for (struct command* c = commands; c->name; c++) {
 			if (strcmp(c->name, cmd_argv[0]) == 0) {
 				int ret = c->fn(cmd_argc, cmd_argv);
-				if (ret == 1) { /* quit */
+				if (ret == 1) {
 					free(line);
 					goto done;
 				}
@@ -1024,8 +1012,11 @@ done:
 		write_history(history_file);
 		free(history_file);
 	}
-	if (g_mnt)
-		anyfs_umount(g_mnt);
-	anyfs_destroy(g_ctx);
+	if (g_mounted) {
+		lkl_umount_dev(g_disk_id, 0, 0, 1000);
+	}
+	if (g_disk_id >= 0)
+		anyfs_disk_remove(g_disk_id);
+	anyfs_kernel_halt();
 	return 0;
 }

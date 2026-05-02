@@ -133,7 +133,7 @@ endif
 # --- Core library ---
 
 anyfs_core_sources = files(
-    'src/core/anyfs_core.c',
+    'src/core/anyfs.c',
     'src/core/raw_blk_backend.c',
 )
 
@@ -173,14 +173,14 @@ test_raw_mount = executable('test_raw_mount',
     'tests/test_raw_mount.c',
     include_directories: anyfs_inc,
     dependencies: [anyfs_dep],
-    c_args: gio_args,
+    c_args: gio_args + qemu_args,
 )
 
 bench_backends = executable('bench_backends',
     'tests/bench_backends.c',
     include_directories: anyfs_inc,
     dependencies: [anyfs_dep],
-    c_args: gio_args,
+    c_args: gio_args + qemu_args,
 )
 
 if enable_qemu
@@ -202,7 +202,7 @@ endif
 if readline_dep.found()
     anyfs_shell = executable('anyfs-shell',
         'src/cli/shell.c',
-        include_directories: anyfs_inc,
+        include_directories: [anyfs_inc, include_directories('src/core')],
         dependencies: [anyfs_dep, readline_dep],
         c_args: gio_args + qemu_args,
         install: true,

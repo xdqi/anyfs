@@ -1,269 +1,163 @@
 /*
- * Benchmark: compare latency of raw vs gio backends.
- * Each backend runs in a separate child process (LKL can only init once).
+ * bench_backends.c — Benchmark different anyfs backends (raw, qemu, gio)
  *
- * Usage: bench_backends <image> <fstype> <part> [iterations]
+ * Reads every block of a mounted filesystem image and reports throughput.
+ * Usage: bench_backends <image> <fstype> [part]
+ *
+ * Automatically tests all compiled-in backends.
  */
-#include "anyfs_api.h"
-#include <fcntl.h>
+#include "anyfs.h"
+#include <lkl/asm-generic/fcntl.h>
+#include <lkl/linux/mount.h>
+#include <lkl/linux/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
 #include <time.h>
-#include <unistd.h>
 
-static double time_diff_ms(struct timespec* start, struct timespec* end)
+struct bench_result {
+	const char* backend;
+	double elapsed_ms;
+	uint64_t bytes_read;
+};
+
+static double time_ms(void)
 {
-	double s = (double)(end->tv_sec - start->tv_sec) * 1000.0;
-	double ns = (double)(end->tv_nsec - start->tv_nsec) / 1e6;
-	return s + ns;
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
 }
 
-typedef struct {
-	const char* name;
-	uint32_t flags;
-} BackendDef;
+/* Read all files recursively under mount_point, return total bytes */
+static uint64_t read_all_files(const char* dirpath, char* buf, size_t bufsz)
+{
+	uint64_t total = 0;
+	int err;
+	struct lkl_dir* dir = lkl_opendir(dirpath, &err);
+	if (!dir)
+		return 0;
+
+	struct lkl_linux_dirent64* de;
+	while ((de = lkl_readdir(dir)) != NULL) {
+		if (strcmp(de->d_name, ".") == 0 ||
+		    strcmp(de->d_name, "..") == 0)
+			continue;
+
+		char path[4096];
+		snprintf(path, sizeof(path), "%s/%s", dirpath, de->d_name);
+
+		if (de->d_type == 8) { /* regular file */
+			long fd = lkl_sys_open(path, LKL_O_RDONLY, 0);
+			if (fd >= 0) {
+				long n;
+				while ((n = lkl_sys_read(fd, buf, bufsz)) > 0)
+					total += (uint64_t)n;
+				lkl_sys_close(fd);
+			}
+		} else if (de->d_type == 4) { /* directory */
+			total += read_all_files(path, buf, bufsz);
+		}
+	}
+	lkl_closedir(dir);
+	return total;
+}
 
 static int bench_one(const char* image, const char* fstype, uint32_t part,
-		     int iterations, const BackendDef* backend)
+		     uint32_t backend_flag, const char* backend_name,
+		     struct bench_result* result)
 {
-	struct timespec t_init_start, t_init_end;
-	struct timespec t_mount_start, t_mount_end;
-	struct timespec t_read_start, t_read_end;
-	struct timespec t_total_start, t_total_end;
+	uint32_t flags = ANYFS_DISK_READONLY | backend_flag;
+	int disk_id = anyfs_disk_add(image, flags);
+	if (disk_id < 0) {
+		fprintf(stderr, "  [%s] disk_add failed\n", backend_name);
+		return -1;
+	}
 
-	clock_gettime(CLOCK_MONOTONIC, &t_total_start);
-
-	/* Init */
-	clock_gettime(CLOCK_MONOTONIC, &t_init_start);
-	AnyfsContext* ctx = NULL;
-	int32_t ret = anyfs_init(&ctx, NULL);
-	if (ret != ANYFS_OK) {
-		fprintf(stderr, "[%s] anyfs_init failed: %d\n", backend->name,
+	char mount_point[32];
+	const char* opts = (strcmp(fstype, "xfs") == 0) ? "norecovery" : NULL;
+	long ret = lkl_mount_dev(disk_id, part, fstype, LKL_MS_RDONLY, opts,
+				 mount_point, sizeof(mount_point));
+	if (ret) {
+		fprintf(stderr, "  [%s] mount failed: %ld\n", backend_name,
 			ret);
+		anyfs_disk_remove(disk_id);
 		return -1;
 	}
 
-	ret = anyfs_open_image(ctx, image, backend->flags);
-	if (ret != ANYFS_OK) {
-		fprintf(stderr, "[%s] anyfs_open_image failed: %d\n",
-			backend->name, ret);
-		anyfs_destroy(ctx);
-		return -1;
+	char* buf = malloc(65536);
+	if (!buf) {
+		ret = -1;
+		goto umount;
 	}
-	clock_gettime(CLOCK_MONOTONIC, &t_init_end);
 
-	/* Mount */
-	clock_gettime(CLOCK_MONOTONIC, &t_mount_start);
-	AnyfsMount* mnt = NULL;
-	ret = anyfs_mount(ctx, fstype, part, &mnt);
-	if (ret != ANYFS_OK) {
-		fprintf(stderr, "[%s] mount failed: %d\n", backend->name, ret);
-		anyfs_destroy(ctx);
-		return -1;
-	}
-	clock_gettime(CLOCK_MONOTONIC, &t_mount_end);
+	double t0 = time_ms();
+	uint64_t bytes = read_all_files(mount_point, buf, 65536);
+	double t1 = time_ms();
 
-	/* Repeated read benchmark */
-	clock_gettime(CLOCK_MONOTONIC, &t_read_start);
-	char buf[4096];
-	for (int i = 0; i < iterations; i++) {
-		anyfs_fd_t fd = anyfs_open(mnt, "hello.txt", 0);
-		if (fd < 0) {
-			AnyfsDir* dir = anyfs_opendir(mnt, "");
-			if (dir) {
-				AnyfsEntry entry;
-				while (anyfs_readdir(dir, &entry) == ANYFS_OK)
-					;
-				anyfs_closedir(dir);
-			}
-			continue;
-		}
-		int64_t n = anyfs_read(mnt, fd, buf, sizeof(buf));
-		(void)n;
-		anyfs_close(mnt, fd);
-	}
-	clock_gettime(CLOCK_MONOTONIC, &t_read_end);
+	free(buf);
 
-	/* Cleanup */
-	anyfs_umount(mnt);
-	anyfs_destroy(ctx);
-	clock_gettime(CLOCK_MONOTONIC, &t_total_end);
+	result->backend = backend_name;
+	result->elapsed_ms = t1 - t0;
+	result->bytes_read = bytes;
 
-	double init_ms = time_diff_ms(&t_init_start, &t_init_end);
-	double mount_ms = time_diff_ms(&t_mount_start, &t_mount_end);
-	double read_ms = time_diff_ms(&t_read_start, &t_read_end);
-	double total_ms = time_diff_ms(&t_total_start, &t_total_end);
-
-	printf("  %-12s | init: %7.2f ms | mount: %7.2f ms | "
-	       "%d reads: %7.2f ms (%6.3f ms/op) | total: %7.2f ms\n",
-	       backend->name, init_ms, mount_ms, iterations, read_ms,
-	       read_ms / iterations, total_ms);
-	fflush(stdout);
-
-	return 0;
+umount:
+	lkl_umount_dev(disk_id, part, 0, 1000);
+	anyfs_disk_remove(disk_id);
+	return (ret == 0) ? 0 : -1;
 }
 
 int main(int argc, char** argv)
 {
-	if (argc < 4) {
-		fprintf(stderr,
-			"usage: %s <image> <fstype> <part> [iterations]\n",
-			argv[0]);
+	if (argc < 3) {
+		fprintf(stderr, "Usage: %s <image> <fstype> [part]\n", argv[0]);
 		return 1;
 	}
 
 	const char* image = argv[1];
 	const char* fstype = argv[2];
-	uint32_t part = (uint32_t)atoi(argv[3]);
-	int iterations = (argc > 4) ? atoi(argv[4]) : 100;
+	uint32_t part = argc > 3 ? (uint32_t)atoi(argv[3]) : 0;
 
-	BackendDef backends[] = {
-	    {"raw", ANYFS_OPEN_READONLY},
+	if (anyfs_kernel_init(NULL) < 0) {
+		fprintf(stderr, "kernel init failed\n");
+		return 1;
+	}
+
+	struct {
+		const char* name;
+		uint32_t flag;
+		int available;
+	} backends[] = {
+	    {"raw", ANYFS_BACKEND_RAW, 1},
+#ifdef ANYFS_HAS_QEMU
+	    {"qemu", ANYFS_BACKEND_QEMU, 1},
+#endif
 #ifdef ANYFS_HAS_GIO
-	    {"gio-sync", ANYFS_OPEN_READONLY | ANYFS_OPEN_GIO},
+	    {"gio", ANYFS_BACKEND_GIO, 1},
 #endif
 	};
 	int n_backends = sizeof(backends) / sizeof(backends[0]);
 
-	printf("Benchmark: %s (fs=%s, part=%u, iterations=%d)\n", image, fstype,
-	       part, iterations);
-	printf("%-14s | %-18s | %-18s | %-36s | %s\n", "  Backend", "Init",
-	       "Mount", "Reads", "Total");
-	printf("  "
-	       "---------------------------------------------------------------"
-	       "------------"
-	       "------------------------------\n");
-	fflush(stdout);
+	printf("Benchmarking: %s (fs=%s, part=%u)\n", image, fstype, part);
+	printf("%-8s %12s %12s %12s\n", "Backend", "Bytes", "Time(ms)", "MB/s");
+	printf("-------- ------------ ------------ ------------\n");
 
-	/* Each backend runs in a child process (LKL can only init once) */
 	for (int i = 0; i < n_backends; i++) {
-		int pipefd[2];
-		if (pipe(pipefd) < 0) {
-			perror("pipe");
-			return 1;
-		}
+		if (!backends[i].available)
+			continue;
 
-		pid_t pid = fork();
-		if (pid == 0) {
-			/* Child: suppress ALL stdout/stderr (LKL prints there)
-			 */
-			close(pipefd[0]);
-			int result_fd =
-			    pipefd[1]; /* keep pipe open for result */
-			int devnull = open("/dev/null", O_WRONLY);
-			if (devnull >= 0) {
-				dup2(devnull, STDOUT_FILENO);
-				dup2(devnull, STDERR_FILENO);
-				close(devnull);
-			}
-			/* Run benchmark (its printf goes to /dev/null) */
-			/* We capture result ourselves via result_fd */
-			struct timespec ts, te, tm1, tm2, tr1, tr2, tt1, tt2;
-			clock_gettime(CLOCK_MONOTONIC, &tt1);
-			clock_gettime(CLOCK_MONOTONIC, &ts);
-			AnyfsContext* ctx = NULL;
-			int32_t ret = anyfs_init(&ctx, NULL);
-			if (ret != ANYFS_OK) {
-				_exit(1);
-			}
-			ret = anyfs_open_image(ctx, image, backends[i].flags);
-			if (ret != ANYFS_OK) {
-				anyfs_destroy(ctx);
-				_exit(1);
-			}
-			clock_gettime(CLOCK_MONOTONIC, &te);
-
-			clock_gettime(CLOCK_MONOTONIC, &tm1);
-			AnyfsMount* mnt = NULL;
-			ret = anyfs_mount(ctx, fstype, part, &mnt);
-			if (ret != ANYFS_OK) {
-				anyfs_destroy(ctx);
-				_exit(1);
-			}
-			clock_gettime(CLOCK_MONOTONIC, &tm2);
-
-			clock_gettime(CLOCK_MONOTONIC, &tr1);
-			char buf[4096];
-			/*
-			 * Read strategy: open a large file and read sequential
-			 * 4K blocks. This ensures page cache misses (LKL has
-			 * only 64MB memory). If no large file exists, fall back
-			 * to repeated small file reads (measures page cache
-			 * path — still valid for VFS overhead).
-			 */
-			anyfs_fd_t fd = anyfs_open(mnt, "bigfile.bin", 0);
-			if (fd >= 0) {
-				/* Large file mode: sequential read, each 4K
-				 * block */
-				for (int j = 0; j < iterations; j++) {
-					int64_t n = anyfs_read(mnt, fd, buf,
-							       sizeof(buf));
-					if (n <= 0) {
-						/* EOF or error: seek back to
-						 * start */
-						anyfs_close(mnt, fd);
-						fd = anyfs_open(
-						    mnt, "bigfile.bin", 0);
-						if (fd < 0)
-							break;
-					}
-				}
-				anyfs_close(mnt, fd);
-			} else {
-				/* Small file fallback: open/read/close cycle
-				 * (page cache hits) */
-				for (int j = 0; j < iterations; j++) {
-					fd = anyfs_open(mnt, "hello.txt", 0);
-					if (fd >= 0) {
-						anyfs_read(mnt, fd, buf,
-							   sizeof(buf));
-						anyfs_close(mnt, fd);
-					}
-				}
-			}
-			clock_gettime(CLOCK_MONOTONIC, &tr2);
-
-			anyfs_umount(mnt);
-			anyfs_destroy(ctx);
-			clock_gettime(CLOCK_MONOTONIC, &tt2);
-
-			double init_ms = time_diff_ms(&ts, &te);
-			double mount_ms = time_diff_ms(&tm1, &tm2);
-			double read_ms = time_diff_ms(&tr1, &tr2);
-			double total_ms = time_diff_ms(&tt1, &tt2);
-
-			char line[256];
-			int len = snprintf(
-			    line, sizeof(line),
-			    "  %-12s | init: %7.2f ms | mount: %7.2f ms | "
-			    "%d reads: %7.2f ms (%6.3f ms/op) | total: %7.2f "
-			    "ms\n",
-			    backends[i].name, init_ms, mount_ms, iterations,
-			    read_ms, read_ms / iterations, total_ms);
-			(void)write(result_fd, line, (size_t)len);
-			close(result_fd);
-			_exit(0);
-		} else if (pid > 0) {
-			close(pipefd[1]);
-			char result[512];
-			ssize_t n = read(pipefd[0], result, sizeof(result) - 1);
-			close(pipefd[0]);
-			int status;
-			waitpid(pid, &status, 0);
-			if (n > 0) {
-				result[n] = '\0';
-				printf("%s", result);
-			} else {
-				printf("  %-12s | FAILED\n", backends[i].name);
-			}
-			fflush(stdout);
-		} else {
-			perror("fork");
-			return 1;
+		struct bench_result r = {0};
+		if (bench_one(image, fstype, part, backends[i].flag,
+			      backends[i].name, &r) == 0) {
+			double mbps = (r.elapsed_ms > 0)
+					  ? (r.bytes_read / (1024.0 * 1024.0)) /
+						(r.elapsed_ms / 1000.0)
+					  : 0;
+			printf("%-8s %12llu %12.1f %12.1f\n", r.backend,
+			       (unsigned long long)r.bytes_read, r.elapsed_ms,
+			       mbps);
 		}
 	}
 
+	anyfs_kernel_halt();
 	return 0;
 }
