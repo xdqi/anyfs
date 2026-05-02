@@ -3,8 +3,7 @@
  * Cross-platform alternative to raw pread/pwrite.
  *
  * Phase 2a: synchronous — g_seekable_seek() + g_input_stream_read() in
- * request(). Phase 3 evolution: replace with g_input_stream_read_async() +
- * GMainLoop.
+ * request(). Synchronous GIO block backend using GInputStream.
  */
 #include "gio_blk_backend.h"
 

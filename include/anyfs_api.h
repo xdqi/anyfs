@@ -36,10 +36,6 @@ typedef int64_t anyfs_fd_t;
 /* Image open flags */
 #define ANYFS_OPEN_READONLY 1
 #define ANYFS_OPEN_GIO 2 /* Use GIO backend (cross-platform, sync) */
-#define ANYFS_OPEN_GIO_ASYNC                                                   \
-	4		 /* Use GIO async backend (GMainLoop dispatch)         \
-			  */
-#define ANYFS_OPEN_AIO 8 /* Use Linux AIO + epoll backend (true async) */
 
 /* Init / destroy */
 ANYFS_API int32_t ANYFS_CALL anyfs_init(AnyfsContext** ctx_out);

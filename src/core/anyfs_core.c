@@ -1,9 +1,7 @@
 #define _GNU_SOURCE
-#include "aio_blk_backend.h"
 #include "anyfs_api.h"
 #include "raw_blk_backend.h"
 #ifdef ANYFS_HAS_GIO
-#include "gio_async_blk_backend.h"
 #include "gio_blk_backend.h"
 #endif
 
@@ -20,8 +18,6 @@
 enum backend_type {
 	BACKEND_RAW = 0,
 	BACKEND_GIO_SYNC,
-	BACKEND_GIO_ASYNC,
-	BACKEND_AIO,
 };
 
 struct AnyfsContext {
@@ -108,14 +104,7 @@ ANYFS_API void ANYFS_CALL anyfs_destroy(AnyfsContext* ctx)
 		case BACKEND_GIO_SYNC:
 			gio_blk_destroy(&ctx->disk);
 			break;
-		case BACKEND_GIO_ASYNC:
-			gio_async_blk_destroy(&ctx->disk);
-			break;
 #endif
-		case BACKEND_AIO:
-			aio_blk_teardown();
-			close(ctx->disk.fd);
-			break;
 		default:
 			raw_blk_destroy(&ctx->disk);
 			break;
@@ -139,34 +128,12 @@ ANYFS_API int32_t ANYFS_CALL anyfs_open_image(AnyfsContext* ctx,
 	int ret;
 
 #ifdef ANYFS_HAS_GIO
-	if (flags & ANYFS_OPEN_GIO_ASYNC) {
-		ret = gio_async_blk_open(image_path, readonly, &ctx->disk);
-		ctx->backend = BACKEND_GIO_ASYNC;
-	} else if (flags & ANYFS_OPEN_GIO) {
+	if (flags & ANYFS_OPEN_GIO) {
 		ret = gio_blk_open(image_path, readonly, &ctx->disk);
 		ctx->backend = BACKEND_GIO_SYNC;
 	} else
 #endif
-	    if (flags & ANYFS_OPEN_AIO) {
-		/* AIO backend uses O_DIRECT for true async I/O.
-		 * Trade-off: bypasses host page cache (slower for repeated
-		 * reads of same data during mount), but enables I/O overlap for
-		 * concurrent workloads. */
-		int open_flags = readonly ? O_RDONLY : O_RDWR;
-		open_flags |= O_DIRECT;
-		int fd = open(image_path, open_flags);
-		if (fd < 0) {
-			/* O_DIRECT may fail on some FS; fall back without it */
-			open_flags &= ~O_DIRECT;
-			fd = open(image_path, open_flags);
-		}
-		if (fd < 0)
-			return ANYFS_ERR_IO;
-		ctx->disk.fd = fd;
-		ctx->disk.ops = &aio_blk_ops;
-		ctx->backend = BACKEND_AIO;
-		ret = 0;
-	} else {
+	{
 		ret = raw_blk_open(image_path, readonly, &ctx->disk);
 		ctx->backend = BACKEND_RAW;
 	}
@@ -180,9 +147,6 @@ ANYFS_API int32_t ANYFS_CALL anyfs_open_image(AnyfsContext* ctx,
 #ifdef ANYFS_HAS_GIO
 		case BACKEND_GIO_SYNC:
 			gio_blk_destroy(&ctx->disk);
-			break;
-		case BACKEND_GIO_ASYNC:
-			gio_async_blk_destroy(&ctx->disk);
 			break;
 #endif
 		default:

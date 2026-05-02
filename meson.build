@@ -135,13 +135,11 @@ endif
 anyfs_core_sources = files(
     'src/core/anyfs_core.c',
     'src/core/raw_blk_backend.c',
-    'src/core/aio_blk_backend.c',
 )
 
 if enable_gio
     anyfs_core_sources += files(
         'src/core/gio_blk_backend.c',
-        'src/core/gio_async_blk_backend.c',
     )
 endif
 
@@ -181,20 +179,6 @@ test_raw_mount = executable('test_raw_mount',
 bench_backends = executable('bench_backends',
     'tests/bench_backends.c',
     include_directories: anyfs_inc,
-    dependencies: [anyfs_dep],
-    c_args: gio_args,
-)
-
-bench_concurrent = executable('bench_concurrent',
-    'tests/bench_concurrent.c',
-    include_directories: anyfs_inc,
-    dependencies: [anyfs_dep],
-    c_args: gio_args,
-)
-
-bench_raw_io = executable('bench_raw_io',
-    'tests/bench_raw_io.c',
-    include_directories: [anyfs_inc, include_directories('src/core')],
     dependencies: [anyfs_dep],
     c_args: gio_args,
 )

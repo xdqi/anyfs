@@ -1,8 +1,7 @@
 /*
- * QEMU Block Backend for anyfs-reader (Phase 3a: synchronous)
+ * QEMU Block Backend for anyfs-reader (synchronous)
  *
  * Uses QEMU's block layer (libblock.a) to support qcow2, vmdk, vdi, etc.
- * Calls blk_pread/blk_pwrite synchronously in the LKL request() callback.
  */
 
 #include <lkl.h>
@@ -15,7 +14,6 @@
 #include "block/block-common.h"
 #include "block/block-global-state.h"
 #include "qapi/error.h"
-#include "qemu/aio.h"
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
 #include "qemu/osdep.h"

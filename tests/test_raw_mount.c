@@ -10,33 +10,19 @@
 int main(int argc, char** argv)
 {
 	int use_gio = 0;
-	int use_gio_async = 0;
-	int use_aio = 0;
 	int argoff = 1;
 
 	if (argc > 1 && strcmp(argv[1], "--gio") == 0) {
 		use_gio = 1;
 		argoff = 2;
-	} else if (argc > 1 && strcmp(argv[1], "--gio-async") == 0) {
-		use_gio_async = 1;
-		argoff = 2;
-	} else if (argc > 1 && strcmp(argv[1], "--aio") == 0) {
-		use_aio = 1;
-		argoff = 2;
 	} else if (argc > 1 && strcmp(argv[1], "--raw") == 0) {
-		/* explicit raw — just skip the flag */
 		argoff = 2;
 	}
 
 	if (argc - argoff < 3) {
 		fprintf(stderr,
-			"usage: %s [--gio|--gio-async|--aio] <image> <fstype> "
-			"<part>\n"
-			"  --gio        use GIO sync backend\n"
-			"  --gio-async  use GIO async backend (GMainLoop "
-			"dispatch)\n"
-			"  --aio        use Linux AIO + epoll backend (true "
-			"async)\n"
+			"usage: %s [--gio] <image> <fstype> <part>\n"
+			"  --gio   use GIO sync backend\n"
 			"  part=0 for whole disk, 1+ for partition number\n",
 			argv[0]);
 		return 1;
@@ -63,18 +49,6 @@ int main(int argc, char** argv)
 		anyfs_destroy(ctx);
 		return 1;
 #endif
-	} else if (use_gio_async) {
-#ifdef ANYFS_HAS_GIO
-		flags |= ANYFS_OPEN_GIO_ASYNC;
-		printf("Using GIO async backend (GMainLoop).\n");
-#else
-		fprintf(stderr, "GIO backend not compiled in.\n");
-		anyfs_destroy(ctx);
-		return 1;
-#endif
-	} else if (use_aio) {
-		flags |= ANYFS_OPEN_AIO;
-		printf("Using Linux AIO + epoll backend (true async).\n");
 	} else {
 		printf("Using raw (pread) backend.\n");
 	}
