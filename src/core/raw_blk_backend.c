@@ -113,3 +113,9 @@ void raw_blk_destroy(struct lkl_disk* disk)
 		disk->handle = NULL;
 	}
 }
+
+const struct anyfs_backend_ops raw_backend_ops = {
+    .name = "raw",
+    .open = raw_blk_open,
+    .close = raw_blk_destroy,
+};

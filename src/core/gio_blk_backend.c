@@ -149,3 +149,9 @@ void gio_blk_destroy(struct lkl_disk* disk)
 	g_free(ctx);
 	disk->handle = NULL;
 }
+
+const struct anyfs_backend_ops gio_backend_ops = {
+    .name = "gio",
+    .open = gio_blk_open,
+    .close = gio_blk_destroy,
+};

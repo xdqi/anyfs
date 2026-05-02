@@ -4,6 +4,7 @@
  * Uses QEMU's block layer (libblock.a) to support qcow2, vmdk, vdi, etc.
  */
 
+#include "qemu_blk_backend.h"
 #include <lkl.h>
 #include <lkl_host.h>
 #include <stdio.h>
@@ -130,3 +131,9 @@ void qemu_blk_close(struct lkl_disk* disk)
 		disk->handle = NULL;
 	}
 }
+
+const struct anyfs_backend_ops qemu_backend_ops = {
+    .name = "qemu",
+    .open = qemu_blk_open,
+    .close = qemu_blk_close,
+};
