@@ -1,15 +1,99 @@
 # anyfs-reader
 
-A library for reading filesystem images (ext4, btrfs, xfs, etc.) from userspace using [LKL](https://github.com/lkl/linux) (Linux Kernel Library). Supports raw disk images and QEMU-compatible formats (qcow2, vmdk, vdi) via linked QEMU block layer.
+Read any Linux-supported filesystem from userspace — no root, no FUSE, no kernel modules.
+
+Uses [LKL](https://github.com/lkl/linux) (Linux Kernel Library) to run actual kernel filesystem code in a library. Supports raw disk images and QEMU-compatible formats (qcow2, vmdk, vdi) via linked QEMU block layer.
 
 ## Features
 
-- Mount and read any Linux-supported filesystem without root privileges
+- Mount and read ext4, btrfs, xfs, f2fs, FAT, NTFS, etc. without root
 - Multiple I/O backends:
-  - **raw** — direct `pread()` on flat disk images
-  - **gio** — GLib GIO `GInputStream` (cross-platform, synchronous)
-  - **qemu** — QEMU block layer for qcow2/vmdk/vdi/vhd images
-- Simple C API: open image → mount → read files/directories → unmount
+  - **raw** — direct `pread()`, fastest (~1.3 GB/s)
+  - **gio** — GLib GIO `GInputStream` (~1.1 GB/s)
+  - **qemu** — QEMU block layer for qcow2/vmdk/vdi/vhd (~0.8 GB/s)
+- Interactive shell (`anyfs-shell`) with guestfish-like experience
+- Minimal C API: 4 functions for kernel/disk management, then use LKL syscalls directly
+
+## Quick Start
+
+```bash
+# Build (with QEMU backend)
+meson setup builddir -Dlkl_root=$HOME/linux/tools/lkl \
+    -Denable_qemu=true \
+    -Dqemu_root=$HOME/qemu \
+    -Dqemu_build=$HOME/qemu/build-anyfs2
+ninja -C builddir
+
+# Interactive shell
+./builddir/anyfs-shell
+><anyfs> open disk.qcow2
+<disk.qcow2> mount ext4
+<disk.qcow2:ext4 /> ls
+<disk.qcow2:ext4 /> cat /etc/hostname
+<disk.qcow2:ext4 /> df
+<disk.qcow2:ext4 /> download /var/log/syslog ./syslog.txt
+
+# Or one-liner
+./builddir/anyfs-shell disk.img ext4
+```
+
+## Shell Commands
+
+| Command | Description |
+|---------|-------------|
+| `open <image> [backend]` | Open disk image (backend: raw/gio/qemu, default: qemu) |
+| `mount <fstype> [part]` | Mount filesystem |
+| `umount` | Unmount |
+| `ls [path]` | List directory |
+| `ll [path]` | Long listing with file sizes |
+| `cat <path>` | Print file contents |
+| `head [-n N] <path>` | First N lines |
+| `tail [-n N] <path>` | Last N lines |
+| `stat <path>` | File info (type, size, inode, mode, uid/gid) |
+| `hexdump <path> [off] [len]` | Hex dump |
+| `find [path]` | Recursive file listing |
+| `download <remote> <local>` | Copy file to host |
+| `df` | Filesystem disk space usage |
+| `cd <path>` | Change guest directory |
+| `pwd` | Print guest working directory |
+| `lcd <path>` | Change host directory |
+| `!<cmd>` | Shell escape (run host command) |
+
+Tab completion works for commands and guest filesystem paths.
+
+## API
+
+```c
+#include "anyfs.h"
+#include <lkl.h>
+#include <lkl/linux/stat.h>
+
+// 1. Start kernel
+anyfs_kernel_init(NULL);  // or pass AnyfsKernelOpts
+
+// 2. Add disk (auto-selects backend, or specify ANYFS_BACKEND_QEMU etc.)
+int disk_id = anyfs_disk_add("disk.qcow2", ANYFS_DISK_READONLY);
+
+// 3. Mount — use LKL directly
+char mnt[32];
+lkl_mount_dev(disk_id, 0, "ext4", LKL_MS_RDONLY, NULL, mnt, sizeof(mnt));
+
+// 4. Use LKL syscalls — full Linux VFS at your disposal
+long fd = lkl_sys_open("/mnt/.../etc/passwd", LKL_O_RDONLY, 0);
+lkl_sys_read(fd, buf, sizeof(buf));
+lkl_sys_close(fd);
+
+struct lkl_stat st;
+lkl_sys_lstat("/mnt/.../some/file", &st);
+
+struct lkl_dir *dir = lkl_opendir("/mnt/...", &err);
+// ...
+
+// 5. Cleanup
+lkl_umount_dev(disk_id, 0, 0, 1000);
+anyfs_disk_remove(disk_id);
+anyfs_kernel_halt();
+```
 
 ## Building
 
@@ -18,21 +102,19 @@ A library for reading filesystem images (ext4, btrfs, xfs, etc.) from userspace 
 - Linux (x86_64)
 - Meson ≥ 0.60, Ninja
 - Pre-built LKL (`liblkl.a`) from `linux/tools/lkl/`
-- Optional: static GLib/GIO build for the GIO backend
+- Optional: static GLib/GIO for GIO backend
 - Optional: static QEMU block libs for QEMU backend
 
-### Configure & Build
+### Build Configurations
 
 ```bash
 # Minimal (raw backend only)
 meson setup builddir -Dlkl_root=$HOME/linux/tools/lkl
 
-# With GIO backend
-meson setup builddir -Dlkl_root=$HOME/linux/tools/lkl \
-    -Dglib_root=$HOME/glib -Denable_gio=true
-
-# With QEMU backend (qcow2/vmdk/vdi support)
-meson setup builddir -Dlkl_root=$HOME/linux/tools/lkl \
+# Full (raw + GIO + QEMU)
+meson setup builddir --default-library=static \
+    -Dlkl_root=$HOME/linux/tools/lkl \
+    -Dglib_root=$HOME/glib -Denable_gio=true \
     -Denable_qemu=true \
     -Dqemu_root=$HOME/qemu \
     -Dqemu_build=$HOME/qemu/build-anyfs2
@@ -40,56 +122,28 @@ meson setup builddir -Dlkl_root=$HOME/linux/tools/lkl \
 ninja -C builddir
 ```
 
-### Testing
+## Benchmarks
 
-```bash
-# Create a test image
-dd if=/dev/zero of=/tmp/test.img bs=1M count=32
-mkfs.ext4 /tmp/test.img
-mkdir -p /tmp/mnt && sudo mount /tmp/test.img /tmp/mnt
-echo "Hello" | sudo tee /tmp/mnt/hello.txt
-sudo umount /tmp/mnt
+Reading ~150 MB of files from a 256 MB ext4 image:
 
-# Run test
-./builddir/test_raw_mount /tmp/test.img ext4 0
-```
+| Backend | Raw image | qcow2 |
+|---------|-----------|-------|
+| raw (pread) | 1295 MB/s | — |
+| gio | 1071 MB/s | — |
+| qemu | 722 MB/s | 818 MB/s |
 
-## API Overview
-
-```c
-#include "anyfs_api.h"
-
-AnyfsContext *ctx;
-AnyfsMount *mnt;
-
-anyfs_init(&ctx);
-anyfs_open_image(ctx, "disk.img", ANYFS_OPEN_READONLY);
-anyfs_mount(ctx, "ext4", 0, &mnt);
-
-// Read files
-anyfs_fd_t fd = anyfs_open(mnt, "/hello.txt", 0);
-anyfs_read(mnt, fd, buf, sizeof(buf));
-anyfs_close(mnt, fd);
-
-// List directories
-AnyfsDir *dir = anyfs_opendir(mnt, "/");
-AnyfsEntry entry;
-while (anyfs_readdir(dir, &entry) == ANYFS_OK) { ... }
-anyfs_closedir(dir);
-
-anyfs_umount(mnt);
-anyfs_destroy(ctx);
-```
+Run yourself: `./builddir/bench_backends <image> <fstype> [part]`
 
 ## Project Structure
 
 ```
-include/anyfs_api.h        — Public API header
-src/core/anyfs_core.c      — Core logic (init, mount, VFS ops)
-src/core/raw_blk_backend.c — pread-based block backend
-src/core/gio_blk_backend.c — GIO synchronous backend
-src/core/qemu_blk_backend.c — QEMU block backend
-tests/                     — Test programs and benchmarks
+include/anyfs.h              — Public API (4 functions)
+src/core/anyfs.c             — Kernel init + disk management
+src/core/raw_blk_backend.c   — pread-based block backend
+src/core/gio_blk_backend.c   — GIO synchronous backend
+src/core/qemu_blk_backend.c  — QEMU block backend bridge
+src/cli/shell.c              — Interactive shell
+tests/                       — Tests and benchmarks
 ```
 
 ## License
