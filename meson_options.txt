@@ -21,3 +21,11 @@ option('qemu_build', type: 'string',
 option('enable_qemu', type: 'boolean',
     value: false,
     description: 'Enable QEMU block backend (requires qemu_root and qemu_build)')
+
+option('enable_ksmbd', type: 'boolean',
+    value: false,
+    description: 'Enable ksmbd SMB3 server (requires ksmbd_tools_root and slirp)')
+
+option('ksmbd_tools_root', type: 'string',
+    value: '',
+    description: 'Path to ksmbd-tools source tree')

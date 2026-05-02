@@ -18,12 +18,13 @@ lkl_lib = cc.find_library('lkl',
     dirs: [lkl_root],
     static: true,
 )
-# LKL needs pthread and rt
+# LKL needs pthread, rt, and slirp (compiled into liblkl.a)
 thread_dep = dependency('threads')
 rt_dep = cc.find_library('rt', required: false)
+slirp_for_lkl = dependency('slirp', required: false)
 lkl_dep = declare_dependency(
     include_directories: lkl_inc,
-    dependencies: [lkl_lib, thread_dep, rt_dep],
+    dependencies: [lkl_lib, thread_dep, rt_dep] + (slirp_for_lkl.found() ? [slirp_for_lkl] : []),
 )
 
 # GLib/GIO (optional, from ~/glib static build)
@@ -206,5 +207,73 @@ if readline_dep.found()
         dependencies: [anyfs_dep, readline_dep],
         c_args: gio_args + qemu_args,
         install: true,
+    )
+endif
+
+# --- ksmbd SMB3 server (LKL + ksmbd-tools) ---
+enable_ksmbd = get_option('enable_ksmbd')
+if enable_ksmbd
+    ksmbd_tools_root = get_option('ksmbd_tools_root')
+    ksmbd_tools_inc = include_directories(
+        ksmbd_tools_root / 'include',
+        ksmbd_tools_root,
+    )
+
+    slirp_dep = dependency('slirp', required: true)
+    glib_sys_dep2 = dependency('glib-2.0', required: true)
+
+    # ksmbd-tools source files (no libnl dependency - we use ipc_lkl.c)
+    ksmbd_tools_sources = files(
+        ksmbd_tools_root / 'mountd/worker.c',
+        ksmbd_tools_root / 'mountd/rpc.c',
+        ksmbd_tools_root / 'mountd/rpc_srvsvc.c',
+        ksmbd_tools_root / 'mountd/rpc_wkssvc.c',
+        ksmbd_tools_root / 'mountd/rpc_samr.c',
+        ksmbd_tools_root / 'mountd/rpc_lsarpc.c',
+        ksmbd_tools_root / 'mountd/smbacl.c',
+        ksmbd_tools_root / 'tools/management/user.c',
+        ksmbd_tools_root / 'tools/management/share.c',
+        ksmbd_tools_root / 'tools/management/session.c',
+        ksmbd_tools_root / 'tools/management/tree_conn.c',
+        ksmbd_tools_root / 'tools/config_parser.c',
+    )
+
+    # tools.c compiled separately with main renamed to avoid conflict
+    ksmbd_tools_lib = static_library('ksmbd_tools_lib',
+        ksmbd_tools_root / 'tools/tools.c',
+        include_directories: [ksmbd_tools_inc],
+        dependencies: [glib_sys_dep2],
+        c_args: [
+            '-DSYSCONFDIR="/etc"',
+            '-DRUNSTATEDIR="/run"',
+            '-DHAVE_CONFIG_H',
+            '-I' + meson.current_build_dir(),
+            '-Wno-pointer-sign',
+            '-Dmain=ksmbd_tools_main_unused',
+        ],
+    )
+
+    # config.h for ksmbd-tools (no KRB5)
+    ksmbd_config = configure_file(
+        output: 'config.h',
+        configuration: configuration_data(),
+    )
+    ksmbd_config_inc = include_directories('.')
+
+    lkl_ksmbd = executable('lkl_ksmbd',
+        'src/ksmbd/lkl_ksmbd.c',
+        'src/ksmbd/ipc_lkl.c',
+        'src/ksmbd/stubs_lkl.c',
+        ksmbd_tools_sources,
+        include_directories: [anyfs_inc, ksmbd_tools_inc],
+        dependencies: [lkl_dep, slirp_dep, glib_sys_dep2],
+        link_with: [ksmbd_tools_lib, anyfs_core],
+        c_args: [
+            '-DSYSCONFDIR="/etc"',
+            '-DRUNSTATEDIR="/run"',
+            '-DHAVE_CONFIG_H',
+            '-I' + meson.current_build_dir(),
+            '-Wno-pointer-sign',
+        ],
     )
 endif
