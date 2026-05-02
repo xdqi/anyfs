@@ -45,9 +45,6 @@ static int cmd_stat(int argc, char** argv);
 static int cmd_hexdump(int argc, char** argv);
 static int cmd_find(int argc, char** argv);
 static int cmd_download(int argc, char** argv);
-static int cmd_copy_out(int argc, char** argv);
-static int cmd_checksum(int argc, char** argv);
-static int cmd_file(int argc, char** argv);
 static int cmd_df(int argc, char** argv);
 static int cmd_cd(int argc, char** argv);
 static int cmd_pwd(int argc, char** argv);
@@ -56,8 +53,8 @@ static int cmd_help(int argc, char** argv);
 static int cmd_quit(int argc, char** argv);
 
 static struct command commands[] = {
-    {"open", "open <image> [flags]", "Open a disk image (flags: ro, gio, qemu)",
-     cmd_open},
+    {"open", "open <image> [flags]",
+     "Open a disk image (flags: raw, gio, qemu)", cmd_open},
     {"mount", "mount <fstype> [part]",
      "Mount filesystem (e.g. ext4, xfs, btrfs)", cmd_mount},
     {"umount", "umount", "Unmount current filesystem", cmd_umount},
@@ -71,11 +68,6 @@ static struct command commands[] = {
     {"find", "find [path]", "Recursive file listing", cmd_find},
     {"download", "download <remote> <local>",
      "Download file to local filesystem", cmd_download},
-    {"copy-out", "copy-out <remote> <localdir>",
-     "Copy file/dir out to local directory", cmd_copy_out},
-    {"checksum", "checksum <algo> <path>",
-     "Compute checksum (md5/sha1/sha256/sha512)", cmd_checksum},
-    {"file", "file <path>", "Detect file type", cmd_file},
     {"df", "df", "Show filesystem disk space usage", cmd_df},
     {"cd", "cd <path>", "Change guest directory", cmd_cd},
     {"pwd", "pwd", "Print guest working directory", cmd_pwd},
@@ -121,21 +113,24 @@ static int cmd_open(int argc, char** argv)
 	}
 
 	uint32_t flags = ANYFS_OPEN_READONLY;
+	int explicit_backend = 0;
 	for (int i = 2; i < argc; i++) {
-		if (strcmp(argv[i], "gio") == 0)
+		if (strcmp(argv[i], "gio") == 0) {
 			flags |= ANYFS_OPEN_GIO;
-		else if (strcmp(argv[i], "qemu") == 0)
+			explicit_backend = 1;
+		} else if (strcmp(argv[i], "qemu") == 0) {
 			flags |= ANYFS_OPEN_QEMU;
+			explicit_backend = 1;
+		} else if (strcmp(argv[i], "raw") == 0) {
+			explicit_backend = 1; /* explicitly use raw */
+		}
 	}
 
-	/* Auto-detect QEMU backend from extension */
-	if (!(flags & (ANYFS_OPEN_GIO | ANYFS_OPEN_QEMU))) {
-		const char* ext = strrchr(argv[1], '.');
-		if (ext &&
-		    (strcmp(ext, ".qcow2") == 0 || strcmp(ext, ".vmdk") == 0 ||
-		     strcmp(ext, ".vdi") == 0 || strcmp(ext, ".vhdx") == 0 ||
-		     strcmp(ext, ".vpc") == 0))
-			flags |= ANYFS_OPEN_QEMU;
+	/* Default backend: prefer QEMU if available, else raw */
+	if (!explicit_backend) {
+#ifdef ANYFS_HAS_QEMU
+		flags |= ANYFS_OPEN_QEMU;
+#endif
 	}
 
 	int32_t rc = anyfs_open_image(g_ctx, argv[1], flags);
@@ -602,193 +597,6 @@ static int cmd_download(int argc, char** argv)
 	char sbuf[32];
 	printf("%s -> %s (%s)\n", path, argv[2],
 	       human_size((uint64_t)total, sbuf, sizeof(sbuf)));
-	return 0;
-}
-
-static int cmd_checksum(int argc, char** argv)
-{
-	if (!g_mnt) {
-		fprintf(stderr, "Not mounted.\n");
-		return -1;
-	}
-	if (argc < 3) {
-		fprintf(stderr, "Usage: checksum <md5|sha256> <path>\n");
-		return -1;
-	}
-
-	const char* algo = argv[1];
-	if (strcmp(algo, "md5") != 0 && strcmp(algo, "sha256") != 0 &&
-	    strcmp(algo, "sha1") != 0 && strcmp(algo, "sha512") != 0) {
-		fprintf(stderr,
-			"Supported algorithms: md5, sha1, sha256, sha512\n");
-		return -1;
-	}
-
-	char path[4096];
-	resolve_path(argv[2], path, sizeof(path));
-
-	anyfs_fd_t fd = anyfs_open(g_mnt, path, 0);
-	if (fd < 0) {
-		fprintf(stderr, "Cannot open: %s\n", path);
-		return -1;
-	}
-
-	/* Write to temp file and compute checksum using host tools */
-	char tmpfile[] = "/tmp/anyfs_cksum_XXXXXX";
-	int tmpfd = mkstemp(tmpfile);
-	if (tmpfd < 0) {
-		fprintf(stderr, "Cannot create temp file\n");
-		anyfs_close(g_mnt, fd);
-		return -1;
-	}
-
-	char buf[65536];
-	int64_t n;
-	while ((n = anyfs_read(g_mnt, fd, buf, sizeof(buf))) > 0)
-		write(tmpfd, buf, (size_t)n);
-	close(tmpfd);
-	anyfs_close(g_mnt, fd);
-
-	/* Run checksum tool */
-	char cmd[4352];
-	if (strcmp(algo, "md5") == 0)
-		snprintf(cmd, sizeof(cmd), "md5sum '%s' | awk '{print $1}'",
-			 tmpfile);
-	else if (strcmp(algo, "sha1") == 0)
-		snprintf(cmd, sizeof(cmd), "sha1sum '%s' | awk '{print $1}'",
-			 tmpfile);
-	else if (strcmp(algo, "sha256") == 0)
-		snprintf(cmd, sizeof(cmd), "sha256sum '%s' | awk '{print $1}'",
-			 tmpfile);
-	else
-		snprintf(cmd, sizeof(cmd), "sha512sum '%s' | awk '{print $1}'",
-			 tmpfile);
-
-	FILE* p = popen(cmd, "r");
-	if (p) {
-		char hash[256] = {0};
-		if (fgets(hash, sizeof(hash), p)) {
-			/* trim newline */
-			size_t hlen = strlen(hash);
-			if (hlen > 0 && hash[hlen - 1] == '\n')
-				hash[hlen - 1] = '\0';
-			printf("%s\n", hash);
-		}
-		pclose(p);
-	}
-	unlink(tmpfile);
-	return 0;
-}
-
-static int cmd_copy_out(int argc, char** argv)
-{
-	if (!g_mnt) {
-		fprintf(stderr, "Not mounted.\n");
-		return -1;
-	}
-	if (argc < 3) {
-		fprintf(stderr, "Usage: copy-out <remote> <localdir>\n");
-		return -1;
-	}
-
-	char path[4096];
-	resolve_path(argv[1], path, sizeof(path));
-
-	/* Determine local destination filename */
-	const char* basename = strrchr(path, '/');
-	basename = basename ? basename + 1 : path;
-
-	char localpath[4096];
-	snprintf(localpath, sizeof(localpath), "%s/%s", argv[2], basename);
-
-	/* Check if it's a directory — if so, recurse would be complex; just do
-	 * files */
-	AnyfsDir* dir = anyfs_opendir(g_mnt, path);
-	if (dir) {
-		anyfs_closedir(dir);
-		fprintf(stderr, "copy-out of directories not yet supported. "
-				"Use 'find' + 'download'.\n");
-		return -1;
-	}
-
-	char* dl_args[] = {"download", argv[1], localpath, NULL};
-	return cmd_download(3, dl_args);
-}
-
-static int cmd_file(int argc, char** argv)
-{
-	if (!g_mnt) {
-		fprintf(stderr, "Not mounted.\n");
-		return -1;
-	}
-	if (argc < 2) {
-		fprintf(stderr, "Usage: file <path>\n");
-		return -1;
-	}
-
-	char path[4096];
-	resolve_path(argv[1], path, sizeof(path));
-
-	/* Check directory */
-	AnyfsDir* dir = anyfs_opendir(g_mnt, path);
-	if (dir) {
-		anyfs_closedir(dir);
-		printf("%s: directory\n", path);
-		return 0;
-	}
-
-	/* Read first 256 bytes for magic detection */
-	anyfs_fd_t fd = anyfs_open(g_mnt, path, 0);
-	if (fd < 0) {
-		fprintf(stderr, "Cannot open: %s\n", path);
-		return -1;
-	}
-
-	unsigned char magic[256];
-	int64_t n = anyfs_read(g_mnt, fd, magic, sizeof(magic));
-	anyfs_close(g_mnt, fd);
-
-	if (n <= 0) {
-		printf("%s: empty\n", path);
-		return 0;
-	}
-
-	/* Simple magic detection */
-	if (n >= 4 && magic[0] == 0x7f && magic[1] == 'E' && magic[2] == 'L' &&
-	    magic[3] == 'F')
-		printf("%s: ELF executable\n", path);
-	else if (n >= 4 && magic[0] == 0x89 && magic[1] == 'P' &&
-		 magic[2] == 'N' && magic[3] == 'G')
-		printf("%s: PNG image\n", path);
-	else if (n >= 2 && magic[0] == 0xff && magic[1] == 0xd8)
-		printf("%s: JPEG image\n", path);
-	else if (n >= 4 && magic[0] == 'P' && magic[1] == 'K' &&
-		 magic[2] == 3 && magic[3] == 4)
-		printf("%s: ZIP archive\n", path);
-	else if (n >= 2 && magic[0] == 0x1f && magic[1] == 0x8b)
-		printf("%s: gzip compressed\n", path);
-	else if (n >= 6 && memcmp(magic, "#!/bin", 6) == 0)
-		printf("%s: shell script\n", path);
-	else if (n >= 2 && magic[0] == '#' && magic[1] == '!')
-		printf("%s: script\n", path);
-	else if (n >= 5 && memcmp(magic, "<?xml", 5) == 0)
-		printf("%s: XML document\n", path);
-	else if (n >= 4 && memcmp(magic, "%PDF", 4) == 0)
-		printf("%s: PDF document\n", path);
-	else {
-		/* Check if it's text */
-		int is_text = 1;
-		for (int64_t i = 0; i < n; i++) {
-			if (magic[i] == 0) {
-				is_text = 0;
-				break;
-			}
-		}
-		if (is_text)
-			printf("%s: ASCII text\n", path);
-		else
-			printf("%s: data\n", path);
-	}
 	return 0;
 }
 
