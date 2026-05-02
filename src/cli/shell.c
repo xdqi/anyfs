@@ -45,7 +45,10 @@ static int cmd_stat(int argc, char** argv);
 static int cmd_hexdump(int argc, char** argv);
 static int cmd_find(int argc, char** argv);
 static int cmd_download(int argc, char** argv);
+static int cmd_copy_out(int argc, char** argv);
 static int cmd_checksum(int argc, char** argv);
+static int cmd_file(int argc, char** argv);
+static int cmd_df(int argc, char** argv);
 static int cmd_cd(int argc, char** argv);
 static int cmd_pwd(int argc, char** argv);
 static int cmd_lcd(int argc, char** argv);
@@ -68,8 +71,12 @@ static struct command commands[] = {
     {"find", "find [path]", "Recursive file listing", cmd_find},
     {"download", "download <remote> <local>",
      "Download file to local filesystem", cmd_download},
-    {"checksum", "checksum <md5|sha256> <path>", "Compute checksum of a file",
-     cmd_checksum},
+    {"copy-out", "copy-out <remote> <localdir>",
+     "Copy file/dir out to local directory", cmd_copy_out},
+    {"checksum", "checksum <algo> <path>",
+     "Compute checksum (md5/sha1/sha256/sha512)", cmd_checksum},
+    {"file", "file <path>", "Detect file type", cmd_file},
+    {"df", "df", "Show filesystem disk space usage", cmd_df},
     {"cd", "cd <path>", "Change guest directory", cmd_cd},
     {"pwd", "pwd", "Print guest working directory", cmd_pwd},
     {"lcd", "lcd <path>", "Change local (host) directory", cmd_lcd},
@@ -670,6 +677,140 @@ static int cmd_checksum(int argc, char** argv)
 		pclose(p);
 	}
 	unlink(tmpfile);
+	return 0;
+}
+
+static int cmd_copy_out(int argc, char** argv)
+{
+	if (!g_mnt) {
+		fprintf(stderr, "Not mounted.\n");
+		return -1;
+	}
+	if (argc < 3) {
+		fprintf(stderr, "Usage: copy-out <remote> <localdir>\n");
+		return -1;
+	}
+
+	char path[4096];
+	resolve_path(argv[1], path, sizeof(path));
+
+	/* Determine local destination filename */
+	const char* basename = strrchr(path, '/');
+	basename = basename ? basename + 1 : path;
+
+	char localpath[4096];
+	snprintf(localpath, sizeof(localpath), "%s/%s", argv[2], basename);
+
+	/* Check if it's a directory — if so, recurse would be complex; just do
+	 * files */
+	AnyfsDir* dir = anyfs_opendir(g_mnt, path);
+	if (dir) {
+		anyfs_closedir(dir);
+		fprintf(stderr, "copy-out of directories not yet supported. "
+				"Use 'find' + 'download'.\n");
+		return -1;
+	}
+
+	char* dl_args[] = {"download", argv[1], localpath, NULL};
+	return cmd_download(3, dl_args);
+}
+
+static int cmd_file(int argc, char** argv)
+{
+	if (!g_mnt) {
+		fprintf(stderr, "Not mounted.\n");
+		return -1;
+	}
+	if (argc < 2) {
+		fprintf(stderr, "Usage: file <path>\n");
+		return -1;
+	}
+
+	char path[4096];
+	resolve_path(argv[1], path, sizeof(path));
+
+	/* Check directory */
+	AnyfsDir* dir = anyfs_opendir(g_mnt, path);
+	if (dir) {
+		anyfs_closedir(dir);
+		printf("%s: directory\n", path);
+		return 0;
+	}
+
+	/* Read first 256 bytes for magic detection */
+	anyfs_fd_t fd = anyfs_open(g_mnt, path, 0);
+	if (fd < 0) {
+		fprintf(stderr, "Cannot open: %s\n", path);
+		return -1;
+	}
+
+	unsigned char magic[256];
+	int64_t n = anyfs_read(g_mnt, fd, magic, sizeof(magic));
+	anyfs_close(g_mnt, fd);
+
+	if (n <= 0) {
+		printf("%s: empty\n", path);
+		return 0;
+	}
+
+	/* Simple magic detection */
+	if (n >= 4 && magic[0] == 0x7f && magic[1] == 'E' && magic[2] == 'L' &&
+	    magic[3] == 'F')
+		printf("%s: ELF executable\n", path);
+	else if (n >= 4 && magic[0] == 0x89 && magic[1] == 'P' &&
+		 magic[2] == 'N' && magic[3] == 'G')
+		printf("%s: PNG image\n", path);
+	else if (n >= 2 && magic[0] == 0xff && magic[1] == 0xd8)
+		printf("%s: JPEG image\n", path);
+	else if (n >= 4 && magic[0] == 'P' && magic[1] == 'K' &&
+		 magic[2] == 3 && magic[3] == 4)
+		printf("%s: ZIP archive\n", path);
+	else if (n >= 2 && magic[0] == 0x1f && magic[1] == 0x8b)
+		printf("%s: gzip compressed\n", path);
+	else if (n >= 6 && memcmp(magic, "#!/bin", 6) == 0)
+		printf("%s: shell script\n", path);
+	else if (n >= 2 && magic[0] == '#' && magic[1] == '!')
+		printf("%s: script\n", path);
+	else if (n >= 5 && memcmp(magic, "<?xml", 5) == 0)
+		printf("%s: XML document\n", path);
+	else if (n >= 4 && memcmp(magic, "%PDF", 4) == 0)
+		printf("%s: PDF document\n", path);
+	else {
+		/* Check if it's text */
+		int is_text = 1;
+		for (int64_t i = 0; i < n; i++) {
+			if (magic[i] == 0) {
+				is_text = 0;
+				break;
+			}
+		}
+		if (is_text)
+			printf("%s: ASCII text\n", path);
+		else
+			printf("%s: data\n", path);
+	}
+	return 0;
+}
+
+static int cmd_df(int argc, char** argv)
+{
+	(void)argc;
+	(void)argv;
+	if (!g_mnt) {
+		fprintf(stderr, "Not mounted.\n");
+		return -1;
+	}
+
+	/* Walk the entire filesystem to compute used space */
+	/* For now just report basic info from the image */
+	printf("Image:      %s\n", g_image_path);
+	printf("Filesystem: %s\n", g_fstype);
+	printf("Mounted at: %s\n", g_cwd);
+
+	/* Count files via recursive find */
+	/* Simple: just tell user we can't get statvfs without API support */
+	printf("(detailed space usage requires statvfs API — not yet "
+	       "available)\n");
 	return 0;
 }
 
