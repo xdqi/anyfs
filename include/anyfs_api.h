@@ -84,4 +84,16 @@ ANYFS_API int32_t ANYFS_CALL anyfs_readdir(AnyfsDir* dir,
 					   AnyfsEntry* entry_out);
 ANYFS_API int32_t ANYFS_CALL anyfs_closedir(AnyfsDir* dir);
 
+/* Filesystem statistics */
+typedef struct {
+	uint64_t f_bsize;  /* Filesystem block size */
+	uint64_t f_blocks; /* Total data blocks in filesystem */
+	uint64_t f_bfree;  /* Free blocks */
+	uint64_t f_bavail; /* Free blocks available to unprivileged user */
+	uint64_t f_files;  /* Total inodes */
+	uint64_t f_ffree;  /* Free inodes */
+} AnyfsStatvfs;
+
+ANYFS_API int32_t ANYFS_CALL anyfs_statvfs(AnyfsMount* mnt, AnyfsStatvfs* out);
+
 #endif /* ANYFS_API_H */

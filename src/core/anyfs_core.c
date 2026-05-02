@@ -316,3 +316,22 @@ ANYFS_API int32_t ANYFS_CALL anyfs_closedir(AnyfsDir* dir)
 	free(dir);
 	return ANYFS_OK;
 }
+
+ANYFS_API int32_t ANYFS_CALL anyfs_statvfs(AnyfsMount* mnt, AnyfsStatvfs* out)
+{
+	if (!mnt || !out)
+		return ANYFS_ERR_INVAL;
+
+	struct lkl_statfs buf;
+	long ret = lkl_sys_statfs(mnt->mount_point, &buf);
+	if (ret < 0)
+		return lkl_err_to_anyfs(ret);
+
+	out->f_bsize = buf.f_bsize;
+	out->f_blocks = buf.f_blocks;
+	out->f_bfree = buf.f_bfree;
+	out->f_bavail = buf.f_bavail;
+	out->f_files = buf.f_files;
+	out->f_ffree = buf.f_ffree;
+	return ANYFS_OK;
+}

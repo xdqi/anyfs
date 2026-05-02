@@ -609,16 +609,27 @@ static int cmd_df(int argc, char** argv)
 		return -1;
 	}
 
-	/* Walk the entire filesystem to compute used space */
-	/* For now just report basic info from the image */
-	printf("Image:      %s\n", g_image_path);
-	printf("Filesystem: %s\n", g_fstype);
-	printf("Mounted at: %s\n", g_cwd);
+	AnyfsStatvfs st;
+	int32_t rc = anyfs_statvfs(g_mnt, &st);
+	if (rc != ANYFS_OK) {
+		fprintf(stderr, "statvfs failed: %d\n", rc);
+		return -1;
+	}
 
-	/* Count files via recursive find */
-	/* Simple: just tell user we can't get statvfs without API support */
-	printf("(detailed space usage requires statvfs API — not yet "
-	       "available)\n");
+	uint64_t total = st.f_blocks * st.f_bsize;
+	uint64_t free_b = st.f_bfree * st.f_bsize;
+	uint64_t avail = st.f_bavail * st.f_bsize;
+	uint64_t used = total - free_b;
+
+	printf("Filesystem: %s (%s)\n", g_image_path, g_fstype);
+	printf("Size:       %lu MB\n", (unsigned long)(total / (1024 * 1024)));
+	printf("Used:       %lu MB\n", (unsigned long)(used / (1024 * 1024)));
+	printf("Available:  %lu MB\n", (unsigned long)(avail / (1024 * 1024)));
+	if (total > 0)
+		printf("Use%%:       %lu%%\n",
+		       (unsigned long)(used * 100 / total));
+	printf("Inodes:     %lu (free: %lu)\n", (unsigned long)st.f_files,
+	       (unsigned long)st.f_ffree);
 	return 0;
 }
 
