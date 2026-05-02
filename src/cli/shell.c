@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "anyfs_api.h"
 
@@ -35,12 +36,18 @@ static int cmd_open(int argc, char** argv);
 static int cmd_mount(int argc, char** argv);
 static int cmd_umount(int argc, char** argv);
 static int cmd_ls(int argc, char** argv);
+static int cmd_ll(int argc, char** argv);
 static int cmd_cat(int argc, char** argv);
+static int cmd_head(int argc, char** argv);
+static int cmd_tail(int argc, char** argv);
 static int cmd_stat(int argc, char** argv);
 static int cmd_hexdump(int argc, char** argv);
 static int cmd_find(int argc, char** argv);
+static int cmd_download(int argc, char** argv);
+static int cmd_checksum(int argc, char** argv);
 static int cmd_cd(int argc, char** argv);
 static int cmd_pwd(int argc, char** argv);
+static int cmd_lcd(int argc, char** argv);
 static int cmd_help(int argc, char** argv);
 static int cmd_quit(int argc, char** argv);
 
@@ -51,12 +58,20 @@ static struct command commands[] = {
      "Mount filesystem (e.g. ext4, xfs, btrfs)", cmd_mount},
     {"umount", "umount", "Unmount current filesystem", cmd_umount},
     {"ls", "ls [path]", "List directory contents", cmd_ls},
-    {"cat", "cat <path>", "Print file contents", cmd_cat},
+    {"ll", "ll [path]", "Long listing (type, size, name)", cmd_ll},
+    {"cat", "cat <path>", "Print file contents to stdout", cmd_cat},
+    {"head", "head [-n N] <path>", "Show first N lines (default 10)", cmd_head},
+    {"tail", "tail [-n N] <path>", "Show last N lines (default 10)", cmd_tail},
     {"stat", "stat <path>", "Show file information", cmd_stat},
     {"hexdump", "hexdump <path> [off] [len]", "Hex dump of file", cmd_hexdump},
     {"find", "find [path]", "Recursive file listing", cmd_find},
-    {"cd", "cd <path>", "Change working directory", cmd_cd},
-    {"pwd", "pwd", "Print working directory", cmd_pwd},
+    {"download", "download <remote> <local>",
+     "Download file to local filesystem", cmd_download},
+    {"checksum", "checksum <md5|sha256> <path>", "Compute checksum of a file",
+     cmd_checksum},
+    {"cd", "cd <path>", "Change guest directory", cmd_cd},
+    {"pwd", "pwd", "Print guest working directory", cmd_pwd},
+    {"lcd", "lcd <path>", "Change local (host) directory", cmd_lcd},
     {"help", "help [command]", "Show help", cmd_help},
     {"quit", "quit", "Exit the shell", cmd_quit},
     {"exit", "exit", "Exit the shell", cmd_quit},
@@ -185,22 +200,97 @@ static int cmd_ls(int argc, char** argv)
 
 	AnyfsEntry entry;
 	while (anyfs_readdir(dir, &entry) == ANYFS_OK) {
-		const char* type_str;
+		char indicator = ' ';
 		switch (entry.type) {
 		case 4:
-			type_str = "DIR ";
-			break;
-		case 8:
-			type_str = "FILE";
+			indicator = '/';
 			break;
 		case 10:
-			type_str = "LINK";
-			break;
-		default:
-			type_str = "??? ";
+			indicator = '@';
 			break;
 		}
-		printf("  [%s] %s\n", type_str, entry.name);
+		if (entry.type == 4)
+			printf("%s/\n", entry.name);
+		else if (entry.type == 10)
+			printf("%s@\n", entry.name);
+		else
+			printf("%s\n", entry.name);
+		(void)indicator;
+	}
+	anyfs_closedir(dir);
+	return 0;
+}
+
+static const char* human_size(uint64_t size, char* buf, size_t buflen)
+{
+	if (size < 1024)
+		snprintf(buf, buflen, "%llu", (unsigned long long)size);
+	else if (size < 1024 * 1024)
+		snprintf(buf, buflen, "%.1fK", size / 1024.0);
+	else if (size < 1024ULL * 1024 * 1024)
+		snprintf(buf, buflen, "%.1fM", size / (1024.0 * 1024));
+	else
+		snprintf(buf, buflen, "%.1fG", size / (1024.0 * 1024 * 1024));
+	return buf;
+}
+
+static int cmd_ll(int argc, char** argv)
+{
+	if (!g_mnt) {
+		fprintf(stderr, "Not mounted.\n");
+		return -1;
+	}
+
+	char path[4096];
+	resolve_path(argc >= 2 ? argv[1] : NULL, path, sizeof(path));
+
+	AnyfsDir* dir = anyfs_opendir(g_mnt, path);
+	if (!dir) {
+		fprintf(stderr, "Cannot open directory: %s\n", path);
+		return -1;
+	}
+
+	AnyfsEntry entry;
+	while (anyfs_readdir(dir, &entry) == ANYFS_OK) {
+		char type_ch;
+		switch (entry.type) {
+		case 4:
+			type_ch = 'd';
+			break;
+		case 8:
+			type_ch = '-';
+			break;
+		case 10:
+			type_ch = 'l';
+			break;
+		default:
+			type_ch = '?';
+			break;
+		}
+
+		/* Get actual size for regular files */
+		uint64_t size = entry.size;
+		if (entry.type == 8 && size == 0) {
+			char full[4096];
+			if (strcmp(path, "/") == 0)
+				snprintf(full, sizeof(full), "/%s", entry.name);
+			else
+				snprintf(full, sizeof(full), "%s/%s", path,
+					 entry.name);
+			anyfs_fd_t fd = anyfs_open(g_mnt, full, 0);
+			if (fd >= 0) {
+				char rbuf[65536];
+				int64_t n;
+				while ((n = anyfs_read(g_mnt, fd, rbuf,
+						       sizeof(rbuf))) > 0)
+					size += (uint64_t)n;
+				anyfs_close(g_mnt, fd);
+			}
+		}
+
+		char sbuf[32];
+		human_size(size, sbuf, sizeof(sbuf));
+		printf("%c %8s %s\n", type_ch, sbuf, entry.name);
 	}
 	anyfs_closedir(dir);
 	return 0;
@@ -249,10 +339,17 @@ static int cmd_stat(int argc, char** argv)
 	char path[4096];
 	resolve_path(argv[1], path, sizeof(path));
 
-	/* Use opendir to check if directory, open+read for file size */
+	/* Try as directory first */
 	AnyfsDir* dir = anyfs_opendir(g_mnt, path);
 	if (dir) {
-		printf("  %s: directory\n", path);
+		printf("  Path: %s\n", path);
+		printf("  Type: directory\n");
+		/* Count entries */
+		AnyfsEntry entry;
+		int count = 0;
+		while (anyfs_readdir(dir, &entry) == ANYFS_OK)
+			count++;
+		printf("  Entries: %d\n", count);
 		anyfs_closedir(dir);
 		return 0;
 	}
@@ -270,7 +367,11 @@ static int cmd_stat(int argc, char** argv)
 		total += n;
 	anyfs_close(g_mnt, fd);
 
-	printf("  %s: file, %lld bytes\n", path, (long long)total);
+	char sbuf[32];
+	printf("  Path: %s\n", path);
+	printf("  Type: regular file\n");
+	printf("  Size: %lld (%s)\n", (long long)total,
+	       human_size((uint64_t)total, sbuf, sizeof(sbuf)));
 	return 0;
 }
 
@@ -333,6 +434,239 @@ static int cmd_hexdump(int argc, char** argv)
 		length -= n;
 	}
 	anyfs_close(g_mnt, fd);
+	return 0;
+}
+
+static int cmd_head(int argc, char** argv)
+{
+	if (!g_mnt) {
+		fprintf(stderr, "Not mounted.\n");
+		return -1;
+	}
+
+	int nlines = 10;
+	const char* filepath = NULL;
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
+			nlines = atoi(argv[++i]);
+		} else {
+			filepath = argv[i];
+		}
+	}
+	if (!filepath) {
+		fprintf(stderr, "Usage: head [-n N] <path>\n");
+		return -1;
+	}
+
+	char path[4096];
+	resolve_path(filepath, path, sizeof(path));
+
+	anyfs_fd_t fd = anyfs_open(g_mnt, path, 0);
+	if (fd < 0) {
+		fprintf(stderr, "Cannot open: %s\n", path);
+		return -1;
+	}
+
+	int lines_printed = 0;
+	char buf[4096];
+	int64_t n;
+	while (lines_printed < nlines &&
+	       (n = anyfs_read(g_mnt, fd, buf, sizeof(buf))) > 0) {
+		for (int64_t i = 0; i < n && lines_printed < nlines; i++) {
+			putchar(buf[i]);
+			if (buf[i] == '\n')
+				lines_printed++;
+		}
+	}
+	anyfs_close(g_mnt, fd);
+	return 0;
+}
+
+static int cmd_tail(int argc, char** argv)
+{
+	if (!g_mnt) {
+		fprintf(stderr, "Not mounted.\n");
+		return -1;
+	}
+
+	int nlines = 10;
+	const char* filepath = NULL;
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
+			nlines = atoi(argv[++i]);
+		} else {
+			filepath = argv[i];
+		}
+	}
+	if (!filepath) {
+		fprintf(stderr, "Usage: tail [-n N] <path>\n");
+		return -1;
+	}
+
+	char path[4096];
+	resolve_path(filepath, path, sizeof(path));
+
+	anyfs_fd_t fd = anyfs_open(g_mnt, path, 0);
+	if (fd < 0) {
+		fprintf(stderr, "Cannot open: %s\n", path);
+		return -1;
+	}
+
+	/* Read entire file into memory to get last N lines */
+	size_t cap = 65536, len = 0;
+	char* data = malloc(cap);
+	if (!data) {
+		anyfs_close(g_mnt, fd);
+		return -1;
+	}
+
+	int64_t n;
+	while ((n = anyfs_read(g_mnt, fd, data + len, cap - len)) > 0) {
+		len += (size_t)n;
+		if (len >= cap) {
+			cap *= 2;
+			char* tmp = realloc(data, cap);
+			if (!tmp) {
+				free(data);
+				anyfs_close(g_mnt, fd);
+				return -1;
+			}
+			data = tmp;
+		}
+	}
+	anyfs_close(g_mnt, fd);
+
+	/* Find the start of the last N lines */
+	int count = 0;
+	size_t start = len;
+	while (start > 0 && count <= nlines) {
+		start--;
+		if (data[start] == '\n')
+			count++;
+	}
+	if (start > 0 || (start == 0 && count > nlines))
+		start++;
+
+	fwrite(data + start, 1, len - start, stdout);
+	free(data);
+	return 0;
+}
+
+static int cmd_download(int argc, char** argv)
+{
+	if (!g_mnt) {
+		fprintf(stderr, "Not mounted.\n");
+		return -1;
+	}
+	if (argc < 3) {
+		fprintf(stderr, "Usage: download <remote-path> <local-path>\n");
+		return -1;
+	}
+
+	char path[4096];
+	resolve_path(argv[1], path, sizeof(path));
+
+	anyfs_fd_t fd = anyfs_open(g_mnt, path, 0);
+	if (fd < 0) {
+		fprintf(stderr, "Cannot open: %s\n", path);
+		return -1;
+	}
+
+	FILE* out = fopen(argv[2], "wb");
+	if (!out) {
+		fprintf(stderr, "Cannot create local file: %s: %s\n", argv[2],
+			strerror(errno));
+		anyfs_close(g_mnt, fd);
+		return -1;
+	}
+
+	char buf[65536];
+	int64_t n, total = 0;
+	while ((n = anyfs_read(g_mnt, fd, buf, sizeof(buf))) > 0) {
+		fwrite(buf, 1, (size_t)n, out);
+		total += n;
+	}
+	fclose(out);
+	anyfs_close(g_mnt, fd);
+
+	char sbuf[32];
+	printf("%s -> %s (%s)\n", path, argv[2],
+	       human_size((uint64_t)total, sbuf, sizeof(sbuf)));
+	return 0;
+}
+
+static int cmd_checksum(int argc, char** argv)
+{
+	if (!g_mnt) {
+		fprintf(stderr, "Not mounted.\n");
+		return -1;
+	}
+	if (argc < 3) {
+		fprintf(stderr, "Usage: checksum <md5|sha256> <path>\n");
+		return -1;
+	}
+
+	const char* algo = argv[1];
+	if (strcmp(algo, "md5") != 0 && strcmp(algo, "sha256") != 0 &&
+	    strcmp(algo, "sha1") != 0 && strcmp(algo, "sha512") != 0) {
+		fprintf(stderr,
+			"Supported algorithms: md5, sha1, sha256, sha512\n");
+		return -1;
+	}
+
+	char path[4096];
+	resolve_path(argv[2], path, sizeof(path));
+
+	anyfs_fd_t fd = anyfs_open(g_mnt, path, 0);
+	if (fd < 0) {
+		fprintf(stderr, "Cannot open: %s\n", path);
+		return -1;
+	}
+
+	/* Write to temp file and compute checksum using host tools */
+	char tmpfile[] = "/tmp/anyfs_cksum_XXXXXX";
+	int tmpfd = mkstemp(tmpfile);
+	if (tmpfd < 0) {
+		fprintf(stderr, "Cannot create temp file\n");
+		anyfs_close(g_mnt, fd);
+		return -1;
+	}
+
+	char buf[65536];
+	int64_t n;
+	while ((n = anyfs_read(g_mnt, fd, buf, sizeof(buf))) > 0)
+		write(tmpfd, buf, (size_t)n);
+	close(tmpfd);
+	anyfs_close(g_mnt, fd);
+
+	/* Run checksum tool */
+	char cmd[4352];
+	if (strcmp(algo, "md5") == 0)
+		snprintf(cmd, sizeof(cmd), "md5sum '%s' | awk '{print $1}'",
+			 tmpfile);
+	else if (strcmp(algo, "sha1") == 0)
+		snprintf(cmd, sizeof(cmd), "sha1sum '%s' | awk '{print $1}'",
+			 tmpfile);
+	else if (strcmp(algo, "sha256") == 0)
+		snprintf(cmd, sizeof(cmd), "sha256sum '%s' | awk '{print $1}'",
+			 tmpfile);
+	else
+		snprintf(cmd, sizeof(cmd), "sha512sum '%s' | awk '{print $1}'",
+			 tmpfile);
+
+	FILE* p = popen(cmd, "r");
+	if (p) {
+		char hash[256] = {0};
+		if (fgets(hash, sizeof(hash), p)) {
+			/* trim newline */
+			size_t hlen = strlen(hash);
+			if (hlen > 0 && hash[hlen - 1] == '\n')
+				hash[hlen - 1] = '\0';
+			printf("%s\n", hash);
+		}
+		pclose(p);
+	}
+	unlink(tmpfile);
 	return 0;
 }
 
@@ -399,6 +733,22 @@ static int cmd_cd(int argc, char** argv)
 	anyfs_closedir(dir);
 
 	snprintf(g_cwd, sizeof(g_cwd), "%s", path);
+	return 0;
+}
+
+static int cmd_lcd(int argc, char** argv)
+{
+	if (argc < 2) {
+		fprintf(stderr, "Usage: lcd <path>\n");
+		return -1;
+	}
+	if (chdir(argv[1]) < 0) {
+		fprintf(stderr, "lcd: %s: %s\n", argv[1], strerror(errno));
+		return -1;
+	}
+	char cwd[4096];
+	if (getcwd(cwd, sizeof(cwd)))
+		printf("%s\n", cwd);
 	return 0;
 }
 
