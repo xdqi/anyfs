@@ -33,7 +33,7 @@ int main(int argc, char** argv)
 	uint32_t part = (uint32_t)atoi(argv[argoff + 2]);
 
 	AnyfsContext* ctx = NULL;
-	int32_t ret = anyfs_init(&ctx);
+	int32_t ret = anyfs_init(&ctx, NULL);
 	if (ret != ANYFS_OK) {
 		fprintf(stderr, "anyfs_init failed: %d\n", ret);
 		return 1;

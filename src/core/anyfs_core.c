@@ -1,8 +1,12 @@
 #define _GNU_SOURCE
 #include "anyfs_api.h"
+#include "anyfs_backend.h"
 #include "raw_blk_backend.h"
 #ifdef ANYFS_HAS_GIO
 #include "gio_blk_backend.h"
+#endif
+#ifdef ANYFS_HAS_QEMU
+#include "qemu_blk_backend.h"
 #endif
 
 #include <fcntl.h>
@@ -13,17 +17,30 @@
 #include <string.h>
 #include <unistd.h>
 
-/* Internal structures (hidden from public API) */
+/* Backend registry */
+const struct anyfs_backend_ops* anyfs_backends[ANYFS_MAX_BACKENDS];
+int anyfs_backend_count;
 
-enum backend_type {
-	BACKEND_RAW = 0,
-	BACKEND_GIO_SYNC,
-};
+void anyfs_register_backend(const struct anyfs_backend_ops* ops)
+{
+	if (anyfs_backend_count < ANYFS_MAX_BACKENDS)
+		anyfs_backends[anyfs_backend_count++] = ops;
+}
+
+const struct anyfs_backend_ops* anyfs_find_backend(const char* name)
+{
+	for (int i = 0; i < anyfs_backend_count; i++)
+		if (strcmp(anyfs_backends[i]->name, name) == 0)
+			return anyfs_backends[i];
+	return NULL;
+}
+
+/* Internal structures */
 
 struct AnyfsContext {
 	int initialized;
 	int disk_id;
-	enum backend_type backend;
+	const struct anyfs_backend_ops* backend;
 	struct lkl_disk disk;
 };
 
@@ -66,10 +83,28 @@ static int32_t lkl_err_to_anyfs(long err)
 	}
 }
 
-ANYFS_API int32_t ANYFS_CALL anyfs_init(AnyfsContext** ctx_out)
+ANYFS_API int32_t ANYFS_CALL anyfs_init(AnyfsContext** ctx_out,
+					const AnyfsInitOpts* opts)
 {
 	if (!ctx_out)
 		return ANYFS_ERR_INVAL;
+
+	uint32_t mem_mb = 64;
+	uint32_t loglevel = 0;
+	if (opts) {
+		if (opts->mem_mb)
+			mem_mb = opts->mem_mb;
+		loglevel = opts->loglevel;
+	}
+
+	/* Register built-in backends */
+	anyfs_register_backend(&raw_backend_ops);
+#ifdef ANYFS_HAS_GIO
+	anyfs_register_backend(&gio_backend_ops);
+#endif
+#ifdef ANYFS_HAS_QEMU
+	anyfs_register_backend(&qemu_backend_ops);
+#endif
 
 	AnyfsContext* ctx = calloc(1, sizeof(*ctx));
 	if (!ctx)
@@ -81,7 +116,10 @@ ANYFS_API int32_t ANYFS_CALL anyfs_init(AnyfsContext** ctx_out)
 		return ANYFS_ERR_IO;
 	}
 
-	ret = lkl_start_kernel("mem=64M");
+	char boot_args[128];
+	snprintf(boot_args, sizeof(boot_args), "mem=%uM loglevel=%u", mem_mb,
+		 loglevel);
+	ret = lkl_start_kernel(boot_args);
 	if (ret) {
 		free(ctx);
 		return ANYFS_ERR_IO;
@@ -99,16 +137,7 @@ ANYFS_API void ANYFS_CALL anyfs_destroy(AnyfsContext* ctx)
 		return;
 	if (ctx->disk_id >= 0) {
 		lkl_disk_remove(ctx->disk);
-		switch (ctx->backend) {
-#ifdef ANYFS_HAS_GIO
-		case BACKEND_GIO_SYNC:
-			gio_blk_destroy(&ctx->disk);
-			break;
-#endif
-		default:
-			raw_blk_destroy(&ctx->disk);
-			break;
-		}
+		ctx->backend->close(&ctx->disk);
 	}
 	if (ctx->initialized)
 		lkl_sys_halt();
@@ -127,32 +156,29 @@ ANYFS_API int32_t ANYFS_CALL anyfs_open_image(AnyfsContext* ctx,
 	int readonly = (flags & ANYFS_OPEN_READONLY) ? 1 : 0;
 	int ret;
 
-#ifdef ANYFS_HAS_GIO
-	if (flags & ANYFS_OPEN_GIO) {
-		ret = gio_blk_open(image_path, readonly, &ctx->disk);
-		ctx->backend = BACKEND_GIO_SYNC;
-	} else
+	/* Select backend */
+	const struct anyfs_backend_ops* ops = &raw_backend_ops;
+#ifdef ANYFS_HAS_QEMU
+	if (flags & ANYFS_OPEN_QEMU)
+		ops = &qemu_backend_ops;
+	else
 #endif
-	{
-		ret = raw_blk_open(image_path, readonly, &ctx->disk);
-		ctx->backend = BACKEND_RAW;
+#ifdef ANYFS_HAS_GIO
+	    if (flags & ANYFS_OPEN_GIO)
+		ops = &gio_backend_ops;
+	else
+#endif
+	{ /* raw */
 	}
 
+	ret = ops->open(image_path, readonly, &ctx->disk);
 	if (ret < 0)
 		return ANYFS_ERR_IO;
 
+	ctx->backend = ops;
 	ctx->disk_id = lkl_disk_add(&ctx->disk);
 	if (ctx->disk_id < 0) {
-		switch (ctx->backend) {
-#ifdef ANYFS_HAS_GIO
-		case BACKEND_GIO_SYNC:
-			gio_blk_destroy(&ctx->disk);
-			break;
-#endif
-		default:
-			raw_blk_destroy(&ctx->disk);
-			break;
-		}
+		ops->close(&ctx->disk);
 		return ANYFS_ERR_IO;
 	}
 	return ANYFS_OK;

@@ -38,7 +38,7 @@ static int bench_one(const char* image, const char* fstype, uint32_t part,
 	/* Init */
 	clock_gettime(CLOCK_MONOTONIC, &t_init_start);
 	AnyfsContext* ctx = NULL;
-	int32_t ret = anyfs_init(&ctx);
+	int32_t ret = anyfs_init(&ctx, NULL);
 	if (ret != ANYFS_OK) {
 		fprintf(stderr, "[%s] anyfs_init failed: %d\n", backend->name,
 			ret);
@@ -164,7 +164,7 @@ int main(int argc, char** argv)
 			clock_gettime(CLOCK_MONOTONIC, &tt1);
 			clock_gettime(CLOCK_MONOTONIC, &ts);
 			AnyfsContext* ctx = NULL;
-			int32_t ret = anyfs_init(&ctx);
+			int32_t ret = anyfs_init(&ctx, NULL);
 			if (ret != ANYFS_OK) {
 				_exit(1);
 			}

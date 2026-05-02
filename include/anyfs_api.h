@@ -35,10 +35,19 @@ typedef int64_t anyfs_fd_t;
 
 /* Image open flags */
 #define ANYFS_OPEN_READONLY 1
-#define ANYFS_OPEN_GIO 2 /* Use GIO backend (cross-platform, sync) */
+#define ANYFS_OPEN_GIO 2  /* Use GIO backend (cross-platform, sync) */
+#define ANYFS_OPEN_QEMU 4 /* Use QEMU backend (qcow2/vmdk/vdi) */
+
+/* Init options (pass NULL for defaults) */
+typedef struct {
+	uint32_t size;	   /* sizeof(AnyfsInitOpts), for forward compat */
+	uint32_t mem_mb;   /* LKL kernel memory in MB (default: 64) */
+	uint32_t loglevel; /* Kernel log level 0-7 (default: 0 = silent) */
+} AnyfsInitOpts;
 
 /* Init / destroy */
-ANYFS_API int32_t ANYFS_CALL anyfs_init(AnyfsContext** ctx_out);
+ANYFS_API int32_t ANYFS_CALL anyfs_init(AnyfsContext** ctx_out,
+					const AnyfsInitOpts* opts);
 ANYFS_API void ANYFS_CALL anyfs_destroy(AnyfsContext* ctx);
 
 /* Image operations */
