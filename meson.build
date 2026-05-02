@@ -191,3 +191,20 @@ if enable_qemu
         c_args: qemu_args,
     )
 endif
+
+# --- CLI Shell ---
+
+readline_dep = dependency('readline', required: false)
+if not readline_dep.found()
+    readline_dep = cc.find_library('readline', required: false)
+endif
+
+if readline_dep.found()
+    anyfs_shell = executable('anyfs-shell',
+        'src/cli/shell.c',
+        include_directories: anyfs_inc,
+        dependencies: [anyfs_dep, readline_dep],
+        c_args: gio_args + qemu_args,
+        install: true,
+    )
+endif
