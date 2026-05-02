@@ -71,6 +71,10 @@ int anyfs_umount(const char* name);
 /* Remount an existing mount as read-only. */
 int anyfs_remount_ro(const char* name);
 
+/* Get the number of partitions on a disk.
+ * Returns partition count (0 = no partition table, use whole disk). */
+int anyfs_disk_partitions(int disk_id);
+
 #ifdef __cplusplus
 }
 #endif

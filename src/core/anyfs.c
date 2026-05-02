@@ -331,3 +331,17 @@ int anyfs_remount_ro(const char* name)
 	return lkl_sys_mount("", mnt, NULL, LKL_MS_REMOUNT | LKL_MS_RDONLY,
 			     NULL);
 }
+
+int anyfs_disk_partitions(int disk_id)
+{
+	int count = 0;
+	uint32_t dev;
+
+	/* Try partition numbers 1..128 until one fails */
+	for (unsigned int p = 1; p <= 128; p++) {
+		if (lkl_get_virtio_blkdev(disk_id, p, &dev) < 0)
+			break;
+		count++;
+	}
+	return count;
+}
