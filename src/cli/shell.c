@@ -20,6 +20,7 @@ static AnyfsContext* g_ctx;
 static AnyfsMount* g_mnt;
 static char g_cwd[4096] = "/";
 static char g_image_path[4096];
+static char g_fstype[64];
 static int g_mounted;
 
 /* Forward declarations */
@@ -161,6 +162,7 @@ static int cmd_mount(int argc, char** argv)
 		return -1;
 	}
 	g_mounted = 1;
+	snprintf(g_fstype, sizeof(g_fstype), "%s", argv[1]);
 	strcpy(g_cwd, "/");
 	printf("Mounted %s (partition %u)\n", argv[1], part);
 	return 0;
@@ -177,6 +179,7 @@ static int cmd_umount(int argc, char** argv)
 	anyfs_umount(g_mnt);
 	g_mnt = NULL;
 	g_mounted = 0;
+	g_fstype[0] = '\0';
 	strcpy(g_cwd, "/");
 	printf("Unmounted.\n");
 	return 0;
@@ -991,9 +994,26 @@ int main(int argc, char** argv)
 
 	printf("anyfs-shell v0.1 — type 'help' for commands\n");
 
+	char prompt[512];
 	char* line;
-	while ((line = readline(g_mounted ? "anyfs> " : "anyfs[no mount]> ")) !=
-	       NULL) {
+	for (;;) {
+		/* Build dynamic prompt */
+		if (g_mounted) {
+			const char* basename = strrchr(g_image_path, '/');
+			basename = basename ? basename + 1 : g_image_path;
+			snprintf(prompt, sizeof(prompt), "<%s:%s %s> ",
+				 basename, g_fstype, g_cwd);
+		} else if (g_image_path[0]) {
+			const char* basename = strrchr(g_image_path, '/');
+			basename = basename ? basename + 1 : g_image_path;
+			snprintf(prompt, sizeof(prompt), "<%s> ", basename);
+		} else {
+			snprintf(prompt, sizeof(prompt), "><anyfs> ");
+		}
+
+		line = readline(prompt);
+		if (!line)
+			break;
 		/* Skip empty lines */
 		char* trimmed = line;
 		while (*trimmed && isspace((unsigned char)*trimmed))
