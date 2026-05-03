@@ -1631,6 +1631,230 @@ static void print_usage(const char* prog)
 		prog);
 }
 
+/* ── Startup Dialog ───────────────────────────────────────────── */
+
+typedef struct {
+	GtkWidget* dialog;
+	GtkWidget* file_chooser;
+	GtkWidget* readonly_check;
+	GtkWidget* partition_combo;
+	GtkListStore* part_store;
+	GtkWidget* partition_box; /* container for partition row */
+	int current_disk_id;	  /* temp disk for probing */
+} StartupDialog;
+
+static void startup_update_partitions(StartupDialog* sd, const char* path)
+{
+	/* Clear old entries */
+	gtk_list_store_clear(sd->part_store);
+	if (sd->current_disk_id >= 0) {
+		anyfs_disk_remove(sd->current_disk_id);
+		sd->current_disk_id = -1;
+	}
+
+	if (!path || !path[0]) {
+		gtk_widget_set_sensitive(sd->partition_box, FALSE);
+		return;
+	}
+
+	/* Add disk to probe partitions */
+	uint32_t flags = ANYFS_DISK_READONLY;
+#ifdef ANYFS_HAS_QEMU
+	const char* ext = strrchr(path, '.');
+	if (ext &&
+	    (strcasecmp(ext, ".qcow2") == 0 || strcasecmp(ext, ".vmdk") == 0 ||
+	     strcasecmp(ext, ".vdi") == 0 || strcasecmp(ext, ".vhd") == 0 ||
+	     strcasecmp(ext, ".vhdx") == 0))
+		flags |= ANYFS_BACKEND_QEMU;
+#endif
+	sd->current_disk_id = anyfs_disk_add(path, flags);
+	if (sd->current_disk_id < 0) {
+		gtk_widget_set_sensitive(sd->partition_box, FALSE);
+		return;
+	}
+
+	int nparts = anyfs_disk_partitions(sd->current_disk_id);
+	GtkTreeIter iter;
+
+	/* Always add "Whole Disk" option */
+	gtk_list_store_append(sd->part_store, &iter);
+	gtk_list_store_set(sd->part_store, &iter, 0, 0, 1, "Whole Disk", -1);
+
+	/* Add individual partitions */
+	for (int i = 1; i <= nparts; i++) {
+		AnyfsMount probe;
+		int ret = anyfs_mount(sd->current_disk_id, i, NULL, "probe",
+				      ANYFS_MOUNT_RDONLY, &probe);
+		char label[128];
+		if (ret == 0) {
+			struct lkl_statfs sfs;
+			char size_str[32] = "";
+			if (lkl_sys_statfs(probe.mount_point, &sfs) == 0) {
+				long long total =
+				    (long long)sfs.f_blocks * sfs.f_bsize;
+				format_size(total, size_str, sizeof(size_str));
+			}
+			snprintf(label, sizeof(label), "Partition %d (%s, %s)",
+				 i, probe.fstype, size_str);
+			anyfs_umount("probe");
+		} else {
+			snprintf(label, sizeof(label), "Partition %d", i);
+		}
+		gtk_list_store_append(sd->part_store, &iter);
+		gtk_list_store_set(sd->part_store, &iter, 0, i, 1, label, -1);
+	}
+
+	gtk_widget_set_sensitive(sd->partition_box, TRUE);
+
+	/* Auto-select: if 1 partition, select it; otherwise "Whole Disk" */
+	if (nparts == 1)
+		gtk_combo_box_set_active(GTK_COMBO_BOX(sd->partition_combo), 1);
+	else
+		gtk_combo_box_set_active(GTK_COMBO_BOX(sd->partition_combo), 0);
+
+	/* Cleanup the probe disk — will re-add properly on Open */
+	anyfs_disk_remove(sd->current_disk_id);
+	sd->current_disk_id = -1;
+}
+
+static void on_file_set(GtkFileChooserButton* btn, gpointer data)
+{
+	StartupDialog* sd = data;
+	char* path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(btn));
+	startup_update_partitions(sd, path);
+	g_free(path);
+}
+
+/*
+ * Show the startup dialog. Returns TRUE if user chose to open,
+ * filling out image_path, writable, partition. Returns FALSE on cancel.
+ */
+static gboolean show_startup_dialog(char** out_path, gboolean* out_writable,
+				    int* out_partition)
+{
+	StartupDialog sd = {.current_disk_id = -1};
+
+	sd.dialog = gtk_dialog_new_with_buttons(
+	    "AnyFS — Open Disk Image", NULL, GTK_DIALOG_MODAL, "_Cancel",
+	    GTK_RESPONSE_CANCEL, "_Open", GTK_RESPONSE_ACCEPT, NULL);
+	gtk_window_set_default_size(GTK_WINDOW(sd.dialog), 480, -1);
+	gtk_dialog_set_default_response(GTK_DIALOG(sd.dialog),
+					GTK_RESPONSE_ACCEPT);
+
+	GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(sd.dialog));
+	gtk_container_set_border_width(GTK_CONTAINER(content), 12);
+
+	GtkWidget* grid = gtk_grid_new();
+	gtk_grid_set_row_spacing(GTK_GRID(grid), 8);
+	gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
+	gtk_box_pack_start(GTK_BOX(content), grid, TRUE, TRUE, 0);
+
+	/* Row 0: File chooser */
+	GtkWidget* lbl_file = gtk_label_new("Disk Image:");
+	gtk_widget_set_halign(lbl_file, GTK_ALIGN_END);
+	gtk_grid_attach(GTK_GRID(grid), lbl_file, 0, 0, 1, 1);
+
+	sd.file_chooser = gtk_file_chooser_button_new(
+	    "Select Disk Image", GTK_FILE_CHOOSER_ACTION_OPEN);
+	GtkFileFilter* filter = gtk_file_filter_new();
+	gtk_file_filter_set_name(filter, "Disk Images");
+	gtk_file_filter_add_pattern(filter, "*.img");
+	gtk_file_filter_add_pattern(filter, "*.raw");
+	gtk_file_filter_add_pattern(filter, "*.qcow2");
+	gtk_file_filter_add_pattern(filter, "*.vmdk");
+	gtk_file_filter_add_pattern(filter, "*.vdi");
+	gtk_file_filter_add_pattern(filter, "*.vhd");
+	gtk_file_filter_add_pattern(filter, "*.vhdx");
+	gtk_file_filter_add_pattern(filter, "*.iso");
+	gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(sd.file_chooser), filter);
+	GtkFileFilter* all_filter = gtk_file_filter_new();
+	gtk_file_filter_set_name(all_filter, "All Files");
+	gtk_file_filter_add_pattern(all_filter, "*");
+	gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(sd.file_chooser),
+				    all_filter);
+	gtk_widget_set_hexpand(sd.file_chooser, TRUE);
+	gtk_grid_attach(GTK_GRID(grid), sd.file_chooser, 1, 0, 1, 1);
+
+	/* Row 1: Read-only checkbox */
+	GtkWidget* lbl_ro = gtk_label_new("Options:");
+	gtk_widget_set_halign(lbl_ro, GTK_ALIGN_END);
+	gtk_grid_attach(GTK_GRID(grid), lbl_ro, 0, 1, 1, 1);
+
+	sd.readonly_check = gtk_check_button_new_with_label("Open read-only");
+	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sd.readonly_check),
+				     TRUE);
+	gtk_grid_attach(GTK_GRID(grid), sd.readonly_check, 1, 1, 1, 1);
+
+	/* Row 2: Partition selector */
+	GtkWidget* lbl_part = gtk_label_new("Partition:");
+	gtk_widget_set_halign(lbl_part, GTK_ALIGN_END);
+	gtk_grid_attach(GTK_GRID(grid), lbl_part, 0, 2, 1, 1);
+
+	/* Combo: col 0 = partition num (int), col 1 = label (string) */
+	sd.part_store = gtk_list_store_new(2, G_TYPE_INT, G_TYPE_STRING);
+	sd.partition_combo =
+	    gtk_combo_box_new_with_model(GTK_TREE_MODEL(sd.part_store));
+	g_object_unref(sd.part_store);
+	GtkCellRenderer* rend = gtk_cell_renderer_text_new();
+	gtk_cell_layout_pack_start(GTK_CELL_LAYOUT(sd.partition_combo), rend,
+				   TRUE);
+	gtk_cell_layout_set_attributes(GTK_CELL_LAYOUT(sd.partition_combo),
+				       rend, "text", 1, NULL);
+
+	sd.partition_box = sd.partition_combo;
+	gtk_widget_set_sensitive(sd.partition_box, FALSE);
+	gtk_widget_set_hexpand(sd.partition_combo, TRUE);
+	gtk_grid_attach(GTK_GRID(grid), sd.partition_combo, 1, 2, 1, 1);
+
+	/* Connect file-set signal to probe partitions */
+	g_signal_connect(sd.file_chooser, "file-set", G_CALLBACK(on_file_set),
+			 &sd);
+
+	gtk_widget_show_all(content);
+
+	/* Run dialog */
+	gboolean accepted = FALSE;
+	if (gtk_dialog_run(GTK_DIALOG(sd.dialog)) == GTK_RESPONSE_ACCEPT) {
+		char* path = gtk_file_chooser_get_filename(
+		    GTK_FILE_CHOOSER(sd.file_chooser));
+		if (path && path[0]) {
+			*out_path = path;
+			*out_writable = !gtk_toggle_button_get_active(
+			    GTK_TOGGLE_BUTTON(sd.readonly_check));
+			/* Get selected partition */
+			GtkTreeIter iter;
+			if (gtk_combo_box_get_active_iter(
+				GTK_COMBO_BOX(sd.partition_combo), &iter)) {
+				gtk_tree_model_get(
+				    GTK_TREE_MODEL(sd.part_store), &iter, 0,
+				    out_partition, -1);
+			} else {
+				*out_partition = -1; /* auto */
+			}
+			accepted = TRUE;
+		} else {
+			g_free(path);
+		}
+	}
+
+	/* Cleanup probe disk if still open */
+	if (sd.current_disk_id >= 0)
+		anyfs_disk_remove(sd.current_disk_id);
+
+	gtk_widget_destroy(sd.dialog);
+	return accepted;
+}
+
+static void show_error_dialog(const char* title, const char* message)
+{
+	GtkWidget* dlg =
+	    gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR,
+				   GTK_BUTTONS_OK, "%s", message);
+	gtk_window_set_title(GTK_WINDOW(dlg), title);
+	gtk_dialog_run(GTK_DIALOG(dlg));
+	gtk_widget_destroy(dlg);
+}
+
 /* Show partition selection dialog. Returns chosen partition number (0..N), or
  * -1 on cancel. */
 static int show_partition_dialog(int disk_id, int num_parts)
@@ -1743,18 +1967,28 @@ int main(int argc, char* argv[])
 			image_path = argv[i];
 	}
 
-	if (!image_path) {
-		print_usage(argv[0]);
-		return 1;
-	}
-
-	/* Initialize LKL */
-	fprintf(stderr, "Initializing LKL kernel...\n");
+	/* Initialize LKL kernel (needed for both dialog probe and mount) */
 	AnyfsKernelOpts opts = {.mem_mb = 64, .loglevel = 0};
 	int ret = anyfs_kernel_init(&opts);
 	if (ret < 0) {
-		fprintf(stderr, "Failed to init LKL kernel: %d\n", ret);
+		show_error_dialog("Initialization Error",
+				  "Failed to initialize LKL kernel.");
 		return 1;
+	}
+
+	/* If no image path given, show startup dialog */
+	char* dialog_path = NULL;
+	if (!image_path) {
+		gboolean dlg_writable = FALSE;
+		int dlg_partition = -1;
+		if (!show_startup_dialog(&dialog_path, &dlg_writable,
+					 &dlg_partition)) {
+			anyfs_kernel_halt();
+			return 0; /* user cancelled */
+		}
+		image_path = dialog_path;
+		app.writable = dlg_writable;
+		partition = dlg_partition;
 	}
 
 	/* Add disk — detect backend by extension */
@@ -1769,7 +2003,11 @@ int main(int argc, char* argv[])
 #endif
 	app.disk_id = anyfs_disk_add(image_path, flags);
 	if (app.disk_id < 0) {
-		fprintf(stderr, "Failed to add disk: %d\n", app.disk_id);
+		char msg[512];
+		snprintf(msg, sizeof(msg), "Failed to open disk image:\n%s",
+			 image_path);
+		show_error_dialog("Disk Error", msg);
+		g_free(dialog_path);
 		anyfs_kernel_halt();
 		return 1;
 	}
@@ -1786,6 +2024,7 @@ int main(int argc, char* argv[])
 			if (chosen < 0) {
 				/* User cancelled */
 				anyfs_disk_remove(app.disk_id);
+				g_free(dialog_path);
 				anyfs_kernel_halt();
 				return 0;
 			}
@@ -1802,15 +2041,17 @@ int main(int argc, char* argv[])
 	ret =
 	    anyfs_mount(app.disk_id, mount_part, NULL, "img", mnt_flags, &mnt);
 	if (ret < 0) {
-		fprintf(stderr, "Failed to mount partition %u: %d\n",
-			mount_part, ret);
+		char msg[512];
+		snprintf(msg, sizeof(msg),
+			 "Failed to mount partition %u.\nError code: %d",
+			 mount_part, ret);
+		show_error_dialog("Mount Error", msg);
 		anyfs_disk_remove(app.disk_id);
+		g_free(dialog_path);
 		anyfs_kernel_halt();
 		return 1;
 	}
 	strncpy(app.mount_point, mnt.mount_point, sizeof(app.mount_point) - 1);
-	fprintf(stderr, "Mounted %s (%s) at %s\n", image_path, mnt.fstype,
-		mnt.mount_point);
 
 	/* Build UI */
 	build_ui();
@@ -1823,7 +2064,7 @@ int main(int argc, char* argv[])
 
 	/* Set window title with image info */
 	char title[256];
-	snprintf(title, sizeof(title), "AnyFS - %s (%s)%s", image_path,
+	snprintf(title, sizeof(title), "AnyFS — %s (%s)%s", image_path,
 		 mnt.fstype, app.writable ? " [RW]" : " [RO]");
 	gtk_window_set_title(GTK_WINDOW(app.window), title);
 
@@ -1835,12 +2076,15 @@ int main(int argc, char* argv[])
 
 	gtk_main();
 
-	/* Cleanup: unmount and halt LKL kernel */
+	/* Cleanup */
+	g_free(dialog_path);
+#ifndef _WIN32
 	char tmp_dir[256];
 	snprintf(tmp_dir, sizeof(tmp_dir), "/tmp/anyfs-dnd-%d", getpid());
 	char rm_cmd[300];
 	snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s", tmp_dir);
 	system(rm_cmd);
+#endif
 
 	anyfs_umount("img");
 	anyfs_disk_remove(app.disk_id);
