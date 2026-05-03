@@ -643,28 +643,41 @@ static void on_drag_data_get(GtkWidget* widget, GdkDragContext* ctx,
 
 	GtkTreeSelection* selection =
 	    gtk_tree_view_get_selection(GTK_TREE_VIEW(app.tree_view));
-	GtkTreeIter iter;
-	if (!gtk_tree_selection_get_selected(selection, NULL, &iter))
+	GList* rows = gtk_tree_selection_get_selected_rows(selection, NULL);
+	if (!rows)
 		return;
 
-	char *name, *fullpath;
-	gtk_tree_model_get(GTK_TREE_MODEL(app.store), &iter, COL_NAME, &name,
-			   COL_FULLPATH, &fullpath, -1);
+	GString* uri_list = g_string_new(NULL);
 
-	char* tmp = extract_to_tmp(fullpath, name);
-	g_free(name);
-	g_free(fullpath);
+	for (GList* l = rows; l; l = l->next) {
+		GtkTreeIter iter;
+		gtk_tree_model_get_iter(GTK_TREE_MODEL(app.store), &iter,
+					l->data);
 
-	if (tmp) {
-		char* uri = g_filename_to_uri(tmp, NULL, NULL);
-		char* uri_list = g_strdup_printf("%s\r\n", uri);
-		gtk_selection_data_set(sel,
-				       gdk_atom_intern("text/uri-list", FALSE),
-				       8, (guchar*)uri_list, strlen(uri_list));
-		g_free(uri);
-		g_free(uri_list);
-		g_free(tmp);
+		char *name, *fullpath;
+		gtk_tree_model_get(GTK_TREE_MODEL(app.store), &iter, COL_NAME,
+				   &name, COL_FULLPATH, &fullpath, -1);
+
+		char* tmp = extract_to_tmp(fullpath, name);
+		g_free(name);
+		g_free(fullpath);
+
+		if (tmp) {
+			char* uri = g_filename_to_uri(tmp, NULL, NULL);
+			g_string_append(uri_list, uri);
+			g_string_append(uri_list, "\r\n");
+			g_free(uri);
+			g_free(tmp);
+		}
 	}
+	g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
+
+	if (uri_list->len > 0) {
+		gtk_selection_data_set(
+		    sel, gdk_atom_intern("text/uri-list", FALSE), 8,
+		    (guchar*)uri_list->str, uri_list->len);
+	}
+	g_string_free(uri_list, TRUE);
 }
 
 /* ── Drag and Drop: Host → Guest ─────────────────────────────── */
