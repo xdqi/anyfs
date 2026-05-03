@@ -905,12 +905,21 @@ static int tokenize(char* line, char** argv, int max_args)
 
 static void usage(const char* prog)
 {
-	fprintf(stderr, "Usage: %s [options] [image fstype [part]]\n", prog);
-	fprintf(stderr, "Options:\n");
-	fprintf(stderr,
-		"  -v, --verbose   Show kernel messages (loglevel=7)\n");
-	fprintf(stderr, "  -m MB           Set kernel memory (default: 64)\n");
-	fprintf(stderr, "  -h, --help      Show this help\n");
+	fprintf(
+	    stderr,
+	    "Usage: %s [options] [disk-image [partition]]\n\n"
+	    "Interactive filesystem shell for disk images via LKL.\n\n"
+	    "Options:\n"
+	    "  -v, --verbose   Show kernel messages (loglevel=7)\n"
+	    "  -m MB           Set kernel memory (default: 64)\n"
+	    "  -h, --help      Show this help\n\n"
+	    "If disk-image is given, it is opened and mounted automatically.\n"
+	    "Otherwise, use 'open' and 'mount' commands interactively.\n\n"
+	    "Examples:\n"
+	    "  %s disk.img          Open and auto-mount\n"
+	    "  %s disk.img 1        Open and mount partition 1\n"
+	    "  %s                   Interactive mode\n",
+	    prog, prog, prog, prog);
 }
 
 int main(int argc, char** argv)
@@ -942,17 +951,24 @@ int main(int argc, char** argv)
 		return 1;
 	}
 
-	/* If args provided on command line: open <image> <fstype> [part] */
-	if (argi + 1 < argc) {
+	/* If args provided on command line: open <image> [partition] */
+	if (argi < argc) {
 		char* args_open[] = {"open", argv[argi], NULL};
 		cmd_open(2, args_open);
 
 		char part_str[16] = "0";
-		if (argi + 2 < argc)
-			snprintf(part_str, sizeof(part_str), "%s",
-				 argv[argi + 2]);
-		char* args_mount[] = {"mount", argv[argi + 1], part_str, NULL};
-		cmd_mount(3, args_mount);
+		if (argi + 1 < argc) {
+			/* Next arg could be a partition number or fstype
+			 * (legacy) */
+			const char* next = argv[argi + 1];
+			if (next[0] >= '0' && next[0] <= '9') {
+				snprintf(part_str, sizeof(part_str), "%s",
+					 next);
+			}
+			/* If it's a fstype string, ignore it (auto-detect) */
+		}
+		char* args_mount[] = {"mount", part_str, NULL};
+		cmd_mount(2, args_mount);
 	}
 
 	rl_readline_name = "anyfs";

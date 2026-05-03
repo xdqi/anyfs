@@ -620,8 +620,8 @@ static char* extract_to_tmp(const char* lkl_path, const char* name)
 	if (LKL_S_ISDIR(st.st_mode))
 		return NULL; /* TODO: recursive extract */
 
-	char* tmp_path =
-	    g_strdup_printf("/tmp/anyfs-dnd-%d/%s", getpid(), name);
+	char* tmp_path = g_strdup_printf("%s/anyfs-dnd-%d/%s", g_get_tmp_dir(),
+					 getpid(), name);
 	char* tmp_dir = g_path_get_dirname(tmp_path);
 	g_mkdir_with_parents(tmp_dir, 0700);
 	g_free(tmp_dir);
@@ -2080,7 +2080,8 @@ int main(int argc, char* argv[])
 	g_free(dialog_path);
 #ifndef _WIN32
 	char tmp_dir[256];
-	snprintf(tmp_dir, sizeof(tmp_dir), "/tmp/anyfs-dnd-%d", getpid());
+	snprintf(tmp_dir, sizeof(tmp_dir), "%s/anyfs-dnd-%d", g_get_tmp_dir(),
+		 getpid());
 	char rm_cmd[300];
 	snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf %s", tmp_dir);
 	system(rm_cmd);

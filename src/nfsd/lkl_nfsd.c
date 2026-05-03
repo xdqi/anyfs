@@ -397,8 +397,26 @@ int main(int argc, char** argv)
 	int nd_id, ifindex, ret;
 	int opt;
 
-	while ((opt = getopt(argc, argv, "p:P:w")) != -1) {
+	while ((opt = getopt(argc, argv, "hp:P:w")) != -1) {
 		switch (opt) {
+		case 'h':
+			fprintf(stderr,
+				"Usage: %s [options] <disk-image>\n\n"
+				"Serve a disk image via NFSv4 over user-mode "
+				"networking.\n\n"
+				"Options:\n"
+				"  -p N     Use partition N (0=whole disk, "
+				"default: auto-detect)\n"
+				"  -P PORT  Host port for NFS (default: %d)\n"
+				"  -w       Read-write export (default: "
+				"read-only)\n"
+				"  -h       Show this help\n\n"
+				"Example:\n"
+				"  %s -P 20049 disk.img\n"
+				"  Then: mount -t nfs -o port=20049,vers=4 "
+				"127.0.0.1:/ /mnt\n",
+				argv[0], HOST_FWD_PORT, argv[0]);
+			return 0;
 		case 'p':
 			partition = atoi(optarg);
 			break;
@@ -411,24 +429,18 @@ int main(int argc, char** argv)
 		default:
 			fprintf(stderr,
 				"Usage: %s [-p partition] [-P port] [-w] "
-				"<disk-image>\n",
-				argv[0]);
-			fprintf(stderr,
-				"  -p N   use partition N (0=whole disk)\n");
-			fprintf(stderr,
-				"  -P N   host port for NFS (default: %d)\n",
-				HOST_FWD_PORT);
-			fprintf(stderr, "  -w     read-write export (default: "
-					"read-only)\n");
+				"<disk-image>\n"
+				"Try '%s -h' for more information.\n",
+				argv[0], argv[0]);
 			return 1;
 		}
 	}
 
 	if (optind >= argc) {
-		fprintf(
-		    stderr,
-		    "Usage: %s [-p partition] [-P port] [-w] <disk-image>\n",
-		    argv[0]);
+		fprintf(stderr,
+			"Usage: %s [-p partition] [-P port] [-w] <disk-image>\n"
+			"Try '%s -h' for more information.\n",
+			argv[0], argv[0]);
 		return 1;
 	}
 	disk_image = argv[optind];

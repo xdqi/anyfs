@@ -141,7 +141,7 @@ int main(int argc, char** argv)
 	int nd_id, ifindex, ret;
 	int opt;
 
-	while ((opt = getopt(argc, argv, "c:dp:P:")) != -1) {
+	while ((opt = getopt(argc, argv, "c:dhp:P:")) != -1) {
 		switch (opt) {
 		case 'c':
 			config_file = optarg;
@@ -149,6 +149,25 @@ int main(int argc, char** argv)
 		case 'd':
 			log_level = PR_DEBUG;
 			break;
+		case 'h':
+			fprintf(
+			    stderr,
+			    "Usage: %s [options] <disk-image>\n\n"
+			    "Serve a disk image via SMB3 (KSMBD) over "
+			    "user-mode networking.\n\n"
+			    "Options:\n"
+			    "  -c FILE  Use FILE as ksmbd.conf (default: "
+			    "built-in config)\n"
+			    "  -d       Enable debug logging\n"
+			    "  -p N     Use partition N (0=whole disk, "
+			    "default: auto-detect)\n"
+			    "  -P PORT  Host port for SMB (default: %d)\n"
+			    "  -h       Show this help\n\n"
+			    "Example:\n"
+			    "  %s -P 4450 disk.img\n"
+			    "  Then: net use Z: \\\\127.0.0.1@4450\\share\n",
+			    argv[0], HOST_FWD_PORT, argv[0]);
+			return 0;
 		case 'p':
 			partition = atoi(optarg);
 			break;
@@ -158,8 +177,9 @@ int main(int argc, char** argv)
 		default:
 			fprintf(stderr,
 				"Usage: %s [-d] [-c ksmbd.conf] [-p partition] "
-				"[-P port] <disk-image>\n",
-				argv[0]);
+				"[-P port] <disk-image>\n"
+				"Try '%s -h' for more information.\n",
+				argv[0], argv[0]);
 			return 1;
 		}
 	}
@@ -167,8 +187,9 @@ int main(int argc, char** argv)
 	if (optind >= argc) {
 		fprintf(stderr,
 			"Usage: %s [-d] [-c ksmbd.conf] [-p partition] [-P "
-			"port] <disk-image>\n",
-			argv[0]);
+			"port] <disk-image>\n"
+			"Try '%s -h' for more information.\n",
+			argv[0], argv[0]);
 		return 1;
 	}
 	disk_image = argv[optind];
