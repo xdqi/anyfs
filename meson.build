@@ -15,6 +15,11 @@ cc = meson.get_compiler('c')
 lkl_root = get_option('lkl_root')
 lkl_shared = get_option('lkl_shared')
 lkl_inc = include_directories(lkl_root / 'include')
+if host_machine.system() == 'windows'
+    lkl_mingw_inc = include_directories(lkl_root / 'include' / 'mingw32')
+else
+    lkl_mingw_inc = []
+endif
 if lkl_shared
     lkl_lib = cc.find_library('lkl',
         dirs: [lkl_root / 'lib'],
@@ -25,13 +30,22 @@ else
         static: true,
     )
 endif
-# LKL needs pthread, rt, and slirp (compiled into liblkl.a)
+# LKL needs pthread, rt (Linux), ws2_32 (Windows), and slirp (Linux only)
 thread_dep = dependency('threads')
-rt_dep = cc.find_library('rt', required: false)
-slirp_for_lkl = dependency('slirp', required: false)
+if host_machine.system() == 'windows'
+    ws2_dep = cc.find_library('ws2_32')
+    iphlpapi_dep = cc.find_library('iphlpapi')
+    rt_dep = disabler()
+    slirp_for_lkl = disabler()
+    lkl_extra_deps = [ws2_dep, iphlpapi_dep]
+else
+    rt_dep = cc.find_library('rt', required: false)
+    slirp_for_lkl = dependency('slirp', required: false)
+    lkl_extra_deps = [rt_dep] + (slirp_for_lkl.found() ? [slirp_for_lkl] : [])
+endif
 lkl_dep = declare_dependency(
-    include_directories: lkl_inc,
-    dependencies: [lkl_lib, thread_dep, rt_dep] + (slirp_for_lkl.found() ? [slirp_for_lkl] : []),
+    include_directories: [lkl_inc] + (host_machine.system() == 'windows' ? [lkl_mingw_inc] : []),
+    dependencies: [lkl_lib, thread_dep] + lkl_extra_deps,
 )
 
 # GLib/GIO (optional, from ~/glib static build)
@@ -103,15 +117,22 @@ if enable_qemu
     )
 
     if qemu_shared
-        # Dynamic linking: use pre-built libanyfs-qemu.so
+        # Dynamic linking: use pre-built libanyfs-qemu.so / libanyfs-qemu.dll
         anyfs_qemu_lib = cc.find_library('anyfs-qemu', dirs: [qemu_build])
         glib_sys_dep = dependency('glib-2.0', required: true)
-        pixman_dep = dependency('pixman-1', required: true)
-        qemu_dep = declare_dependency(
-            include_directories: [qemu_inc, qemu_sys_inc],
-            dependencies: [anyfs_qemu_lib, glib_sys_dep, pixman_dep,
-                           thread_dep, rt_dep],
-        )
+        if host_machine.system() == 'windows'
+            qemu_dep = declare_dependency(
+                include_directories: [qemu_inc, qemu_sys_inc],
+                dependencies: [anyfs_qemu_lib, glib_sys_dep, thread_dep],
+            )
+        else
+            pixman_dep = dependency('pixman-1', required: true)
+            qemu_dep = declare_dependency(
+                include_directories: [qemu_inc, qemu_sys_inc],
+                dependencies: [anyfs_qemu_lib, glib_sys_dep, pixman_dep,
+                               thread_dep, rt_dep],
+            )
+        endif
     else
         # Static linking: link individual QEMU archives
         qemu_libs = []
@@ -241,10 +262,14 @@ endif
 enable_ksmbd = get_option('enable_ksmbd')
 if enable_ksmbd
     ksmbd_tools_root = get_option('ksmbd_tools_root')
-    ksmbd_tools_inc = include_directories(
+    ksmbd_tools_inc_dirs = [
         ksmbd_tools_root / 'include',
         ksmbd_tools_root,
-    )
+    ]
+    if host_machine.system() == 'windows'
+        ksmbd_tools_inc_dirs += ['src/ksmbd/win32-compat']
+    endif
+    ksmbd_tools_inc = include_directories(ksmbd_tools_inc_dirs)
 
     slirp_dep = dependency('slirp', required: true)
     glib_sys_dep2 = dependency('glib-2.0', required: true)
@@ -330,12 +355,19 @@ if gtk3_dep.found()
         gui_deps += [qemu_dep]
         gui_args += ['-DANYFS_HAS_QEMU=1']
     endif
+    gui_link_args = []
+    gui_subsystem = 'console'
+    if host_machine.system() == 'windows'
+        gui_subsystem = 'windows'
+    endif
     anyfs_gui = executable('anyfs-gui',
         'src/gui/anyfs_gui.c',
         include_directories: [anyfs_inc],
         dependencies: gui_deps,
         link_with: [anyfs_core],
         c_args: gui_args,
+        link_args: gui_link_args,
+        win_subsystem: gui_subsystem,
         install: true,
         install_rpath: '$ORIGIN/../lib',
     )
