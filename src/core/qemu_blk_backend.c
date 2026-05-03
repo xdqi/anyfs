@@ -4,14 +4,12 @@
  * Uses QEMU's block layer (libblock.a) to support qcow2, vmdk, vdi, etc.
  */
 
-#include "qemu_blk_backend.h"
-#include <lkl.h>
-#include <lkl_host.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* QEMU headers */
+/* QEMU headers MUST come before LKL headers to avoid struct iovec conflict.
+ * QEMU's osdep.h defines struct iovec on Windows; LKL's lkl_host.h does too. */
 #include "block/block-common.h"
 #include "block/block-global-state.h"
 #include "qapi/error.h"
@@ -21,6 +19,29 @@
 #include "system/block-backend-global-state.h"
 #include "system/block-backend-io.h"
 #include "system/block-backend.h"
+
+/* On Windows, QEMU's osdep.h #defines close/open/read/write as wrappers.
+ * Undef them now so our struct member names don't get mangled. */
+#ifdef _WIN32
+#undef close
+#undef open
+#undef read
+#undef write
+#endif
+
+/* Prevent LKL from redefining iovec (QEMU already defined it) */
+#ifdef _WIN32
+/* On Windows, both QEMU (osdep.h) and LKL (lkl_host.h) define struct iovec.
+ * Since QEMU is included first, trick LKL into using sys/uio.h path
+ * which we provide as an empty file via mingw32 compat headers. */
+#define __MSYS__ 1
+#endif
+#include <lkl.h>
+#include <lkl_host.h>
+#ifdef _WIN32
+#undef __MSYS__
+#endif
+#include "qemu_blk_backend.h"
 
 struct qemu_blk_ctx {
 	BlockBackend* blk;
