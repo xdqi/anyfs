@@ -501,31 +501,61 @@ static void on_row_activated(GtkTreeView* tv, GtkTreePath* path,
 static void on_selection_changed(GtkTreeSelection* sel, gpointer data)
 {
 	(void)data;
-	GtkTreeIter iter;
-	if (!gtk_tree_selection_get_selected(sel, NULL, &iter))
-		return;
-
-	gboolean is_dir;
-	char *name, *fullpath, *size_str;
-	gtk_tree_model_get(GTK_TREE_MODEL(app.store), &iter, COL_NAME, &name,
-			   COL_IS_DIR, &is_dir, COL_FULLPATH, &fullpath,
-			   COL_SIZE, &size_str, -1);
-
-	update_preview(name, fullpath, is_dir);
-
-	/* Update statusbar with selection info */
+	int n_selected = gtk_tree_selection_count_selected_rows(sel);
 	int total =
 	    gtk_tree_model_iter_n_children(GTK_TREE_MODEL(app.store), NULL);
+
+	if (n_selected == 0) {
+		char status[128];
+		snprintf(status, sizeof(status), "%d items%s", total,
+			 app.writable ? "" : " [read-only]");
+		gtk_statusbar_pop(GTK_STATUSBAR(app.statusbar), 0);
+		gtk_statusbar_push(GTK_STATUSBAR(app.statusbar), 0, status);
+		return;
+	}
+
+	/* Preview the first selected item */
+	GList* rows = gtk_tree_selection_get_selected_rows(sel, NULL);
+	if (rows) {
+		GtkTreeIter iter;
+		gtk_tree_model_get_iter(GTK_TREE_MODEL(app.store), &iter,
+					rows->data);
+
+		gboolean is_dir;
+		char *name, *fullpath;
+		gtk_tree_model_get(GTK_TREE_MODEL(app.store), &iter, COL_NAME,
+				   &name, COL_IS_DIR, &is_dir, COL_FULLPATH,
+				   &fullpath, -1);
+		update_preview(name, fullpath, is_dir);
+		g_free(name);
+		g_free(fullpath);
+
+		g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
+	}
+
+	/* Update statusbar */
 	char status[256];
-	snprintf(status, sizeof(status), "%d items | Selected: %s (%s)%s",
-		 total, name, size_str ? size_str : "—",
-		 app.writable ? "" : " [read-only]");
+	if (n_selected == 1) {
+		GList* rows2 = gtk_tree_selection_get_selected_rows(sel, NULL);
+		GtkTreeIter iter;
+		gtk_tree_model_get_iter(GTK_TREE_MODEL(app.store), &iter,
+					rows2->data);
+		char *name, *size_str;
+		gtk_tree_model_get(GTK_TREE_MODEL(app.store), &iter, COL_NAME,
+				   &name, COL_SIZE, &size_str, -1);
+		snprintf(status, sizeof(status),
+			 "%d items | Selected: %s (%s)%s", total, name,
+			 size_str ? size_str : "—",
+			 app.writable ? "" : " [read-only]");
+		g_free(name);
+		g_free(size_str);
+		g_list_free_full(rows2, (GDestroyNotify)gtk_tree_path_free);
+	} else {
+		snprintf(status, sizeof(status), "%d items | %d selected%s",
+			 total, n_selected, app.writable ? "" : " [read-only]");
+	}
 	gtk_statusbar_pop(GTK_STATUSBAR(app.statusbar), 0);
 	gtk_statusbar_push(GTK_STATUSBAR(app.statusbar), 0, status);
-
-	g_free(name);
-	g_free(fullpath);
-	g_free(size_str);
 }
 
 static void on_go_up(GtkWidget* btn, gpointer data)
@@ -765,19 +795,68 @@ static void on_extract(GtkWidget* btn, gpointer data)
 	(void)data;
 	GtkTreeSelection* sel =
 	    gtk_tree_view_get_selection(GTK_TREE_VIEW(app.tree_view));
-	GtkTreeIter iter;
-	if (!gtk_tree_selection_get_selected(sel, NULL, &iter))
+	int n = gtk_tree_selection_count_selected_rows(sel);
+	if (n == 0)
 		return;
 
-	char *name, *fullpath;
-	gboolean is_dir;
-	gtk_tree_model_get(GTK_TREE_MODEL(app.store), &iter, COL_NAME, &name,
-			   COL_FULLPATH, &fullpath, COL_IS_DIR, &is_dir, -1);
+	GList* rows = gtk_tree_selection_get_selected_rows(sel, NULL);
 
-	if (is_dir) {
-		/* Directory: choose folder to extract into */
+	if (n == 1) {
+		/* Single selection: original behavior */
+		GtkTreeIter iter;
+		gtk_tree_model_get_iter(GTK_TREE_MODEL(app.store), &iter,
+					rows->data);
+
+		char *name, *fullpath;
+		gboolean is_dir;
+		gtk_tree_model_get(GTK_TREE_MODEL(app.store), &iter, COL_NAME,
+				   &name, COL_FULLPATH, &fullpath, COL_IS_DIR,
+				   &is_dir, -1);
+
+		if (is_dir) {
+			GtkWidget* chooser = gtk_file_chooser_dialog_new(
+			    "Extract folder to...", GTK_WINDOW(app.window),
+			    GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, "_Cancel",
+			    GTK_RESPONSE_CANCEL, "_Extract",
+			    GTK_RESPONSE_ACCEPT, NULL);
+			if (gtk_dialog_run(GTK_DIALOG(chooser)) ==
+			    GTK_RESPONSE_ACCEPT) {
+				char* dest = gtk_file_chooser_get_filename(
+				    GTK_FILE_CHOOSER(chooser));
+				char target[4096];
+				snprintf(target, sizeof(target), "%s/%s", dest,
+					 name);
+				extract_dir_recursive(fullpath, target);
+				g_free(dest);
+			}
+			gtk_widget_destroy(chooser);
+		} else {
+			GtkWidget* chooser = gtk_file_chooser_dialog_new(
+			    "Extract to...", GTK_WINDOW(app.window),
+			    GTK_FILE_CHOOSER_ACTION_SAVE, "_Cancel",
+			    GTK_RESPONSE_CANCEL, "_Save", GTK_RESPONSE_ACCEPT,
+			    NULL);
+			gtk_file_chooser_set_current_name(
+			    GTK_FILE_CHOOSER(chooser), name);
+			if (gtk_dialog_run(GTK_DIALOG(chooser)) ==
+			    GTK_RESPONSE_ACCEPT) {
+				char* dest = gtk_file_chooser_get_filename(
+				    GTK_FILE_CHOOSER(chooser));
+				char* tmp = extract_to_tmp(fullpath, name);
+				if (tmp) {
+					rename(tmp, dest);
+					g_free(tmp);
+				}
+				g_free(dest);
+			}
+			gtk_widget_destroy(chooser);
+		}
+		g_free(name);
+		g_free(fullpath);
+	} else {
+		/* Multi-selection: extract all to chosen folder */
 		GtkWidget* chooser = gtk_file_chooser_dialog_new(
-		    "Extract folder to...", GTK_WINDOW(app.window),
+		    "Extract selected to...", GTK_WINDOW(app.window),
 		    GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, "_Cancel",
 		    GTK_RESPONSE_CANCEL, "_Extract", GTK_RESPONSE_ACCEPT, NULL);
 
@@ -785,36 +864,41 @@ static void on_extract(GtkWidget* btn, gpointer data)
 		    GTK_RESPONSE_ACCEPT) {
 			char* dest = gtk_file_chooser_get_filename(
 			    GTK_FILE_CHOOSER(chooser));
-			char target[4096];
-			snprintf(target, sizeof(target), "%s/%s", dest, name);
-			extract_dir_recursive(fullpath, target);
+			for (GList* l = rows; l; l = l->next) {
+				GtkTreeIter iter;
+				gtk_tree_model_get_iter(
+				    GTK_TREE_MODEL(app.store), &iter, l->data);
+				char *name, *fullpath;
+				gboolean is_dir;
+				gtk_tree_model_get(GTK_TREE_MODEL(app.store),
+						   &iter, COL_NAME, &name,
+						   COL_FULLPATH, &fullpath,
+						   COL_IS_DIR, &is_dir, -1);
+
+				if (is_dir) {
+					char target[4096];
+					snprintf(target, sizeof(target),
+						 "%s/%s", dest, name);
+					extract_dir_recursive(fullpath, target);
+				} else {
+					char* tmp =
+					    extract_to_tmp(fullpath, name);
+					if (tmp) {
+						char target[4096];
+						snprintf(target, sizeof(target),
+							 "%s/%s", dest, name);
+						rename(tmp, target);
+						g_free(tmp);
+					}
+				}
+				g_free(name);
+				g_free(fullpath);
+			}
 			g_free(dest);
 		}
 		gtk_widget_destroy(chooser);
-		g_free(name);
-		g_free(fullpath);
-		return;
 	}
-
-	GtkWidget* chooser = gtk_file_chooser_dialog_new(
-	    "Extract to...", GTK_WINDOW(app.window),
-	    GTK_FILE_CHOOSER_ACTION_SAVE, "_Cancel", GTK_RESPONSE_CANCEL,
-	    "_Save", GTK_RESPONSE_ACCEPT, NULL);
-	gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(chooser), name);
-
-	if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT) {
-		char* dest =
-		    gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
-		char* tmp = extract_to_tmp(fullpath, name);
-		if (tmp) {
-			rename(tmp, dest);
-			g_free(tmp);
-		}
-		g_free(dest);
-	}
-	gtk_widget_destroy(chooser);
-	g_free(name);
-	g_free(fullpath);
+	g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
 }
 
 static void on_add_files(GtkWidget* btn, gpointer data)
@@ -877,31 +961,51 @@ static void on_delete(GtkWidget* btn, gpointer data)
 
 	GtkTreeSelection* sel =
 	    gtk_tree_view_get_selection(GTK_TREE_VIEW(app.tree_view));
-	GtkTreeIter iter;
-	if (!gtk_tree_selection_get_selected(sel, NULL, &iter))
+	int n = gtk_tree_selection_count_selected_rows(sel);
+	if (n == 0)
 		return;
 
-	char *name, *fullpath;
-	gboolean is_dir;
-	gtk_tree_model_get(GTK_TREE_MODEL(app.store), &iter, COL_NAME, &name,
-			   COL_FULLPATH, &fullpath, COL_IS_DIR, &is_dir, -1);
-
 	char msg[512];
-	snprintf(msg, sizeof(msg), "Delete \"%s\"?", name);
+	if (n == 1) {
+		GList* rows = gtk_tree_selection_get_selected_rows(sel, NULL);
+		GtkTreeIter iter;
+		gtk_tree_model_get_iter(GTK_TREE_MODEL(app.store), &iter,
+					rows->data);
+		char* name;
+		gtk_tree_model_get(GTK_TREE_MODEL(app.store), &iter, COL_NAME,
+				   &name, -1);
+		snprintf(msg, sizeof(msg), "Delete \"%s\"?", name);
+		g_free(name);
+		g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
+	} else {
+		snprintf(msg, sizeof(msg), "Delete %d items?", n);
+	}
+
 	GtkWidget* dlg = gtk_message_dialog_new(
 	    GTK_WINDOW(app.window), GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION,
 	    GTK_BUTTONS_YES_NO, "%s", msg);
 
 	if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_YES) {
-		if (is_dir)
-			lkl_sys_rmdir(fullpath);
-		else
-			lkl_sys_unlink(fullpath);
+		GList* rows = gtk_tree_selection_get_selected_rows(sel, NULL);
+		for (GList* l = rows; l; l = l->next) {
+			GtkTreeIter iter;
+			gtk_tree_model_get_iter(GTK_TREE_MODEL(app.store),
+						&iter, l->data);
+			char* fullpath;
+			gboolean is_dir;
+			gtk_tree_model_get(GTK_TREE_MODEL(app.store), &iter,
+					   COL_FULLPATH, &fullpath, COL_IS_DIR,
+					   &is_dir, -1);
+			if (is_dir)
+				lkl_sys_rmdir(fullpath);
+			else
+				lkl_sys_unlink(fullpath);
+			g_free(fullpath);
+		}
+		g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
 		populate_list(app.current_path);
 	}
 	gtk_widget_destroy(dlg);
-	g_free(name);
-	g_free(fullpath);
 }
 
 static void on_new_folder(GtkWidget* btn, gpointer data)
@@ -942,9 +1046,13 @@ static void on_rename(GtkWidget* btn, gpointer data)
 
 	GtkTreeSelection* sel =
 	    gtk_tree_view_get_selection(GTK_TREE_VIEW(app.tree_view));
-	GtkTreeIter iter;
-	if (!gtk_tree_selection_get_selected(sel, NULL, &iter))
+	GList* rows = gtk_tree_selection_get_selected_rows(sel, NULL);
+	if (!rows)
 		return;
+
+	GtkTreeIter iter;
+	gtk_tree_model_get_iter(GTK_TREE_MODEL(app.store), &iter, rows->data);
+	g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
 
 	char *name, *fullpath;
 	gtk_tree_model_get(GTK_TREE_MODEL(app.store), &iter, COL_NAME, &name,
@@ -980,9 +1088,13 @@ static void on_properties(GtkWidget* btn, gpointer data)
 	(void)data;
 	GtkTreeSelection* sel =
 	    gtk_tree_view_get_selection(GTK_TREE_VIEW(app.tree_view));
-	GtkTreeIter iter;
-	if (!gtk_tree_selection_get_selected(sel, NULL, &iter))
+	GList* rows = gtk_tree_selection_get_selected_rows(sel, NULL);
+	if (!rows)
 		return;
+
+	GtkTreeIter iter;
+	gtk_tree_model_get_iter(GTK_TREE_MODEL(app.store), &iter, rows->data);
+	g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
 
 	char *name, *fullpath;
 	gtk_tree_model_get(GTK_TREE_MODEL(app.store), &iter, COL_NAME, &name,
@@ -1044,9 +1156,13 @@ static void on_ctx_open(GtkMenuItem* item, gpointer data)
 	(void)data;
 	GtkTreeSelection* sel =
 	    gtk_tree_view_get_selection(GTK_TREE_VIEW(app.tree_view));
-	GtkTreeIter iter;
-	if (!gtk_tree_selection_get_selected(sel, NULL, &iter))
+	GList* rows = gtk_tree_selection_get_selected_rows(sel, NULL);
+	if (!rows)
 		return;
+
+	GtkTreeIter iter;
+	gtk_tree_model_get_iter(GTK_TREE_MODEL(app.store), &iter, rows->data);
+	g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
 
 	gboolean is_dir;
 	char* fullpath;
@@ -1371,7 +1487,7 @@ static GtkWidget* create_file_list(void)
 			 G_CALLBACK(on_button_press), NULL);
 	GtkTreeSelection* sel =
 	    gtk_tree_view_get_selection(GTK_TREE_VIEW(app.tree_view));
-	gtk_tree_selection_set_mode(sel, GTK_SELECTION_SINGLE);
+	gtk_tree_selection_set_mode(sel, GTK_SELECTION_MULTIPLE);
 	g_signal_connect(sel, "changed", G_CALLBACK(on_selection_changed),
 			 NULL);
 
