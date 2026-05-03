@@ -24,10 +24,24 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "anyfs.h"
-#include <glib-unix.h>
 #include <gtk/gtk.h>
+#ifndef _WIN32
+#include <glib-unix.h>
+#endif
+#include "anyfs.h"
 #include <lkl.h>
+
+#ifdef _WIN32
+#include <direct.h>
+#define mkdir(path, mode) _mkdir(path)
+static inline struct tm* localtime_r(const time_t* t, struct tm* result)
+{
+	struct tm* r = localtime(t);
+	if (r)
+		*result = *r;
+	return r ? result : NULL;
+}
+#endif
 
 /* ── Column definitions for the file list ─────────────────────── */
 enum {
@@ -68,13 +82,13 @@ static AppState app;
 
 static const char* icon_for_mode(unsigned int mode)
 {
-	if (S_ISDIR(mode))
+	if (LKL_S_ISDIR(mode))
 		return "folder";
-	if (S_ISLNK(mode))
+	if (LKL_S_ISLNK(mode))
 		return "emblem-symbolic-link";
-	if (S_ISBLK(mode) || S_ISCHR(mode))
+	if (LKL_S_ISBLK(mode) || LKL_S_ISCHR(mode))
 		return "drive-harddisk";
-	if (S_ISFIFO(mode) || S_ISSOCK(mode))
+	if (LKL_S_ISFIFO(mode) || LKL_S_ISSOCK(mode))
 		return "network-server";
 
 	/* Guess by extension for common types */
@@ -83,9 +97,9 @@ static const char* icon_for_mode(unsigned int mode)
 
 static const char* icon_for_file(const char* name, unsigned int mode)
 {
-	if (S_ISDIR(mode))
+	if (LKL_S_ISDIR(mode))
 		return "folder";
-	if (S_ISLNK(mode))
+	if (LKL_S_ISLNK(mode))
 		return "emblem-symbolic-link";
 
 	/* Image files */
@@ -131,7 +145,7 @@ static void format_size(long long size, char* buf, size_t buflen)
 static void format_mode(unsigned int mode, char* buf, size_t buflen)
 {
 	snprintf(buf, buflen, "%c%c%c%c%c%c%c%c%c%c",
-		 S_ISDIR(mode) ? 'd' : (S_ISLNK(mode) ? 'l' : '-'),
+		 LKL_S_ISDIR(mode) ? 'd' : (LKL_S_ISLNK(mode) ? 'l' : '-'),
 		 (mode & 0400) ? 'r' : '-', (mode & 0200) ? 'w' : '-',
 		 (mode & 0100) ? 'x' : '-', (mode & 0040) ? 'r' : '-',
 		 (mode & 0020) ? 'w' : '-', (mode & 0010) ? 'x' : '-',
@@ -278,7 +292,7 @@ static void populate_list(const char* path)
 
 			/* For symlinks, read target and show "name → target" */
 			char display_name[4096];
-			if (S_ISLNK(st.st_mode)) {
+			if (LKL_S_ISLNK(st.st_mode)) {
 				char link_target[1024];
 				long len =
 				    lkl_sys_readlink(fullpath, link_target,
@@ -303,11 +317,12 @@ static void populate_list(const char* path)
 			gtk_list_store_set(
 			    app.store, &iter, COL_ICON, icon, COL_NAME,
 			    display_name, COL_SIZE,
-			    S_ISDIR(st.st_mode) ? "" : size_str, COL_SIZE_RAW,
-			    (gint64)(S_ISDIR(st.st_mode) ? -1 : st.st_size),
+			    LKL_S_ISDIR(st.st_mode) ? "" : size_str,
+			    COL_SIZE_RAW,
+			    (gint64)(LKL_S_ISDIR(st.st_mode) ? -1 : st.st_size),
 			    COL_MODIFIED, time_str, COL_MTIME_RAW,
 			    (gint64)st.lkl_st_mtime, COL_MODE, mode_str,
-			    COL_IS_DIR, (gboolean)S_ISDIR(st.st_mode),
+			    COL_IS_DIR, (gboolean)LKL_S_ISDIR(st.st_mode),
 			    COL_FULLPATH, fullpath, -1);
 			count++;
 		}
@@ -602,7 +617,7 @@ static char* extract_to_tmp(const char* lkl_path, const char* name)
 	struct lkl_stat st;
 	if (lkl_sys_lstat(lkl_path, &st) < 0)
 		return NULL;
-	if (S_ISDIR(st.st_mode))
+	if (LKL_S_ISDIR(st.st_mode))
 		return NULL; /* TODO: recursive extract */
 
 	char* tmp_path =
@@ -782,9 +797,9 @@ static void extract_dir_recursive(const char* lkl_path, const char* host_path)
 			if (lkl_sys_lstat(src, &st) < 0)
 				continue;
 
-			if (S_ISDIR(st.st_mode)) {
+			if (LKL_S_ISDIR(st.st_mode)) {
 				extract_dir_recursive(src, dst);
-			} else if (S_ISREG(st.st_mode)) {
+			} else if (LKL_S_ISREG(st.st_mode)) {
 				int sfd = lkl_sys_open(src, LKL_O_RDONLY, 0);
 				if (sfd < 0)
 					continue;
@@ -1139,10 +1154,10 @@ static void on_properties(GtkWidget* btn, gpointer data)
 		 "Inode: %llu\n"
 		 "Links: %u",
 		 name, size_str, (long long)st.st_size,
-		 S_ISDIR(st.st_mode)   ? "Directory"
-		 : S_ISLNK(st.st_mode) ? "Symbolic Link"
-		 : S_ISREG(st.st_mode) ? "Regular File"
-				       : "Special",
+		 LKL_S_ISDIR(st.st_mode)   ? "Directory"
+		 : LKL_S_ISLNK(st.st_mode) ? "Symbolic Link"
+		 : LKL_S_ISREG(st.st_mode) ? "Regular File"
+					   : "Special",
 		 mode_str, (unsigned)(st.st_mode & 07777), (int)st.st_uid,
 		 (int)st.st_gid, time_str, (unsigned long long)st.st_ino,
 		 (unsigned)st.st_nlink);
@@ -1813,8 +1828,10 @@ int main(int argc, char* argv[])
 	gtk_window_set_title(GTK_WINDOW(app.window), title);
 
 	/* Install signal handlers for clean shutdown via GLib main loop */
+#ifndef _WIN32
 	g_unix_signal_add(SIGINT, (GSourceFunc)gtk_main_quit, NULL);
 	g_unix_signal_add(SIGTERM, (GSourceFunc)gtk_main_quit, NULL);
+#endif
 
 	gtk_main();
 
