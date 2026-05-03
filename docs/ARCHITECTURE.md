@@ -176,4 +176,5 @@ ninja libqemuutil.a libqom.a libauthz.a libcrypto.a libio.a \
 | 4 | CLI Shell (guestfish 风格) | ✅ |
 | 5 | API 精简 (anyfs.h 4 函数) | ✅ |
 | 6 | lkl-busybox (文件操作 applet) | 构想中 |
-| 7 | Server 模式 (ksmbd/nfsd) | 待定 |
+| 7 | ksmbd SMB3 服务器 | ✅ |
+| 8 | nfsd NFSv4 服务器 | ✅ (pynfs 98.2% pass) |
