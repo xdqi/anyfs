@@ -338,35 +338,63 @@ static void populate_list(const char* path)
 
 /* ── Preview ──────────────────────────────────────────────────── */
 
-static gboolean is_text_file(const char* name)
+static gboolean is_text_content(const char* lkl_path, const char* name)
 {
-	const char* ext = strrchr(name, '.');
-	if (!ext)
-		return TRUE; /* no extension: assume text */
-	const char* text_exts[] = {".txt",  ".md",   ".log",   ".conf", ".cfg",
-				   ".ini",  ".sh",   ".c",     ".h",	".py",
-				   ".js",   ".json", ".xml",   ".html", ".css",
-				   ".yaml", ".yml",  ".toml",  ".rs",	".java",
-				   ".go",   ".rb",   ".pl",    ".lua",	".sql",
-				   ".csv",  ".diff", ".patch", NULL};
-	for (int i = 0; text_exts[i]; i++)
-		if (strcasecmp(ext, text_exts[i]) == 0)
-			return TRUE;
-	return FALSE;
+	/* Read first 4KB to detect content type */
+	int fd = lkl_sys_open(lkl_path, LKL_O_RDONLY, 0);
+	if (fd < 0)
+		return FALSE;
+	guchar buf[4096];
+	int n = lkl_sys_read(fd, (char*)buf, sizeof(buf));
+	lkl_sys_close(fd);
+	if (n <= 0)
+		return FALSE;
+
+	gboolean uncertain = FALSE;
+	gchar* content_type = g_content_type_guess(name, buf, n, &uncertain);
+	if (!content_type)
+		return FALSE;
+
+	gchar* mime = g_content_type_get_mime_type(content_type);
+	gboolean is_text = (mime && g_str_has_prefix(mime, "text/"));
+	/* Also treat common script/config types as text */
+	if (!is_text && mime) {
+		is_text = g_str_has_prefix(mime, "application/json") ||
+			  g_str_has_prefix(mime, "application/xml") ||
+			  g_str_has_prefix(mime, "application/x-shellscript") ||
+			  g_str_has_prefix(mime, "application/javascript") ||
+			  g_str_has_prefix(mime, "application/x-perl") ||
+			  g_str_has_prefix(mime, "application/x-ruby") ||
+			  g_str_has_prefix(mime, "application/toml") ||
+			  g_str_has_prefix(mime, "application/yaml");
+	}
+	g_free(mime);
+	g_free(content_type);
+	return is_text;
 }
 
-static gboolean is_image_file(const char* name)
+static gboolean is_image_content(const char* lkl_path, const char* name)
 {
-	const char* ext = strrchr(name, '.');
-	if (!ext)
+	/* Read first 4KB to detect content type */
+	int fd = lkl_sys_open(lkl_path, LKL_O_RDONLY, 0);
+	if (fd < 0)
 		return FALSE;
-	const char* img_exts[] = {".png",  ".jpg",  ".jpeg", ".gif",
-				  ".bmp",  ".webp", ".svg",  ".ico",
-				  ".tiff", ".tif",  NULL};
-	for (int i = 0; img_exts[i]; i++)
-		if (strcasecmp(ext, img_exts[i]) == 0)
-			return TRUE;
-	return FALSE;
+	guchar buf[4096];
+	int n = lkl_sys_read(fd, (char*)buf, sizeof(buf));
+	lkl_sys_close(fd);
+	if (n <= 0)
+		return FALSE;
+
+	gboolean uncertain = FALSE;
+	gchar* content_type = g_content_type_guess(name, buf, n, &uncertain);
+	if (!content_type)
+		return FALSE;
+
+	gchar* mime = g_content_type_get_mime_type(content_type);
+	gboolean is_image = (mime && g_str_has_prefix(mime, "image/"));
+	g_free(mime);
+	g_free(content_type);
+	return is_image;
 }
 
 static void show_text_preview(const char* lkl_path)
@@ -471,9 +499,9 @@ static void update_preview(const char* name, const char* fullpath,
 		return;
 	}
 
-	if (is_image_file(name))
+	if (is_image_content(fullpath, name))
 		show_image_preview(fullpath);
-	else if (is_text_file(name))
+	else if (is_text_content(fullpath, name))
 		show_text_preview(fullpath);
 	else {
 		GtkTextBuffer* tbuf =
