@@ -586,29 +586,451 @@ static void on_drag_data_received(GtkWidget* widget, GdkDragContext* ctx,
 	populate_list(app.current_path);
 }
 
+/* ── Toolbar actions (7zip style) ─────────────────────────────── */
+
+static void on_extract(GtkWidget* btn, gpointer data)
+{
+	(void)btn;
+	(void)data;
+	GtkTreeSelection* sel =
+	    gtk_tree_view_get_selection(GTK_TREE_VIEW(app.tree_view));
+	GtkTreeIter iter;
+	if (!gtk_tree_selection_get_selected(sel, NULL, &iter))
+		return;
+
+	char *name, *fullpath;
+	gboolean is_dir;
+	gtk_tree_model_get(GTK_TREE_MODEL(app.store), &iter, COL_NAME, &name,
+			   COL_FULLPATH, &fullpath, COL_IS_DIR, &is_dir, -1);
+
+	if (is_dir) {
+		g_free(name);
+		g_free(fullpath);
+		return; /* TODO: recursive extract */
+	}
+
+	GtkWidget* chooser = gtk_file_chooser_dialog_new(
+	    "Extract to...", GTK_WINDOW(app.window),
+	    GTK_FILE_CHOOSER_ACTION_SAVE, "_Cancel", GTK_RESPONSE_CANCEL,
+	    "_Save", GTK_RESPONSE_ACCEPT, NULL);
+	gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(chooser), name);
+
+	if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT) {
+		char* dest =
+		    gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
+		char* tmp = extract_to_tmp(fullpath, name);
+		if (tmp) {
+			rename(tmp, dest);
+			g_free(tmp);
+		}
+		g_free(dest);
+	}
+	gtk_widget_destroy(chooser);
+	g_free(name);
+	g_free(fullpath);
+}
+
+static void on_add_files(GtkWidget* btn, gpointer data)
+{
+	(void)btn;
+	(void)data;
+	if (!app.writable)
+		return;
+
+	GtkWidget* chooser = gtk_file_chooser_dialog_new(
+	    "Add files...", GTK_WINDOW(app.window),
+	    GTK_FILE_CHOOSER_ACTION_OPEN, "_Cancel", GTK_RESPONSE_CANCEL,
+	    "_Open", GTK_RESPONSE_ACCEPT, NULL);
+	gtk_file_chooser_set_select_multiple(GTK_FILE_CHOOSER(chooser), TRUE);
+
+	if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT) {
+		GSList* files =
+		    gtk_file_chooser_get_filenames(GTK_FILE_CHOOSER(chooser));
+		for (GSList* l = files; l; l = l->next) {
+			char* path = l->data;
+			const char* basename = strrchr(path, '/');
+			basename = basename ? basename + 1 : path;
+
+			char dst_path[4096];
+			snprintf(dst_path, sizeof(dst_path), "%s/%s",
+				 app.current_path, basename);
+
+			FILE* src = fopen(path, "rb");
+			if (!src) {
+				g_free(path);
+				continue;
+			}
+
+			int dst_fd = lkl_sys_open(
+			    dst_path, LKL_O_WRONLY | LKL_O_CREAT | LKL_O_TRUNC,
+			    0644);
+			if (dst_fd >= 0) {
+				char buf[65536];
+				size_t n;
+				while ((n = fread(buf, 1, sizeof(buf), src)) >
+				       0)
+					lkl_sys_write(dst_fd, buf, n);
+				lkl_sys_close(dst_fd);
+			}
+			fclose(src);
+			g_free(path);
+		}
+		g_slist_free(files);
+		populate_list(app.current_path);
+	}
+	gtk_widget_destroy(chooser);
+}
+
+static void on_delete(GtkWidget* btn, gpointer data)
+{
+	(void)btn;
+	(void)data;
+	if (!app.writable)
+		return;
+
+	GtkTreeSelection* sel =
+	    gtk_tree_view_get_selection(GTK_TREE_VIEW(app.tree_view));
+	GtkTreeIter iter;
+	if (!gtk_tree_selection_get_selected(sel, NULL, &iter))
+		return;
+
+	char *name, *fullpath;
+	gboolean is_dir;
+	gtk_tree_model_get(GTK_TREE_MODEL(app.store), &iter, COL_NAME, &name,
+			   COL_FULLPATH, &fullpath, COL_IS_DIR, &is_dir, -1);
+
+	char msg[512];
+	snprintf(msg, sizeof(msg), "Delete \"%s\"?", name);
+	GtkWidget* dlg = gtk_message_dialog_new(
+	    GTK_WINDOW(app.window), GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION,
+	    GTK_BUTTONS_YES_NO, "%s", msg);
+
+	if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_YES) {
+		if (is_dir)
+			lkl_sys_rmdir(fullpath);
+		else
+			lkl_sys_unlink(fullpath);
+		populate_list(app.current_path);
+	}
+	gtk_widget_destroy(dlg);
+	g_free(name);
+	g_free(fullpath);
+}
+
+static void on_new_folder(GtkWidget* btn, gpointer data)
+{
+	(void)btn;
+	(void)data;
+	if (!app.writable)
+		return;
+
+	GtkWidget* dlg = gtk_dialog_new_with_buttons(
+	    "New Folder", GTK_WINDOW(app.window), GTK_DIALOG_MODAL, "_Cancel",
+	    GTK_RESPONSE_CANCEL, "_Create", GTK_RESPONSE_ACCEPT, NULL);
+	GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+	GtkWidget* entry = gtk_entry_new();
+	gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Folder name");
+	gtk_box_pack_start(GTK_BOX(content), entry, FALSE, FALSE, 8);
+	gtk_widget_show_all(content);
+
+	if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_ACCEPT) {
+		const char* name = gtk_entry_get_text(GTK_ENTRY(entry));
+		if (name && name[0]) {
+			char path[4096];
+			snprintf(path, sizeof(path), "%s/%s", app.current_path,
+				 name);
+			lkl_sys_mkdir(path, 0755);
+			populate_list(app.current_path);
+		}
+	}
+	gtk_widget_destroy(dlg);
+}
+
+static void on_rename(GtkWidget* btn, gpointer data)
+{
+	(void)btn;
+	(void)data;
+	if (!app.writable)
+		return;
+
+	GtkTreeSelection* sel =
+	    gtk_tree_view_get_selection(GTK_TREE_VIEW(app.tree_view));
+	GtkTreeIter iter;
+	if (!gtk_tree_selection_get_selected(sel, NULL, &iter))
+		return;
+
+	char *name, *fullpath;
+	gtk_tree_model_get(GTK_TREE_MODEL(app.store), &iter, COL_NAME, &name,
+			   COL_FULLPATH, &fullpath, -1);
+
+	GtkWidget* dlg = gtk_dialog_new_with_buttons(
+	    "Rename", GTK_WINDOW(app.window), GTK_DIALOG_MODAL, "_Cancel",
+	    GTK_RESPONSE_CANCEL, "_Rename", GTK_RESPONSE_ACCEPT, NULL);
+	GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+	GtkWidget* entry = gtk_entry_new();
+	gtk_entry_set_text(GTK_ENTRY(entry), name);
+	gtk_box_pack_start(GTK_BOX(content), entry, FALSE, FALSE, 8);
+	gtk_widget_show_all(content);
+
+	if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_ACCEPT) {
+		const char* new_name = gtk_entry_get_text(GTK_ENTRY(entry));
+		if (new_name && new_name[0] && strcmp(new_name, name) != 0) {
+			char new_path[4096];
+			snprintf(new_path, sizeof(new_path), "%s/%s",
+				 app.current_path, new_name);
+			lkl_sys_rename(fullpath, new_path);
+			populate_list(app.current_path);
+		}
+	}
+	gtk_widget_destroy(dlg);
+	g_free(name);
+	g_free(fullpath);
+}
+
+static void on_properties(GtkWidget* btn, gpointer data)
+{
+	(void)btn;
+	(void)data;
+	GtkTreeSelection* sel =
+	    gtk_tree_view_get_selection(GTK_TREE_VIEW(app.tree_view));
+	GtkTreeIter iter;
+	if (!gtk_tree_selection_get_selected(sel, NULL, &iter))
+		return;
+
+	char *name, *fullpath;
+	gtk_tree_model_get(GTK_TREE_MODEL(app.store), &iter, COL_NAME, &name,
+			   COL_FULLPATH, &fullpath, -1);
+
+	struct lkl_stat st;
+	if (lkl_sys_lstat(fullpath, &st) < 0) {
+		g_free(name);
+		g_free(fullpath);
+		return;
+	}
+
+	char size_str[32], mode_str[16], time_str[32];
+	format_size(st.st_size, size_str, sizeof(size_str));
+	format_mode(st.st_mode, mode_str, sizeof(mode_str));
+	format_time(st.lkl_st_mtime, time_str, sizeof(time_str));
+
+	char info[1024];
+	snprintf(info, sizeof(info),
+		 "Name: %s\n"
+		 "Size: %s (%lld bytes)\n"
+		 "Type: %s\n"
+		 "Permissions: %s (0%o)\n"
+		 "Owner: %d:%d\n"
+		 "Modified: %s\n"
+		 "Inode: %llu\n"
+		 "Links: %u",
+		 name, size_str, (long long)st.st_size,
+		 S_ISDIR(st.st_mode)   ? "Directory"
+		 : S_ISLNK(st.st_mode) ? "Symbolic Link"
+		 : S_ISREG(st.st_mode) ? "Regular File"
+				       : "Special",
+		 mode_str, (unsigned)(st.st_mode & 07777), (int)st.st_uid,
+		 (int)st.st_gid, time_str, (unsigned long long)st.st_ino,
+		 (unsigned)st.st_nlink);
+
+	GtkWidget* dlg = gtk_message_dialog_new(
+	    GTK_WINDOW(app.window), GTK_DIALOG_MODAL, GTK_MESSAGE_INFO,
+	    GTK_BUTTONS_OK, "%s", info);
+	gtk_window_set_title(GTK_WINDOW(dlg), "Properties");
+	gtk_dialog_run(GTK_DIALOG(dlg));
+	gtk_widget_destroy(dlg);
+	g_free(name);
+	g_free(fullpath);
+}
+
+static void on_refresh(GtkWidget* btn, gpointer data)
+{
+	(void)btn;
+	(void)data;
+	populate_list(app.current_path);
+}
+
+/* ── Right-click context menu ─────────────────────────────────── */
+
+static void on_ctx_open(GtkMenuItem* item, gpointer data)
+{
+	(void)item;
+	(void)data;
+	GtkTreeSelection* sel =
+	    gtk_tree_view_get_selection(GTK_TREE_VIEW(app.tree_view));
+	GtkTreeIter iter;
+	if (!gtk_tree_selection_get_selected(sel, NULL, &iter))
+		return;
+
+	gboolean is_dir;
+	char* fullpath;
+	gtk_tree_model_get(GTK_TREE_MODEL(app.store), &iter, COL_IS_DIR,
+			   &is_dir, COL_FULLPATH, &fullpath, -1);
+	if (is_dir)
+		populate_list(fullpath);
+	g_free(fullpath);
+}
+
+static void on_ctx_extract(GtkMenuItem* item, gpointer data)
+{
+	on_extract(NULL, data);
+	(void)item;
+}
+
+static void on_ctx_rename(GtkMenuItem* item, gpointer data)
+{
+	on_rename(NULL, data);
+	(void)item;
+}
+
+static void on_ctx_delete(GtkMenuItem* item, gpointer data)
+{
+	on_delete(NULL, data);
+	(void)item;
+}
+
+static void on_ctx_properties(GtkMenuItem* item, gpointer data)
+{
+	on_properties(NULL, data);
+	(void)item;
+}
+
+static gboolean on_button_press(GtkWidget* widget, GdkEventButton* event,
+				gpointer data)
+{
+	(void)data;
+	if (event->type != GDK_BUTTON_PRESS || event->button != 3)
+		return FALSE;
+
+	/* Select the row under cursor */
+	GtkTreePath* path;
+	if (gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(widget), (gint)event->x,
+					  (gint)event->y, &path, NULL, NULL,
+					  NULL)) {
+		GtkTreeSelection* sel =
+		    gtk_tree_view_get_selection(GTK_TREE_VIEW(widget));
+		gtk_tree_selection_select_path(sel, path);
+		gtk_tree_path_free(path);
+	}
+
+	/* Build context menu */
+	GtkWidget* menu = gtk_menu_new();
+
+	GtkWidget* item_open = gtk_menu_item_new_with_label("Open");
+	g_signal_connect(item_open, "activate", G_CALLBACK(on_ctx_open), NULL);
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_open);
+
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu),
+			      gtk_separator_menu_item_new());
+
+	GtkWidget* item_extract = gtk_menu_item_new_with_label("Extract...");
+	g_signal_connect(item_extract, "activate", G_CALLBACK(on_ctx_extract),
+			 NULL);
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_extract);
+
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu),
+			      gtk_separator_menu_item_new());
+
+	GtkWidget* item_rename = gtk_menu_item_new_with_label("Rename");
+	g_signal_connect(item_rename, "activate", G_CALLBACK(on_ctx_rename),
+			 NULL);
+	gtk_widget_set_sensitive(item_rename, app.writable);
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_rename);
+
+	GtkWidget* item_delete = gtk_menu_item_new_with_label("Delete");
+	g_signal_connect(item_delete, "activate", G_CALLBACK(on_ctx_delete),
+			 NULL);
+	gtk_widget_set_sensitive(item_delete, app.writable);
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_delete);
+
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu),
+			      gtk_separator_menu_item_new());
+
+	GtkWidget* item_props = gtk_menu_item_new_with_label("Properties");
+	g_signal_connect(item_props, "activate", G_CALLBACK(on_ctx_properties),
+			 NULL);
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_props);
+
+	gtk_widget_show_all(menu);
+	gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent*)event);
+
+	return TRUE;
+}
+
 /* ── UI construction ──────────────────────────────────────────── */
 
 static GtkWidget* create_toolbar(void)
 {
-	GtkWidget* toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+	GtkWidget* toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
 	gtk_widget_set_margin_start(toolbar, 4);
 	gtk_widget_set_margin_end(toolbar, 4);
 	gtk_widget_set_margin_top(toolbar, 4);
-	gtk_widget_set_margin_bottom(toolbar, 4);
+	gtk_widget_set_margin_bottom(toolbar, 2);
+
+	/* 7zip-style toolbar buttons */
+	GtkWidget* btn;
+
+	btn = gtk_button_new_from_icon_name("list-add",
+					    GTK_ICON_SIZE_LARGE_TOOLBAR);
+	gtk_widget_set_tooltip_text(btn, "Add files");
+	gtk_widget_set_sensitive(btn, app.writable);
+	g_signal_connect(btn, "clicked", G_CALLBACK(on_add_files), NULL);
+	gtk_box_pack_start(GTK_BOX(toolbar), btn, FALSE, FALSE, 0);
+
+	btn = gtk_button_new_from_icon_name("extract-archive",
+					    GTK_ICON_SIZE_LARGE_TOOLBAR);
+	gtk_widget_set_tooltip_text(btn, "Extract selected");
+	g_signal_connect(btn, "clicked", G_CALLBACK(on_extract), NULL);
+	gtk_box_pack_start(GTK_BOX(toolbar), btn, FALSE, FALSE, 0);
+
+	btn = gtk_button_new_from_icon_name("edit-delete",
+					    GTK_ICON_SIZE_LARGE_TOOLBAR);
+	gtk_widget_set_tooltip_text(btn, "Delete");
+	gtk_widget_set_sensitive(btn, app.writable);
+	g_signal_connect(btn, "clicked", G_CALLBACK(on_delete), NULL);
+	gtk_box_pack_start(GTK_BOX(toolbar), btn, FALSE, FALSE, 0);
+
+	/* Separator */
+	gtk_box_pack_start(GTK_BOX(toolbar),
+			   gtk_separator_new(GTK_ORIENTATION_VERTICAL), FALSE,
+			   FALSE, 4);
+
+	btn = gtk_button_new_from_icon_name("folder-new",
+					    GTK_ICON_SIZE_LARGE_TOOLBAR);
+	gtk_widget_set_tooltip_text(btn, "New folder");
+	gtk_widget_set_sensitive(btn, app.writable);
+	g_signal_connect(btn, "clicked", G_CALLBACK(on_new_folder), NULL);
+	gtk_box_pack_start(GTK_BOX(toolbar), btn, FALSE, FALSE, 0);
+
+	btn = gtk_button_new_from_icon_name("document-properties",
+					    GTK_ICON_SIZE_LARGE_TOOLBAR);
+	gtk_widget_set_tooltip_text(btn, "Properties");
+	g_signal_connect(btn, "clicked", G_CALLBACK(on_properties), NULL);
+	gtk_box_pack_start(GTK_BOX(toolbar), btn, FALSE, FALSE, 0);
+
+	/* Separator */
+	gtk_box_pack_start(GTK_BOX(toolbar),
+			   gtk_separator_new(GTK_ORIENTATION_VERTICAL), FALSE,
+			   FALSE, 4);
 
 	/* Up button */
-	GtkWidget* up_btn =
-	    gtk_button_new_from_icon_name("go-up", GTK_ICON_SIZE_BUTTON);
-	gtk_widget_set_tooltip_text(up_btn, "Go up");
-	g_signal_connect(up_btn, "clicked", G_CALLBACK(on_go_up), NULL);
-	gtk_box_pack_start(GTK_BOX(toolbar), up_btn, FALSE, FALSE, 0);
+	btn =
+	    gtk_button_new_from_icon_name("go-up", GTK_ICON_SIZE_LARGE_TOOLBAR);
+	gtk_widget_set_tooltip_text(btn, "Go up");
+	g_signal_connect(btn, "clicked", G_CALLBACK(on_go_up), NULL);
+	gtk_box_pack_start(GTK_BOX(toolbar), btn, FALSE, FALSE, 0);
 
-	/* Path entry */
+	btn = gtk_button_new_from_icon_name("view-refresh",
+					    GTK_ICON_SIZE_LARGE_TOOLBAR);
+	gtk_widget_set_tooltip_text(btn, "Refresh");
+	g_signal_connect(btn, "clicked", G_CALLBACK(on_refresh), NULL);
+	gtk_box_pack_start(GTK_BOX(toolbar), btn, FALSE, FALSE, 0);
+
+	/* Path entry (address bar) */
 	app.path_entry = gtk_entry_new();
 	gtk_entry_set_text(GTK_ENTRY(app.path_entry), "/");
 	g_signal_connect(app.path_entry, "activate",
 			 G_CALLBACK(on_path_activate), NULL);
-	gtk_box_pack_start(GTK_BOX(toolbar), app.path_entry, TRUE, TRUE, 0);
+	gtk_box_pack_start(GTK_BOX(toolbar), app.path_entry, TRUE, TRUE, 4);
 
 	return toolbar;
 }
@@ -671,6 +1093,8 @@ static GtkWidget* create_file_list(void)
 	/* Signals */
 	g_signal_connect(app.tree_view, "row-activated",
 			 G_CALLBACK(on_row_activated), NULL);
+	g_signal_connect(app.tree_view, "button-press-event",
+			 G_CALLBACK(on_button_press), NULL);
 	GtkTreeSelection* sel =
 	    gtk_tree_view_get_selection(GTK_TREE_VIEW(app.tree_view));
 	gtk_tree_selection_set_mode(sel, GTK_SELECTION_SINGLE);
