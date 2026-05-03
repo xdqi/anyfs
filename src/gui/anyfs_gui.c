@@ -273,11 +273,33 @@ static void populate_list(const char* path)
 			const char* icon =
 			    icon_for_file(de->d_name, st.st_mode);
 
+			/* For symlinks, read target and show "name → target" */
+			char display_name[4096];
+			if (S_ISLNK(st.st_mode)) {
+				char link_target[1024];
+				long len =
+				    lkl_sys_readlink(fullpath, link_target,
+						     sizeof(link_target) - 1);
+				if (len > 0) {
+					link_target[len] = '\0';
+					snprintf(
+					    display_name, sizeof(display_name),
+					    "%s → %s", de->d_name, link_target);
+				} else {
+					snprintf(display_name,
+						 sizeof(display_name), "%s → ?",
+						 de->d_name);
+				}
+			} else {
+				snprintf(display_name, sizeof(display_name),
+					 "%s", de->d_name);
+			}
+
 			GtkTreeIter iter;
 			gtk_list_store_append(app.store, &iter);
 			gtk_list_store_set(
 			    app.store, &iter, COL_ICON, icon, COL_NAME,
-			    de->d_name, COL_SIZE,
+			    display_name, COL_SIZE,
 			    S_ISDIR(st.st_mode) ? "" : size_str, COL_SIZE_RAW,
 			    (gint64)(S_ISDIR(st.st_mode) ? -1 : st.st_size),
 			    COL_MODIFIED, time_str, COL_MTIME_RAW,
