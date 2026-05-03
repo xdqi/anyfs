@@ -287,3 +287,23 @@ if enable_ksmbd  # reuses same LKL build with NFSD config
         link_with: [anyfs_core],
     )
 endif
+
+# --- GTK3 GUI File Manager ---
+gtk3_dep = dependency('gtk+-3.0', required: false)
+if gtk3_dep.found()
+    # GUI links anyfs_core directly (not via anyfs_dep) to avoid
+    # static glib from enable_gio conflicting with GTK3's dynamic glib.
+    gui_deps = [lkl_dep, gtk3_dep]
+    gui_args = []
+    if enable_qemu
+        gui_deps += [qemu_dep]
+        gui_args += ['-DANYFS_HAS_QEMU=1']
+    endif
+    anyfs_gui = executable('anyfs-gui',
+        'src/gui/anyfs_gui.c',
+        include_directories: [anyfs_inc],
+        dependencies: gui_deps,
+        link_with: [anyfs_core],
+        c_args: gui_args,
+    )
+endif
