@@ -134,6 +134,41 @@ Reading ~150 MB of files from a 256 MB ext4 image:
 
 Run yourself: `./builddir/bench_backends <image> <fstype> [part]`
 
+## File Servers
+
+anyfs-reader includes two userspace file servers that expose a disk image over the network using LKL's built-in ksmbd and nfsd subsystems. Both use libslirp for userspace networking (no root required).
+
+| Server | Protocol | Host Port | Build Option |
+|--------|----------|-----------|--------------|
+| `lkl_ksmbd` | SMB3 (CIFS) | 10445 | `-Denable_ksmbd=true` |
+| `lkl_nfsd` | NFSv4 | 20049 | (same flag) |
+
+```bash
+# Build servers
+meson setup builddir-ksmbd -Dlkl_root=$HOME/linux/tools/lkl -Denable_ksmbd=true
+ninja -C builddir-ksmbd
+
+# SMB3 server
+./builddir-ksmbd/lkl_ksmbd -w disk.img
+smbclient //localhost/share -p 10445 -N
+
+# NFSv4 server
+./builddir-ksmbd/lkl_nfsd -w disk.img
+mount -t nfs4 localhost:/ /mnt -o port=20049,vers=4
+```
+
+See [docs/lkl-servers.md](docs/lkl-servers.md) for kernel config, NFSv4 implementation details, and pynfs test results.
+
+## GUI File Manager
+
+A GTK3-based graphical file browser (`anyfs-gui`) is available when GTK3 is installed. It provides a tree view of guest filesystem contents with read-only or read-write access.
+
+```bash
+# Requires gtk+-3.0
+./builddir/anyfs-gui disk.img
+./builddir/anyfs-gui -w disk.img   # read-write mode
+```
+
 ## Project Structure
 
 ```
@@ -142,9 +177,17 @@ src/core/anyfs.c             — Kernel init + disk management
 src/core/raw_blk_backend.c   — pread-based block backend
 src/core/gio_blk_backend.c   — GIO synchronous backend
 src/core/qemu_blk_backend.c  — QEMU block backend bridge
-src/cli/shell.c              — Interactive shell
+src/cli/shell.c              — Interactive shell (guestfish-like)
+src/gui/anyfs_gui.c          — GTK3 GUI file manager
+src/ksmbd/lkl_ksmbd.c       — SMB3 server (LKL + ksmbd-tools)
+src/nfsd/lkl_nfsd.c         — NFSv4 server (LKL nfsd)
 tests/                       — Tests and benchmarks
+docs/                        — Architecture & design docs
 ```
+
+## Documentation
+
+See [docs/README.md](docs/README.md) for the full documentation index.
 
 ## License
 

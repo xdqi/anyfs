@@ -134,20 +134,10 @@ ninja libqemuutil.a libqom.a libauthz.a libcrypto.a libio.a \
 
 ## 6. 性能数据
 
-### 后端吞吐量 (150 文件, ~150MB, 64K 读)
+详细基准测试结果见 [README.md](../README.md#benchmarks)。
 
-| Backend | Raw image | qcow2 |
-|---------|-----------|-------|
-| raw (pread) | 1295 MB/s | — |
-| gio | 1071 MB/s | — |
-| qemu | 722 MB/s | 818 MB/s |
-
-### 微观延迟 (单次 4KB 顺序读)
-
-| Backend | per-op |
-|---------|--------|
-| raw | ~29 µs |
-| gio | ~34 µs |
+概要: raw ~1.3 GB/s, gio ~1.1 GB/s, qemu ~0.8 GB/s (150 文件 ~150MB ext4)。
+单次 4KB 延迟: raw ~29µs, gio ~34µs。
 
 ---
 
@@ -178,3 +168,4 @@ ninja libqemuutil.a libqom.a libauthz.a libcrypto.a libio.a \
 | 6 | lkl-busybox (文件操作 applet) | 构想中 |
 | 7 | ksmbd SMB3 服务器 | ✅ |
 | 8 | nfsd NFSv4 服务器 | ✅ (pynfs 98.2% pass) |
+| 9 | GTK3 GUI 文件管理器 | ✅ |
