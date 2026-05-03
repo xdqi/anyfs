@@ -26,7 +26,7 @@ done
 
 # DLLs
 cp "$LKL_LIB/liblkl.dll" "$OUTDIR/"
-cp "$QEMU_BUILD/libanyfs-qemu.dll" "$OUTDIR/"
+cp "$QEMU_BUILD/libanyfs-qemublk.dll" "$OUTDIR/"
 cp "$HOME/libslirp/build-mingw32/libslirp-0.dll" "$OUTDIR/"
 
 # MSYS2 runtime DLLs (base + GTK3 GUI)

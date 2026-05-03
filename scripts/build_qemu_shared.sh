@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build libanyfs-qemu.so from QEMU block layer static libraries
+# Build libanyfs-qemublk.so from QEMU block layer static libraries
 # Must be run after QEMU is configured and built with -fPIC -fno-pie
 #
 # Prerequisites:
@@ -36,7 +36,7 @@ done
 # Link shared library
 # - libblock.a: whole-archive (needs format driver constructors)
 # - others: in --start-group to resolve circular dependencies
-gcc -shared -o libanyfs-qemu.so \
+gcc -shared -o libanyfs-qemublk.so \
     -Wl,--whole-archive libblock.a \
     -Wl,--no-whole-archive \
     -Wl,--start-group \
@@ -46,4 +46,4 @@ gcc -shared -o libanyfs-qemu.so \
     $(pkg-config --libs liburing 2>/dev/null || true) \
     -laio -lbz2 -lm
 
-echo "Built: $(ls -lh libanyfs-qemu.so | awk '{print $5, $NF}')"
+echo "Built: $(ls -lh libanyfs-qemublk.so | awk '{print $5, $NF}')"

@@ -36,4 +36,4 @@ option('ksmbd_tools_root', type: 'string',
 
 option('qemu_shared', type: 'boolean',
     value: false,
-    description: 'Link QEMU block backend dynamically via libanyfs-qemu.so')
+    description: 'Link QEMU block backend dynamically via libanyfs-qemublk.so')

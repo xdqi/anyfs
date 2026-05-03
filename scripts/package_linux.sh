@@ -72,11 +72,11 @@ for lib_path in \
     fi
 done
 
-# Find libanyfs-qemu.so from the QEMU build
-QEMU_SO=$(find "$HOME/qemu" -name libanyfs-qemu.so -type f 2>/dev/null | head -1)
+# Find libanyfs-qemublk.so from the QEMU build
+QEMU_SO=$(find "$HOME/qemu" -name libanyfs-qemublk.so -type f 2>/dev/null | head -1)
 if [ -n "$QEMU_SO" ]; then
     cp -L "$QEMU_SO" "$PKG/lib/"
-    echo "  lib/libanyfs-qemu.so"
+    echo "  lib/libanyfs-qemublk.so"
 fi
 
 # Bundle less-common system dependencies

@@ -109,7 +109,7 @@ meson setup builddir-win32 --cross-file cross-win32.txt \
 - No `anyfs-gui.exe` (GTK3 is Linux-only)
 
 ### QEMU Block Backend
-- DLL: `~/qemu/build-win32/libanyfs-qemu.dll` (2.0MB stripped)
+- DLL: `~/qemu/build-win32/libanyfs-qemublk.dll` (2.0MB stripped)
 - Strategy: `libblock.a` as `--whole-archive`, others in `--start-group`
 - Uses `--export-all-symbols` + `--enable-auto-import` (no dllimport needed)
 - No pixman/liburing/libaio on Windows
@@ -132,14 +132,14 @@ PKG_CONFIG_LIBDIR=$HOME/qemu/build-win32-pkgconfig \
 ninja libblock.a libqemuutil.a libio.a libqom.a libcrypto.a libauthz.a libevent-loop-base.a
 
 # Link into DLL
-i686-w64-mingw32-gcc -shared -o libanyfs-qemu.dll \
+i686-w64-mingw32-gcc -shared -o libanyfs-qemublk.dll \
     -Wl,--export-all-symbols -Wl,--enable-auto-import \
     -Wl,--whole-archive libblock.a \
     -Wl,--no-whole-archive \
     -Wl,--start-group libqemuutil.a libio.a libqom.a libcrypto.a libauthz.a libevent-loop-base.a -Wl,--end-group \
     -L/opt/msys2/mingw32/lib -lglib-2.0 -lintl -liconv -lzstd -lz -lbz2 \
     -lws2_32 -liphlpapi -lpathcch -lsynchronization -lwinmm -lpthread
-i686-w64-mingw32-strip libanyfs-qemu.dll
+i686-w64-mingw32-strip libanyfs-qemublk.dll
 ```
 
 ## 4. Testing Under Wine

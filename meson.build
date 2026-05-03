@@ -117,8 +117,8 @@ if enable_qemu
     )
 
     if qemu_shared
-        # Dynamic linking: use pre-built libanyfs-qemu.so / libanyfs-qemu.dll
-        anyfs_qemu_lib = cc.find_library('anyfs-qemu', dirs: [qemu_build])
+        # Dynamic linking: use pre-built libanyfs-qemublk.so / libanyfs-qemublk.dll
+        anyfs_qemu_lib = cc.find_library('anyfs-qemublk', dirs: [qemu_build])
         glib_sys_dep = dependency('glib-2.0', required: true)
         if host_machine.system() == 'windows'
             qemu_dep = declare_dependency(

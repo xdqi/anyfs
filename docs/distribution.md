@@ -33,7 +33,7 @@ anyfs-reader/
 │   └── anyfs-busybox      (动态链接)
 └── lib/
     ├── liblkl.so           (~20MB, 35 文件系统 + nfsd + ksmbd)
-    ├── libanyfs-qemu.so    (~10MB, QEMU block 层)
+    ├── libanyfs-qemublk.so    (~10MB, QEMU block 层)
     ├── libslirp.so.0       (liblkl 网络依赖)
     ├── liburing.so.2
     └── libaio.so.1t64
@@ -55,7 +55,7 @@ anyfs-reader/
 ├── lkl.dll
 ├── glib-2.0-0.dll
 ├── libslirp-0.dll
-├── anyfs-qemu.dll         (QEMU block 层合并)
+├── anyfs-qemublk.dll         (QEMU block 层合并)
 └── (mingw 运行时 dll)
 ```
 
@@ -100,7 +100,7 @@ make ARCH=lkl menuconfig
 ### QEMU 动态库
 
 将 QEMU 的 `libblock.a`, `libqemuutil.a`, `libio.a`, `libqom.a`, `libcrypto.a`, `libauthoriz.a`
-以及 `libevent-loop-base.a` 合并为单一共享库 `libanyfs-qemu.so` / `anyfs-qemu.dll`。
+以及 `libevent-loop-base.a` 合并为单一共享库 `libanyfs-qemublk.so` / `anyfs-qemublk.dll`。
 
 前置条件：QEMU 需用 `-fPIC` + `b_pie=false` 构建，且需打补丁 `util/fdmon-poll.c`
 移除 `static __thread` 中的 `static`（GCC 对 static __thread 始终使用 local-exec TLS，
@@ -119,7 +119,7 @@ ninja
 
 # 合并为共享库（使用 --start-group 解决循环依赖）
 # 见 scripts/build_qemu_shared.sh
-gcc -shared -o libanyfs-qemu.so \
+gcc -shared -o libanyfs-qemublk.so \
     -Wl,--whole-archive libblock.a \
     -Wl,--no-whole-archive \
     -Wl,--start-group libqemuutil.a libio.a libqom.a libcrypto.a libauthz.a libevent-loop-base.a -Wl,--end-group \
@@ -188,7 +188,7 @@ zip -r anyfs-reader-win32.zip anyfs-reader/
 | 库 | 来源 | 说明 |
 |----|------|------|
 | liblkl.so | 自建 | LKL 内核 |
-| libanyfs-qemu.so | 自建 | QEMU block 层 |
+| libanyfs-qemublk.so | 自建 | QEMU block 层 |
 | libglib-2.0.so | 系统 | GLib (GTK3 也依赖) |
 | libslirp.so | 系统 | 用户态网络 |
 | libgtk-3.so | 系统 | GUI (anyfs-gui) |
@@ -199,7 +199,7 @@ zip -r anyfs-reader-win32.zip anyfs-reader/
 | 库 | 来源 |
 |----|------|
 | lkl.dll | 自建 |
-| anyfs-qemu.dll | 自建 |
+| anyfs-qemublk.dll | 自建 |
 | glib-2.0-0.dll | 交叉编译 |
 | libslirp-0.dll | 交叉编译 |
 | mingw 运行时 | mingw-w64 |
