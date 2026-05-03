@@ -16,13 +16,16 @@
 
 #include <errno.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "anyfs.h"
+#include <glib-unix.h>
 #include <gtk/gtk.h>
 #include <lkl.h>
 
@@ -1809,10 +1812,13 @@ int main(int argc, char* argv[])
 		 mnt.fstype, app.writable ? " [RW]" : " [RO]");
 	gtk_window_set_title(GTK_WINDOW(app.window), title);
 
+	/* Install signal handlers for clean shutdown via GLib main loop */
+	g_unix_signal_add(SIGINT, (GSourceFunc)gtk_main_quit, NULL);
+	g_unix_signal_add(SIGTERM, (GSourceFunc)gtk_main_quit, NULL);
+
 	gtk_main();
 
-	/* Cleanup */
-	/* Remove DnD temp files */
+	/* Cleanup: unmount and halt LKL kernel */
 	char tmp_dir[256];
 	snprintf(tmp_dir, sizeof(tmp_dir), "/tmp/anyfs-dnd-%d", getpid());
 	char rm_cmd[300];

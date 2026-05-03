@@ -98,7 +98,7 @@ int qemu_blk_open(const char* image_path, int readonly,
 		qemu_initialized = 1;
 	}
 
-	int flags = readonly ? BDRV_O_NO_FLUSH : BDRV_O_RDWR;
+	int flags = readonly ? (BDRV_O_RDWR | BDRV_O_SNAPSHOT) : BDRV_O_RDWR;
 	BlockBackend* blk = blk_new_open(image_path, NULL, NULL, flags, &errp);
 	if (!blk) {
 		fprintf(stderr, "blk_new_open(%s) failed: %s\n", image_path,

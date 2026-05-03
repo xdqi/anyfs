@@ -284,6 +284,7 @@ cleanup:
 	usm_destroy();
 
 halt:
+	anyfs_umount(SHARE_NAME);
 	anyfs_kernel_halt();
 	pr_info("Done\n");
 	return 0;

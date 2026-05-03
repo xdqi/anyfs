@@ -533,6 +533,7 @@ int main(int argc, char** argv)
 	pthread_join(cache_tid, NULL);
 
 halt:
+	anyfs_umount(MOUNT_NAME);
 	anyfs_kernel_halt();
 	printf("Done\n");
 	return 0;

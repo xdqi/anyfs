@@ -48,6 +48,63 @@ struct disk_slot {
 static struct disk_slot g_disks[MAX_DISKS];
 static int g_kernel_started;
 
+/* atexit safety net: read /proc/mounts, unmount everything under /lklmnt/,
+ * remove all disks, then halt the kernel. */
+static void anyfs_atexit_cleanup(void)
+{
+	if (!g_kernel_started)
+		return;
+
+	lkl_sys_sync();
+
+	/* Read /proc/mounts to find all our mount points */
+	int fd = lkl_sys_open("/proc/mounts", LKL_O_RDONLY, 0);
+	if (fd >= 0) {
+		char buf[4096];
+		long n;
+		while ((n = lkl_sys_read(fd, buf, sizeof(buf) - 1)) > 0) {
+			buf[n] = '\0';
+			/* Parse lines: "device mountpoint fstype options ..."
+			 */
+			char* line = buf;
+			while (line && *line) {
+				char* eol = strchr(line, '\n');
+				if (eol)
+					*eol = '\0';
+
+				/* Find mount point (second field) */
+				char* mp = strchr(line, ' ');
+				if (mp) {
+					mp++;
+					char* mp_end = strchr(mp, ' ');
+					if (mp_end)
+						*mp_end = '\0';
+
+					if (strncmp(mp, "/lklmnt/", 8) == 0) {
+						lkl_sys_umount(mp, 0);
+					}
+				}
+
+				line = eol ? eol + 1 : NULL;
+			}
+		}
+		lkl_sys_close(fd);
+	}
+
+	/* Remove all disk devices */
+	for (int i = 0; i < MAX_DISKS; i++) {
+		if (g_disks[i].in_use) {
+			lkl_disk_remove(g_disks[i].disk);
+			g_disks[i].backend->close(&g_disks[i].disk);
+			g_disks[i].in_use = 0;
+		}
+	}
+
+	lkl_sys_halt();
+	lkl_cleanup();
+	g_kernel_started = 0;
+}
+
 /* ── Kernel lifecycle ─────────────────────────────────────────── */
 
 int anyfs_kernel_init(const AnyfsKernelOpts* opts)
@@ -84,6 +141,7 @@ int anyfs_kernel_init(const AnyfsKernelOpts* opts)
 		return -1;
 
 	g_kernel_started = 1;
+	atexit(anyfs_atexit_cleanup);
 	return 0;
 }
 
@@ -247,10 +305,14 @@ int anyfs_mount(int disk_id, unsigned int part, const char* fstype,
 	if (!auto_detect) {
 		/* Explicit filesystem type */
 		const char* opts = NULL;
-		if ((flags & ANYFS_MOUNT_RDONLY) &&
-		    (strcmp(fstype, "xfs") == 0 ||
-		     strcmp(fstype, "btrfs") == 0))
-			opts = "norecovery";
+		if (flags & ANYFS_MOUNT_RDONLY) {
+			if (strcmp(fstype, "xfs") == 0 ||
+			    strcmp(fstype, "btrfs") == 0)
+				opts = "norecovery";
+			else if (strcmp(fstype, "ext4") == 0 ||
+				 strcmp(fstype, "ext3") == 0)
+				opts = "noload";
+		}
 
 		ret = lkl_sys_mount(dev_str, mnt, (char*)fstype, mount_flags,
 				    (char*)opts);
@@ -265,8 +327,6 @@ int anyfs_mount(int disk_id, unsigned int part, const char* fstype,
 		out->fstype[sizeof(out->fstype) - 1] = '\0';
 		return 0;
 	}
-
-	/* Auto-detect: ensure procfs is mounted for /proc/filesystems */
 	if (lkl_sys_access("/proc/filesystems", 0) < 0) {
 		lkl_sys_mkdir("/proc", 0555);
 		lkl_sys_mount("proc", "/proc", "proc", 0, NULL);
@@ -279,11 +339,14 @@ int anyfs_mount(int disk_id, unsigned int part, const char* fstype,
 	/* Try each filesystem type */
 	for (int i = 0; i < nfs; i++) {
 		const char* opts = NULL;
-		/* xfs/btrfs need norecovery for read-only images */
-		if ((flags & ANYFS_MOUNT_RDONLY) &&
-		    (strcmp(fstypes[i], "xfs") == 0 ||
-		     strcmp(fstypes[i], "btrfs") == 0))
-			opts = "norecovery";
+		if (flags & ANYFS_MOUNT_RDONLY) {
+			if (strcmp(fstypes[i], "xfs") == 0 ||
+			    strcmp(fstypes[i], "btrfs") == 0)
+				opts = "norecovery";
+			else if (strcmp(fstypes[i], "ext4") == 0 ||
+				 strcmp(fstypes[i], "ext3") == 0)
+				opts = "noload";
+		}
 
 		ret = lkl_sys_mount(dev_str, mnt, fstypes[i], mount_flags,
 				    (char*)opts);
@@ -311,6 +374,9 @@ int anyfs_umount(const char* name)
 
 	char mnt[64];
 	snprintf(mnt, sizeof(mnt), "/lklmnt/%s", name);
+
+	/* Flush all pending writes before unmount */
+	lkl_sys_sync();
 
 	int ret = lkl_sys_umount(mnt, 0);
 	if (ret < 0)
