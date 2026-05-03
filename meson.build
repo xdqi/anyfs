@@ -13,11 +13,18 @@ cc = meson.get_compiler('c')
 
 # LKL (pre-built)
 lkl_root = get_option('lkl_root')
+lkl_shared = get_option('lkl_shared')
 lkl_inc = include_directories(lkl_root / 'include')
-lkl_lib = cc.find_library('lkl',
-    dirs: [lkl_root],
-    static: true,
-)
+if lkl_shared
+    lkl_lib = cc.find_library('lkl',
+        dirs: [lkl_root / 'lib'],
+    )
+else
+    lkl_lib = cc.find_library('lkl',
+        dirs: [lkl_root],
+        static: true,
+    )
+endif
 # LKL needs pthread, rt, and slirp (compiled into liblkl.a)
 thread_dep = dependency('threads')
 rt_dep = cc.find_library('rt', required: false)
@@ -80,6 +87,7 @@ enable_qemu = get_option('enable_qemu')
 if enable_qemu
     qemu_root = get_option('qemu_root')
     qemu_build = get_option('qemu_build')
+    qemu_shared = get_option('qemu_shared')
 
     qemu_inc = include_directories(
         qemu_root / 'include',
@@ -94,41 +102,55 @@ if enable_qemu
         is_system: true,
     )
 
-    qemu_libs = []
-    foreach libname : ['qemuutil', 'io', 'qom', 'authz', 'crypto', 'event-loop-base']
-        qemu_libs += cc.find_library(libname, dirs: [qemu_build], static: true)
-    endforeach
+    if qemu_shared
+        # Dynamic linking: use pre-built libanyfs-qemu.so
+        anyfs_qemu_lib = cc.find_library('anyfs-qemu', dirs: [qemu_build])
+        glib_sys_dep = dependency('glib-2.0', required: true)
+        pixman_dep = dependency('pixman-1', required: true)
+        qemu_dep = declare_dependency(
+            include_directories: [qemu_inc, qemu_sys_inc],
+            dependencies: [anyfs_qemu_lib, glib_sys_dep, pixman_dep,
+                           thread_dep, rt_dep],
+        )
+    else
+        # Static linking: link individual QEMU archives
+        qemu_libs = []
+        foreach libname : ['qemuutil', 'io', 'qom', 'authz', 'crypto', 'event-loop-base']
+            qemu_libs += cc.find_library(libname, dirs: [qemu_build], static: true)
+        endforeach
 
-    # libblock.a needs --whole-archive to pull in format driver constructors
-    qemu_block_link_args = [
-        '-Wl,--whole-archive',
-        qemu_build / 'libblock.a',
-        '-Wl,--no-whole-archive',
-        '-lm',  # needed by some block drivers
-        '-lbz2', # needed by dmg driver
-    ]
+        # libblock.a needs --whole-archive to pull in format driver constructors
+        qemu_block_link_args = [
+            '-Wl,--whole-archive',
+            qemu_build / 'libblock.a',
+            '-Wl,--no-whole-archive',
+            '-lm',  # needed by some block drivers
+            '-lbz2', # needed by dmg driver
+        ]
 
-    # External deps needed by QEMU
-    zstd_dep = dependency('libzstd', required: true)
-    uring_dep = dependency('liburing', required: false)
-    aio_lib = cc.find_library('aio', required: true)
-    pixman_dep = dependency('pixman-1', required: true)
-    glib_sys_dep = dependency('glib-2.0', required: true)
-    gthread_dep = dependency('gthread-2.0', required: true)
-    z_dep = dependency('zlib', required: true)
+        # External deps needed by QEMU
+        zstd_dep = dependency('libzstd', required: true)
+        uring_dep = dependency('liburing', required: false)
+        aio_lib = cc.find_library('aio', required: true)
+        pixman_dep = dependency('pixman-1', required: true)
+        glib_sys_dep = dependency('glib-2.0', required: true)
+        gthread_dep = dependency('gthread-2.0', required: true)
+        z_dep = dependency('zlib', required: true)
 
-    qemu_dep = declare_dependency(
-        include_directories: [qemu_inc, qemu_sys_inc],
-        dependencies: qemu_libs + [zstd_dep, aio_lib, pixman_dep,
-                                    glib_sys_dep, gthread_dep, z_dep,
-                                    thread_dep, rt_dep] +
-                      (uring_dep.found() ? [uring_dep] : []),
-        link_args: qemu_block_link_args,
-    )
+        qemu_dep = declare_dependency(
+            include_directories: [qemu_inc, qemu_sys_inc],
+            dependencies: qemu_libs + [zstd_dep, aio_lib, pixman_dep,
+                                        glib_sys_dep, gthread_dep, z_dep,
+                                        thread_dep, rt_dep] +
+                          (uring_dep.found() ? [uring_dep] : []),
+            link_args: qemu_block_link_args,
+        )
+    endif
     qemu_args = ['-DANYFS_HAS_QEMU=1']
 else
     qemu_dep = []
     qemu_args = []
+    qemu_shared = false
 endif
 
 # --- Core library ---
@@ -147,8 +169,12 @@ endif
 if enable_qemu
     anyfs_core_sources += files(
         'src/core/qemu_blk_backend.c',
-        'src/core/qemu_stubs.c',
     )
+    if not qemu_shared
+        anyfs_core_sources += files(
+            'src/core/qemu_stubs.c',
+        )
+    endif
 endif
 
 # QEMU sources need gnu11 due to osdep.h macros using __COUNTER__
@@ -207,6 +233,7 @@ if readline_dep.found()
         dependencies: [anyfs_dep, readline_dep],
         c_args: gio_args + qemu_args,
         install: true,
+        install_rpath: '$ORIGIN/../lib',
     )
 endif
 
@@ -260,7 +287,7 @@ if enable_ksmbd
     )
     ksmbd_config_inc = include_directories('.')
 
-    lkl_ksmbd = executable('lkl_ksmbd',
+    lkl_ksmbd = executable('anyfs-ksmbd',
         'src/ksmbd/lkl_ksmbd.c',
         'src/ksmbd/ipc_lkl.c',
         'src/ksmbd/stubs_lkl.c',
@@ -275,16 +302,20 @@ if enable_ksmbd
             '-I' + meson.current_build_dir(),
             '-Wno-pointer-sign',
         ],
+        install: true,
+        install_rpath: '$ORIGIN/../lib',
     )
 endif
 
 # --- NFSv4 server (LKL nfsd, no external tools needed) ---
 if enable_ksmbd  # reuses same LKL build with NFSD config
-    lkl_nfsd = executable('lkl_nfsd',
+    lkl_nfsd = executable('anyfs-nfsd',
         'src/nfsd/lkl_nfsd.c',
         include_directories: [anyfs_inc],
         dependencies: [lkl_dep, slirp_dep, thread_dep],
         link_with: [anyfs_core],
+        install: true,
+        install_rpath: '$ORIGIN/../lib',
     )
 endif
 
@@ -305,5 +336,7 @@ if gtk3_dep.found()
         dependencies: gui_deps,
         link_with: [anyfs_core],
         c_args: gui_args,
+        install: true,
+        install_rpath: '$ORIGIN/../lib',
     )
 endif

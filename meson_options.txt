@@ -2,6 +2,10 @@ option('lkl_root', type: 'string',
     value: '',
     description: 'Path to LKL build directory (contains liblkl.a and include/)')
 
+option('lkl_shared', type: 'boolean',
+    value: false,
+    description: 'Link LKL dynamically via liblkl.so (from lkl_root/lib/)')
+
 option('glib_root', type: 'string',
     value: '',
     description: 'Path to GLib source tree (must have build-static/ with .a files)')
@@ -29,3 +33,7 @@ option('enable_ksmbd', type: 'boolean',
 option('ksmbd_tools_root', type: 'string',
     value: '',
     description: 'Path to ksmbd-tools source tree')
+
+option('qemu_shared', type: 'boolean',
+    value: false,
+    description: 'Link QEMU block backend dynamically via libanyfs-qemu.so')
