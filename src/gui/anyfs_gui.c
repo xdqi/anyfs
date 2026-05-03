@@ -404,13 +404,26 @@ static void on_selection_changed(GtkTreeSelection* sel, gpointer data)
 		return;
 
 	gboolean is_dir;
-	char *name, *fullpath;
+	char *name, *fullpath, *size_str;
 	gtk_tree_model_get(GTK_TREE_MODEL(app.store), &iter, COL_NAME, &name,
-			   COL_IS_DIR, &is_dir, COL_FULLPATH, &fullpath, -1);
+			   COL_IS_DIR, &is_dir, COL_FULLPATH, &fullpath,
+			   COL_SIZE, &size_str, -1);
 
 	update_preview(name, fullpath, is_dir);
+
+	/* Update statusbar with selection info */
+	int total =
+	    gtk_tree_model_iter_n_children(GTK_TREE_MODEL(app.store), NULL);
+	char status[256];
+	snprintf(status, sizeof(status), "%d items | Selected: %s (%s)%s",
+		 total, name, size_str ? size_str : "—",
+		 app.writable ? "" : " [read-only]");
+	gtk_statusbar_pop(GTK_STATUSBAR(app.statusbar), 0);
+	gtk_statusbar_push(GTK_STATUSBAR(app.statusbar), 0, status);
+
 	g_free(name);
 	g_free(fullpath);
+	g_free(size_str);
 }
 
 static void on_go_up(GtkWidget* btn, gpointer data)
@@ -956,6 +969,67 @@ static gboolean on_button_press(GtkWidget* widget, GdkEventButton* event,
 	return TRUE;
 }
 
+/* ── Keyboard shortcuts ───────────────────────────────────────── */
+
+static gboolean on_key_press(GtkWidget* widget, GdkEventKey* event,
+			     gpointer data)
+{
+	(void)widget;
+	(void)data;
+
+	/* Don't intercept when path entry is focused */
+	if (gtk_widget_has_focus(app.path_entry))
+		return FALSE;
+
+	switch (event->keyval) {
+	case GDK_KEY_Delete:
+		on_delete(NULL, NULL);
+		return TRUE;
+	case GDK_KEY_F2:
+		on_rename(NULL, NULL);
+		return TRUE;
+	case GDK_KEY_F5:
+		on_refresh(NULL, NULL);
+		return TRUE;
+	case GDK_KEY_F7:
+		on_new_folder(NULL, NULL);
+		return TRUE;
+	case GDK_KEY_BackSpace:
+		on_go_up(NULL, NULL);
+		return TRUE;
+	case GDK_KEY_Return:
+	case GDK_KEY_KP_Enter: {
+		GtkTreeSelection* sel =
+		    gtk_tree_view_get_selection(GTK_TREE_VIEW(app.tree_view));
+		GtkTreeIter iter;
+		if (gtk_tree_selection_get_selected(sel, NULL, &iter)) {
+			GtkTreePath* path = gtk_tree_model_get_path(
+			    GTK_TREE_MODEL(app.store), &iter);
+			on_row_activated(GTK_TREE_VIEW(app.tree_view), path,
+					 NULL, NULL);
+			gtk_tree_path_free(path);
+		}
+		return TRUE;
+	}
+	default:
+		break;
+	}
+
+	/* Ctrl+shortcuts */
+	if (event->state & GDK_CONTROL_MASK) {
+		switch (event->keyval) {
+		case GDK_KEY_l:
+		case GDK_KEY_L:
+			gtk_widget_grab_focus(app.path_entry);
+			return TRUE;
+		default:
+			break;
+		}
+	}
+
+	return FALSE;
+}
+
 /* ── UI construction ──────────────────────────────────────────── */
 
 static GtkWidget* create_toolbar(void)
@@ -1165,6 +1239,8 @@ static void build_ui(void)
 	gtk_window_set_default_size(GTK_WINDOW(app.window), 1000, 600);
 	g_signal_connect(app.window, "destroy", G_CALLBACK(gtk_main_quit),
 			 NULL);
+	g_signal_connect(app.window, "key-press-event",
+			 G_CALLBACK(on_key_press), NULL);
 
 	GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 	gtk_container_add(GTK_CONTAINER(app.window), vbox);
