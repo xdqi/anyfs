@@ -90,11 +90,14 @@ for lib in "${BUNDLE_LIBS[@]}"; do
     copy_lib "$lib"
 done
 
-# Set RUNPATH on shared libraries so they find each other
-echo "--- Setting RUNPATH on libraries ---"
+# Set RUNPATH and SONAME on shared libraries so they find each other
+echo "--- Setting RUNPATH/SONAME on libraries ---"
 for so in "$PKG/lib/"*.so*; do
     if [ -f "$so" ] && file "$so" | grep -q "ELF.*shared"; then
         patchelf --set-rpath '$ORIGIN' "$so" 2>/dev/null || true
+        # Set SONAME to just the filename (remove absolute path references)
+        soname=$(basename "$so")
+        patchelf --set-soname "$soname" "$so" 2>/dev/null || true
     fi
 done
 
@@ -103,6 +106,17 @@ echo "--- Verifying RUNPATH ---"
 for bin in "$PKG/bin/"*; do
     rpath=$(readelf -d "$bin" 2>/dev/null | grep RUNPATH | sed 's/.*\[//' | sed 's/\]//' || true)
     echo "  $(basename "$bin"): RUNPATH=$rpath"
+done
+
+# Fix absolute paths in DT_NEEDED (meson links with full path)
+echo "--- Fixing DT_NEEDED absolute paths ---"
+for bin in "$PKG/bin/"*; do
+    # Replace absolute path references with just the filename
+    for needed in $(readelf -d "$bin" 2>/dev/null | grep NEEDED | grep -oP '\[/[^\]]+\]' | tr -d '[]'); do
+        soname=$(basename "$needed")
+        echo "  $(basename "$bin"): $needed -> $soname"
+        patchelf --replace-needed "$needed" "$soname" "$bin"
+    done
 done
 
 # Create tarball
