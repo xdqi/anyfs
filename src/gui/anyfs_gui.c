@@ -28,13 +28,15 @@
 
 /* ── Column definitions for the file list ─────────────────────── */
 enum {
-	COL_ICON,     /* GdkPixbuf* or icon name */
-	COL_NAME,     /* filename (char*) */
-	COL_SIZE,     /* file size string */
-	COL_MODIFIED, /* mtime string */
-	COL_MODE,     /* permission string */
-	COL_IS_DIR,   /* gboolean: is directory? */
-	COL_FULLPATH, /* full LKL path (char*) */
+	COL_ICON,      /* GdkPixbuf* or icon name */
+	COL_NAME,      /* filename (char*) */
+	COL_SIZE,      /* file size string */
+	COL_SIZE_RAW,  /* raw size (int64) for sorting */
+	COL_MODIFIED,  /* mtime string */
+	COL_MTIME_RAW, /* raw mtime (int64) for sorting */
+	COL_MODE,      /* permission string */
+	COL_IS_DIR,    /* gboolean: is directory? */
+	COL_FULLPATH,  /* full LKL path (char*) */
 	NUM_COLS
 };
 
@@ -42,10 +44,12 @@ enum {
 typedef struct {
 	GtkWidget* window;
 	GtkWidget* tree_view;
-	GtkWidget* path_entry;	  /* breadcrumb / path bar */
-	GtkWidget* preview_stack; /* GtkStack: text or image */
-	GtkWidget* preview_text;  /* GtkTextView */
-	GtkWidget* preview_image; /* GtkImage */
+	GtkWidget* path_entry;	    /* editable path bar */
+	GtkWidget* path_breadcrumb; /* breadcrumb button box */
+	GtkWidget* path_stack;	    /* stack: breadcrumb or entry */
+	GtkWidget* preview_stack;   /* GtkStack: text or image */
+	GtkWidget* preview_text;    /* GtkTextView */
+	GtkWidget* preview_image;   /* GtkImage */
 	GtkWidget* statusbar;
 	GtkListStore* store;
 
@@ -140,6 +144,78 @@ static void format_time(long mtime, char* buf, size_t buflen)
 	strftime(buf, buflen, "%Y-%m-%d %H:%M", &tm);
 }
 
+/* ── Breadcrumb path bar ──────────────────────────────────────── */
+
+static void populate_list(const char* path); /* forward decl */
+
+static void on_breadcrumb_click(GtkWidget* btn, gpointer data)
+{
+	const char* target =
+	    (const char*)g_object_get_data(G_OBJECT(btn), "path");
+	if (target)
+		populate_list(target);
+}
+
+static void update_breadcrumb(const char* path)
+{
+	/* Clear existing breadcrumb children */
+	GList* children =
+	    gtk_container_get_children(GTK_CONTAINER(app.path_breadcrumb));
+	for (GList* l = children; l; l = l->next)
+		gtk_widget_destroy(GTK_WIDGET(l->data));
+	g_list_free(children);
+
+	/* Get display path relative to mount point */
+	const char* rel = path + strlen(app.mount_point);
+	if (!rel[0])
+		rel = "/";
+
+	/* Root button always present */
+	GtkWidget* root_btn = gtk_button_new_with_label("/");
+	gtk_button_set_relief(GTK_BUTTON(root_btn), GTK_RELIEF_NONE);
+	char* root_path = g_strdup(app.mount_point);
+	g_object_set_data_full(G_OBJECT(root_btn), "path", root_path, g_free);
+	g_signal_connect(root_btn, "clicked", G_CALLBACK(on_breadcrumb_click),
+			 NULL);
+	gtk_box_pack_start(GTK_BOX(app.path_breadcrumb), root_btn, FALSE, FALSE,
+			   0);
+
+	/* Path segments */
+	if (strcmp(rel, "/") != 0) {
+		char* dup = g_strdup(rel + 1); /* skip leading / */
+		char* saveptr;
+		char* seg = strtok_r(dup, "/", &saveptr);
+		char accum[4096];
+		snprintf(accum, sizeof(accum), "%s", app.mount_point);
+
+		while (seg) {
+			/* Separator arrow */
+			GtkWidget* arrow = gtk_label_new("›");
+			gtk_box_pack_start(GTK_BOX(app.path_breadcrumb), arrow,
+					   FALSE, FALSE, 0);
+
+			/* Accumulate path */
+			size_t len = strlen(accum);
+			snprintf(accum + len, sizeof(accum) - len, "/%s", seg);
+
+			GtkWidget* btn = gtk_button_new_with_label(seg);
+			gtk_button_set_relief(GTK_BUTTON(btn), GTK_RELIEF_NONE);
+			char* seg_path = g_strdup(accum);
+			g_object_set_data_full(G_OBJECT(btn), "path", seg_path,
+					       g_free);
+			g_signal_connect(btn, "clicked",
+					 G_CALLBACK(on_breadcrumb_click), NULL);
+			gtk_box_pack_start(GTK_BOX(app.path_breadcrumb), btn,
+					   FALSE, FALSE, 0);
+
+			seg = strtok_r(NULL, "/", &saveptr);
+		}
+		g_free(dup);
+	}
+
+	gtk_widget_show_all(app.path_breadcrumb);
+}
+
 /* ── Directory listing ────────────────────────────────────────── */
 
 static void populate_list(const char* path)
@@ -152,6 +228,8 @@ static void populate_list(const char* path)
 	if (!display_path[0])
 		display_path = "/";
 	gtk_entry_set_text(GTK_ENTRY(app.path_entry), display_path);
+	if (app.path_breadcrumb)
+		update_breadcrumb(path);
 
 	int fd = lkl_sys_open(path, LKL_O_RDONLY | LKL_O_DIRECTORY, 0);
 	if (fd < 0) {
@@ -197,13 +275,15 @@ static void populate_list(const char* path)
 
 			GtkTreeIter iter;
 			gtk_list_store_append(app.store, &iter);
-			gtk_list_store_set(app.store, &iter, COL_ICON, icon,
-					   COL_NAME, de->d_name, COL_SIZE,
-					   S_ISDIR(st.st_mode) ? "" : size_str,
-					   COL_MODIFIED, time_str, COL_MODE,
-					   mode_str, COL_IS_DIR,
-					   (gboolean)S_ISDIR(st.st_mode),
-					   COL_FULLPATH, fullpath, -1);
+			gtk_list_store_set(
+			    app.store, &iter, COL_ICON, icon, COL_NAME,
+			    de->d_name, COL_SIZE,
+			    S_ISDIR(st.st_mode) ? "" : size_str, COL_SIZE_RAW,
+			    (gint64)(S_ISDIR(st.st_mode) ? -1 : st.st_size),
+			    COL_MODIFIED, time_str, COL_MTIME_RAW,
+			    (gint64)st.lkl_st_mtime, COL_MODE, mode_str,
+			    COL_IS_DIR, (gboolean)S_ISDIR(st.st_mode),
+			    COL_FULLPATH, fullpath, -1);
 			count++;
 		}
 	}
@@ -454,6 +534,9 @@ static void on_path_activate(GtkEntry* entry, gpointer data)
 	snprintf(fullpath, sizeof(fullpath), "%s%s", app.mount_point,
 		 text[0] == '/' ? text : "");
 	populate_list(fullpath);
+	/* Switch back to breadcrumb view */
+	gtk_stack_set_visible_child_name(GTK_STACK(app.path_stack),
+					 "breadcrumb");
 }
 
 /* ── Drag and Drop: Guest → Host ─────────────────────────────── */
@@ -601,6 +684,59 @@ static void on_drag_data_received(GtkWidget* widget, GdkDragContext* ctx,
 
 /* ── Toolbar actions (7zip style) ─────────────────────────────── */
 
+static void extract_dir_recursive(const char* lkl_path, const char* host_path)
+{
+	mkdir(host_path, 0755);
+
+	int fd = lkl_sys_open(lkl_path, LKL_O_RDONLY | LKL_O_DIRECTORY, 0);
+	if (fd < 0)
+		return;
+
+	char buf[4096];
+	int nread;
+	while ((nread = lkl_sys_getdents64(fd, (struct lkl_linux_dirent64*)buf,
+					   sizeof(buf))) > 0) {
+		for (int pos = 0; pos < nread;) {
+			struct lkl_linux_dirent64* de = (void*)(buf + pos);
+			pos += de->d_reclen;
+
+			if (strcmp(de->d_name, ".") == 0 ||
+			    strcmp(de->d_name, "..") == 0)
+				continue;
+
+			char src[4096], dst[4096];
+			snprintf(src, sizeof(src), "%s/%s", lkl_path,
+				 de->d_name);
+			snprintf(dst, sizeof(dst), "%s/%s", host_path,
+				 de->d_name);
+
+			struct lkl_stat st;
+			if (lkl_sys_lstat(src, &st) < 0)
+				continue;
+
+			if (S_ISDIR(st.st_mode)) {
+				extract_dir_recursive(src, dst);
+			} else if (S_ISREG(st.st_mode)) {
+				int sfd = lkl_sys_open(src, LKL_O_RDONLY, 0);
+				if (sfd < 0)
+					continue;
+				FILE* df = fopen(dst, "wb");
+				if (df) {
+					char fbuf[65536];
+					long n;
+					while ((n = lkl_sys_read(
+						    sfd, fbuf, sizeof(fbuf))) >
+					       0)
+						fwrite(fbuf, 1, n, df);
+					fclose(df);
+				}
+				lkl_sys_close(sfd);
+			}
+		}
+	}
+	lkl_sys_close(fd);
+}
+
 static void on_extract(GtkWidget* btn, gpointer data)
 {
 	(void)btn;
@@ -617,9 +753,25 @@ static void on_extract(GtkWidget* btn, gpointer data)
 			   COL_FULLPATH, &fullpath, COL_IS_DIR, &is_dir, -1);
 
 	if (is_dir) {
+		/* Directory: choose folder to extract into */
+		GtkWidget* chooser = gtk_file_chooser_dialog_new(
+		    "Extract folder to...", GTK_WINDOW(app.window),
+		    GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, "_Cancel",
+		    GTK_RESPONSE_CANCEL, "_Extract", GTK_RESPONSE_ACCEPT, NULL);
+
+		if (gtk_dialog_run(GTK_DIALOG(chooser)) ==
+		    GTK_RESPONSE_ACCEPT) {
+			char* dest = gtk_file_chooser_get_filename(
+			    GTK_FILE_CHOOSER(chooser));
+			char target[4096];
+			snprintf(target, sizeof(target), "%s/%s", dest, name);
+			extract_dir_recursive(fullpath, target);
+			g_free(dest);
+		}
+		gtk_widget_destroy(chooser);
 		g_free(name);
 		g_free(fullpath);
-		return; /* TODO: recursive extract */
+		return;
 	}
 
 	GtkWidget* chooser = gtk_file_chooser_dialog_new(
@@ -977,9 +1129,16 @@ static gboolean on_key_press(GtkWidget* widget, GdkEventKey* event,
 	(void)widget;
 	(void)data;
 
-	/* Don't intercept when path entry is focused */
-	if (gtk_widget_has_focus(app.path_entry))
+	/* Don't intercept when path entry is focused (except Escape) */
+	if (gtk_widget_has_focus(app.path_entry)) {
+		if (event->keyval == GDK_KEY_Escape) {
+			gtk_stack_set_visible_child_name(
+			    GTK_STACK(app.path_stack), "breadcrumb");
+			gtk_widget_grab_focus(app.tree_view);
+			return TRUE;
+		}
 		return FALSE;
+	}
 
 	switch (event->keyval) {
 	case GDK_KEY_Delete:
@@ -1020,6 +1179,8 @@ static gboolean on_key_press(GtkWidget* widget, GdkEventKey* event,
 		switch (event->keyval) {
 		case GDK_KEY_l:
 		case GDK_KEY_L:
+			gtk_stack_set_visible_child_name(
+			    GTK_STACK(app.path_stack), "entry");
 			gtk_widget_grab_focus(app.path_entry);
 			return TRUE;
 		default:
@@ -1099,12 +1260,27 @@ static GtkWidget* create_toolbar(void)
 	g_signal_connect(btn, "clicked", G_CALLBACK(on_refresh), NULL);
 	gtk_box_pack_start(GTK_BOX(toolbar), btn, FALSE, FALSE, 0);
 
-	/* Path entry (address bar) */
+	/* Path stack: breadcrumb (default) or entry (on click/Ctrl+L) */
+	app.path_stack = gtk_stack_new();
+	gtk_stack_set_transition_type(GTK_STACK(app.path_stack),
+				      GTK_STACK_TRANSITION_TYPE_CROSSFADE);
+	gtk_stack_set_transition_duration(GTK_STACK(app.path_stack), 100);
+
+	/* Breadcrumb view */
+	app.path_breadcrumb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+	gtk_stack_add_named(GTK_STACK(app.path_stack), app.path_breadcrumb,
+			    "breadcrumb");
+
+	/* Entry view */
 	app.path_entry = gtk_entry_new();
 	gtk_entry_set_text(GTK_ENTRY(app.path_entry), "/");
 	g_signal_connect(app.path_entry, "activate",
 			 G_CALLBACK(on_path_activate), NULL);
-	gtk_box_pack_start(GTK_BOX(toolbar), app.path_entry, TRUE, TRUE, 4);
+	gtk_stack_add_named(GTK_STACK(app.path_stack), app.path_entry, "entry");
+
+	gtk_stack_set_visible_child_name(GTK_STACK(app.path_stack),
+					 "breadcrumb");
+	gtk_box_pack_start(GTK_BOX(toolbar), app.path_stack, TRUE, TRUE, 4);
 
 	return toolbar;
 }
@@ -1115,7 +1291,9 @@ static GtkWidget* create_file_list(void)
 	app.store = gtk_list_store_new(NUM_COLS, G_TYPE_STRING, /* icon name */
 				       G_TYPE_STRING,		/* name */
 				       G_TYPE_STRING,		/* size */
+				       G_TYPE_INT64,		/* size raw */
 				       G_TYPE_STRING,		/* modified */
+				       G_TYPE_INT64,		/* mtime raw */
 				       G_TYPE_STRING,		/* mode */
 				       G_TYPE_BOOLEAN,		/* is_dir */
 				       G_TYPE_STRING		/* fullpath */
@@ -1145,7 +1323,7 @@ static GtkWidget* create_file_list(void)
 	GtkCellRenderer* size_rend = gtk_cell_renderer_text_new();
 	GtkTreeViewColumn* col_size = gtk_tree_view_column_new_with_attributes(
 	    "Size", size_rend, "text", COL_SIZE, NULL);
-	gtk_tree_view_column_set_sort_column_id(col_size, COL_SIZE);
+	gtk_tree_view_column_set_sort_column_id(col_size, COL_SIZE_RAW);
 	gtk_tree_view_column_set_resizable(col_size, TRUE);
 	gtk_tree_view_append_column(GTK_TREE_VIEW(app.tree_view), col_size);
 
@@ -1153,7 +1331,7 @@ static GtkWidget* create_file_list(void)
 	GtkCellRenderer* mod_rend = gtk_cell_renderer_text_new();
 	GtkTreeViewColumn* col_mod = gtk_tree_view_column_new_with_attributes(
 	    "Modified", mod_rend, "text", COL_MODIFIED, NULL);
-	gtk_tree_view_column_set_sort_column_id(col_mod, COL_MODIFIED);
+	gtk_tree_view_column_set_sort_column_id(col_mod, COL_MTIME_RAW);
 	gtk_tree_view_column_set_resizable(col_mod, TRUE);
 	gtk_tree_view_append_column(GTK_TREE_VIEW(app.tree_view), col_mod);
 
