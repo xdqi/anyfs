@@ -1321,6 +1321,13 @@ static gboolean on_key_press(GtkWidget* widget, GdkEventKey* event,
 			    GTK_STACK(app.path_stack), "entry");
 			gtk_widget_grab_focus(app.path_entry);
 			return TRUE;
+		case GDK_KEY_a:
+		case GDK_KEY_A: {
+			GtkTreeSelection* sel = gtk_tree_view_get_selection(
+			    GTK_TREE_VIEW(app.tree_view));
+			gtk_tree_selection_select_all(sel);
+			return TRUE;
+		}
 		default:
 			break;
 		}
