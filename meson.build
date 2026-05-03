@@ -277,3 +277,13 @@ if enable_ksmbd
         ],
     )
 endif
+
+# --- NFSv4 server (LKL nfsd, no external tools needed) ---
+if enable_ksmbd  # reuses same LKL build with NFSD config
+    lkl_nfsd = executable('lkl_nfsd',
+        'src/nfsd/lkl_nfsd.c',
+        include_directories: [anyfs_inc],
+        dependencies: [lkl_dep, slirp_dep, thread_dep],
+        link_with: [anyfs_core],
+    )
+endif
