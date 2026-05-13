@@ -21,8 +21,13 @@ else
     lkl_mingw_inc = []
 endif
 if lkl_shared
+    if host_machine.system() == 'windows'
+        lkl_lib_dirs = [lkl_root / 'lib-win32', lkl_root]
+    else
+        lkl_lib_dirs = [lkl_root / 'lib']
+    endif
     lkl_lib = cc.find_library('lkl',
-        dirs: [lkl_root / 'lib'],
+        dirs: lkl_lib_dirs,
     )
 else
     lkl_lib = cc.find_library('lkl',
@@ -38,14 +43,23 @@ if host_machine.system() == 'windows'
     rt_dep = disabler()
     slirp_for_lkl = disabler()
     lkl_extra_deps = [ws2_dep, iphlpapi_dep]
+    lkl_compile_args = []
 else
     rt_dep = cc.find_library('rt', required: false)
     slirp_for_lkl = dependency('slirp', required: false)
     lkl_extra_deps = [rt_dep] + (slirp_for_lkl.found() ? [slirp_for_lkl] : [])
+    lkl_compile_args = ['-DLKL_HOST_CONFIG_POSIX']
+endif
+# On Windows, mingw32/ must come before lkl_inc so our lkl_autoconf.h
+# (without LKL_HOST_CONFIG_POSIX) takes precedence over the Linux one.
+_lkl_inc_dirs = [lkl_inc]
+if host_machine.system() == 'windows'
+    _lkl_inc_dirs = [lkl_mingw_inc] + _lkl_inc_dirs
 endif
 lkl_dep = declare_dependency(
-    include_directories: [lkl_inc] + (host_machine.system() == 'windows' ? [lkl_mingw_inc] : []),
+    include_directories: _lkl_inc_dirs,
     dependencies: [lkl_lib, thread_dep] + lkl_extra_deps,
+    compile_args: lkl_compile_args,
 )
 
 # GLib/GIO (optional, from ~/glib static build)
@@ -341,6 +355,57 @@ if enable_ksmbd  # reuses same LKL build with NFSD config
         link_with: [anyfs_core],
         install: true,
         install_rpath: '$ORIGIN/../lib',
+    )
+endif
+
+# --- FUSE Frontend (anyfs-fuse) ---
+enable_fuse = get_option('enable_fuse')
+if enable_fuse
+    fuse3_dep = dependency('fuse3', required: true)
+    fuse_flags = []
+    fuse_deps = [lkl_dep, fuse3_dep]
+    if enable_qemu
+        fuse_deps += [qemu_dep]
+        fuse_flags += ['-DANYFS_HAS_QEMU=1']
+    endif
+
+    anyfs_fuse = executable('anyfs-fuse',
+        'src/fuse/anyfs_fuse.c',
+        include_directories: [anyfs_inc],
+        dependencies: fuse_deps,
+        link_with: [anyfs_core],
+        c_args: fuse_flags + qemu_args + gio_args,
+        install: true,
+        install_rpath: '$ORIGIN/../lib',
+    )
+endif
+
+# --- WinFSP FUSE Frontend (anyfs-winfsp.exe) ---
+enable_winfsp = get_option('enable_winfsp')
+if enable_winfsp
+    winfsp_root = get_option('winfsp_root')
+    if winfsp_root == ''
+        error('winfsp_root must be set when enable_winfsp=true')
+    endif
+
+    winfsp_inc = include_directories(
+        winfsp_root / 'inc',
+    )
+
+    winfsp_lib = cc.find_library('winfsp-x86',
+        dirs: [winfsp_root / 'opt' / 'fsext' / 'lib'],
+        required: true,
+    )
+
+    anyfs_winfsp = executable('anyfs-winfsp',
+        'src/fuse/anyfs_fuse.c',
+        include_directories: [anyfs_inc, winfsp_inc],
+        dependencies: [lkl_dep, winfsp_lib, thread_dep, ws2_dep, iphlpapi_dep],
+        link_with: [anyfs_core],
+        c_args: ['-DFUSE_USE_VERSION=35'],
+        win_subsystem: 'console',
+        install: true,
+        install_rpath: '',
     )
 endif
 

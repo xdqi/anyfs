@@ -37,3 +37,15 @@ option('ksmbd_tools_root', type: 'string',
 option('qemu_shared', type: 'boolean',
     value: false,
     description: 'Link QEMU block backend dynamically via libanyfs-qemublk.so')
+
+option('enable_fuse', type: 'boolean',
+    value: false,
+    description: 'Enable FUSE frontend (anyfs-fuse)')
+
+option('enable_winfsp', type: 'boolean',
+    value: false,
+    description: 'Enable WinFSP FUSE frontend for Windows (anyfs-winfsp.exe)')
+
+option('winfsp_root', type: 'string',
+    value: '',
+    description: 'Path to WinFSP source tree (contains inc/ and opt/fsext/lib/)')
