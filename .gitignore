@@ -1,6 +1,5 @@
 # Meson build directories
-builddir*/
-build/
+build*/
 
 # Compiled objects
 *.o
