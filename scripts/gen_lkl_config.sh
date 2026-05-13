@@ -60,8 +60,9 @@ cd "$LINUX_DIR"
 rm -f .config .config.old
 rm -rf include/config
 
-# Start from LKL defconfig
-make $MAKE_ARGS defconfig 2>/dev/null || true
+# Start from LKL defconfig (no CROSS_COMPILE — kconfig doesn't need it,
+# and Wine-based toolchain causes $(shell,...) to fail in Kconfig)
+make ARCH=lkl defconfig 2>/dev/null || true
 
 cfg() { "$SCRIPTS" "$@"; }
 
@@ -263,19 +264,35 @@ cfg -e NLS_MAC_INUIT
 cfg -e NLS_MAC_ROMANIAN
 cfg -e NLS_MAC_TURKISH
 
-# ── Disable debug ─────────────────────────────────────────────────
-cfg -d DEBUG_INFO
-cfg -e DEBUG_INFO_NONE
+# ── 64-bit support ────────────────────────────────────────────────
+if [[ "$CROSS_COMPILE" == x86_64* ]]; then
+    cfg -e 64BIT
+    cfg --set-str OUTPUT_FORMAT "pe-x86-64"
+    # Enable debug info for x86_64 (MSYS2 gcc preserves it in COFF)
+    cfg -d DEBUG_INFO_NONE
+    cfg -e DEBUG_INFO_DWARF4
+else
+    # ── Disable debug for 32-bit ──────────────────────────────────
+    cfg -d DEBUG_INFO
+    cfg -e DEBUG_INFO_NONE
+fi
 cfg -d DNOTIFY
 
 # ── Resolve dependencies ──────────────────────────────────────────
-make $MAKE_ARGS olddefconfig 2>/dev/null
+make ARCH=lkl olddefconfig 2>/dev/null
 
 # ── Generate tools/lkl/Makefile.conf ──────────────────────────────
 CONF="tools/lkl/Makefile.conf"
 if [[ -n "$CROSS_COMPILE" ]] && [[ "$CROSS_COMPILE" == *mingw* || "$CROSS_COMPILE" == *cygwin* ]]; then
-    # Win32 cross-compile: write Makefile.conf manually since autoconf can't
+    # Windows cross-compile: write Makefile.conf manually since autoconf can't
     # detect the target environment
+    if [[ "$CROSS_COMPILE" == x86_64* ]]; then
+        ELFCLASS="ELFCLASS64"
+        LDFLAGS_EXTRA="LDFLAGS += -Wl,--image-base,0x10000"
+    else
+        ELFCLASS="ELFCLASS32"
+        LDFLAGS_EXTRA=""
+    fi
     cat > "$CONF" <<EOF
   export CROSS_COMPILE := ${CROSS_COMPILE}
   export CC := ${CROSS_COMPILE}gcc
@@ -289,13 +306,14 @@ if [[ -n "$CROSS_COMPILE" ]] && [[ "$CROSS_COMPILE" == *mingw* || "$CROSS_COMPIL
   KOPT += "HOSTLDFLAGS=-s"
   LDLIBS += -lws2_32 -liphlpapi
   LDLIBS += -L${LIBSLIRP_SRC}/build-mingw32 -lslirp-0
+  ${LDFLAGS_EXTRA}
   EXESUF := .exe
   SOSUF := .dll
   CFLAGS += -Iinclude/mingw32
   CFLAGS += -I${LIBSLIRP_SRC}/build-mingw32/include
 EOF
     # Pre-generate elfconfig.h since mk_elfconfig cannot parse PE objects
-    echo "#define KERNEL_ELFCLASS ELFCLASS32" > scripts/mod/elfconfig.h
+    echo "#define KERNEL_ELFCLASS ${ELFCLASS}" > scripts/mod/elfconfig.h
     # Generate lkl_autoconf.h for NT build
     mkdir -p tools/lkl/include
     cat > tools/lkl/include/lkl_autoconf.h <<EOF
