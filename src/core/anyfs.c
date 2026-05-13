@@ -133,6 +133,14 @@ int anyfs_kernel_init(const AnyfsKernelOpts* opts)
 	if (ret)
 		return -1;
 
+	/* Work around TLS issues when LKL is loaded as a shared library.
+	 * Without this, pthread_getspecific() may fail due to duplicated
+	 * __pthread_keys across namespaces (see posix-host.c).
+	 * Not applicable to Windows (no RTLD_LOCAL equivalent for DLLs). */
+#ifndef _WIN32
+	lkl_change_tls_mode();
+#endif
+
 	char boot_args[128];
 	snprintf(boot_args, sizeof(boot_args), "mem=%uM loglevel=%u", mem_mb,
 		 loglevel);
