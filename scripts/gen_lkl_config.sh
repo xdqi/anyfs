@@ -288,9 +288,11 @@ if [[ -n "$CROSS_COMPILE" ]] && [[ "$CROSS_COMPILE" == *mingw* || "$CROSS_COMPIL
     # detect the target environment
     if [[ "$CROSS_COMPILE" == x86_64* ]]; then
         ELFCLASS="ELFCLASS64"
+        MSYS_ARCH="mingw64"
         LDFLAGS_EXTRA="LDFLAGS += -Wl,--image-base,0x10000"
     else
         ELFCLASS="ELFCLASS32"
+        MSYS_ARCH="mingw32"
         LDFLAGS_EXTRA=""
     fi
     cat > "$CONF" <<EOF
@@ -305,12 +307,12 @@ if [[ -n "$CROSS_COMPILE" ]] && [[ "$CROSS_COMPILE" == *mingw* || "$CROSS_COMPIL
   KOPT += "HOSTCFLAGS=-Wno-char-subscripts"
   KOPT += "HOSTLDFLAGS=-s"
   LDLIBS += -lws2_32 -liphlpapi
-  LDLIBS += -L${LIBSLIRP_SRC}/build-mingw32 -lslirp-0
+  LDLIBS += -L/opt/msys2-cross/${MSYS_ARCH}/lib -lslirp
   ${LDFLAGS_EXTRA}
   EXESUF := .exe
   SOSUF := .dll
   CFLAGS += -Iinclude/mingw32
-  CFLAGS += -I${LIBSLIRP_SRC}/build-mingw32/include
+  CFLAGS += -I/opt/msys2-cross/${MSYS_ARCH}/include/slirp
 EOF
     # Pre-generate elfconfig.h since mk_elfconfig cannot parse PE objects
     echo "#define KERNEL_ELFCLASS ${ELFCLASS}" > scripts/mod/elfconfig.h

@@ -1,0 +1,1 @@
+/ opt / msys2 - cross / mingw64 / include / shlobj.h
