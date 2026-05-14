@@ -1,6 +1,18 @@
+option('lkl_dist', type: 'combo',
+    choices: ['linux-amd64', 'mingw32', 'mingw64', ''],
+    value: 'linux-amd64',
+    description: 'Pick a prebuilt out-of-tree LKL distribution under ./lkl-<dist>/ '
+        + '(holds generated headers + liblkl.a/.so/.dll). Set to "" to use lkl_root instead.')
+
 option('lkl_root', type: 'string',
     value: '',
-    description: 'Path to LKL build directory (contains liblkl.a and include/)')
+    description: 'Path to LKL tools/lkl/ build directory (contains liblkl.a and include/). '
+        + 'Overrides lkl_dist when non-empty.')
+
+option('lkl_src', type: 'string',
+    value: '${LINUX_SRC}',
+    description: 'Path to the Linux kernel source tree (provides tools/lkl/include/lkl.h '
+        + 'and the arch/lkl/include/{asm,uapi} source headers).')
 
 option('lkl_shared', type: 'boolean',
     value: false,
