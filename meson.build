@@ -219,7 +219,22 @@ endif
 anyfs_core_sources = files(
     'src/core/anyfs.c',
     'src/core/raw_blk_backend.c',
+    'src/core/anyfs_disk.c',
+    'src/core/anyfs_disk_dump.c',
+    'src/core/anyfs_dm.c',
+    'src/core/anyfs_sysfs.c',
+    'src/core/kindprobe.c',
+    'src/core/path_dsl.c',
+    'src/core/share_spec.c',
 )
+
+# libblkid (optional, v2 enrichment of KIND_FS rows with FSTYPE/LABEL/UUID)
+blkid_dep = dependency('blkid', required: false)
+if blkid_dep.found()
+    blkid_args = ['-DANYFS_HAS_BLKID=1']
+else
+    blkid_args = []
+endif
 
 if enable_gio
     anyfs_core_sources += files(
@@ -244,8 +259,10 @@ qemu_c_args = enable_qemu ? ['-std=gnu11'] : []
 anyfs_core = static_library('anyfs_core',
     anyfs_core_sources,
     include_directories: [anyfs_inc, include_directories('src/core')],
-    dependencies: [lkl_dep, gio_dep] + (enable_qemu ? [qemu_dep] : []),
-    c_args: ['-DANYFS_CORE_BUILDING', '-fvisibility=hidden'] + gio_args + qemu_args,
+    dependencies: [lkl_dep, gio_dep] + (enable_qemu ? [qemu_dep] : [])
+                  + (blkid_dep.found() ? [blkid_dep] : []),
+    c_args: ['-DANYFS_CORE_BUILDING', '-fvisibility=hidden']
+            + gio_args + qemu_args + blkid_args,
     install: true,
 )
 
