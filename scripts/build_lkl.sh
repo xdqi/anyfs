@@ -7,8 +7,9 @@
 #   --linux=DIR         Kernel source tree (default: ~/linux)
 #   --out=DIR           Parent dir containing lkl-<target>/ build trees
 #                       (default: ~/anyfs-reader)
-#   --targets=LIST      Comma-separated subset of: linux-amd64,mingw32,mingw64
-#                       (default: all three)
+#   --targets=LIST      Comma-separated subset of:
+#                         linux-amd64,linux-arm64,mingw32,mingw64
+#                       (default: linux-amd64,mingw32,mingw64)
 #   --clean             Run `make clean` in each target before building
 #   -j N                Parallelism (default: nproc)
 #
@@ -52,6 +53,7 @@ fi
 cross_for() {
     case "$1" in
         linux-amd64) echo "" ;;
+        linux-arm64) echo "aarch64-linux-gnu-" ;;
         mingw32)     echo "i686-w64-mingw32-" ;;
         mingw64)     echo "x86_64-w64-mingw32-" ;;
         *) echo "Unknown target: $1" >&2; return 1 ;;

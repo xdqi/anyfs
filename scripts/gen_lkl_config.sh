@@ -6,11 +6,13 @@
 # Options:
 #   --linux=DIR         Kernel source tree (default: ~/linux)
 #   --out=DIR           Parent dir for build trees (default: ~/anyfs-reader)
-#   --targets=LIST      Comma-separated subset of: linux-amd64,mingw32,mingw64
-#                       (default: all three)
+#   --targets=LIST      Comma-separated subset of:
+#                         linux-amd64,linux-arm64,mingw32,mingw64
+#                       (default: linux-amd64,mingw32,mingw64)
 #
 # Produces, under $OUT:
 #   lkl-linux-amd64/    native Linux x86_64
+#   lkl-linux-arm64/    Linux aarch64 cross (aarch64-linux-gnu-)
 #   lkl-mingw32/        Win32 cross (i686-w64-mingw32-)
 #   lkl-mingw64/        Win64 cross (x86_64-w64-mingw32-)
 #
@@ -317,6 +319,10 @@ configure_target() {
             cfg -e 64BIT
             debug_info_none
             ;;
+        linux-arm64)
+            cfg -e 64BIT
+            debug_info_none
+            ;;
         mingw32)
             cfg -d 64BIT
             debug_info_none
@@ -332,10 +338,33 @@ configure_target() {
 
     make -C "$LINUX_DIR" ARCH=lkl O="$OUT" $CROSS_KCONFIG olddefconfig 2>/dev/null
 
-    # tools/lkl/Makefile.conf — for mingw targets we write it by hand since
-    # autoconf can't probe a PE/Wine target.
+    # tools/lkl/Makefile.conf — hand-rolled for mingw (autoconf can't probe a
+    # PE/Wine target) and for linux-arm64 (autoconf would still see the host's
+    # /usr/include and enable slirp/fuse/macvtap whose aarch64 libs aren't
+    # installed → link failures). Native linux-amd64 still uses autoconf.
     local CONF="$LKL_OUT/Makefile.conf"
-    if [[ "$NAME" == mingw* ]]; then
+    if [[ "$NAME" == "linux-arm64" ]]; then
+        cat > "$CONF" <<EOF
+  export CROSS_COMPILE := ${CROSS}
+  export CC := ${CROSS}gcc
+  export LD := ${CROSS}ld
+  export AR := ${CROSS}ar
+  export LKL_HOST_CONFIG_POSIX=y
+  export LKL_HOST_CONFIG_AARCH64=y
+  export LKL_HOST_CONFIG_VIRTIO_NET=y
+  export LKL_HOST_CONFIG_VIRTIO_NET_FD=y
+  LDFLAGS += -pie -z noexecstack
+  CFLAGS += -fPIC -pthread
+  SOSUF := .so
+  LDLIBS += -lrt -lpthread
+EOF
+        cat > "$LKL_OUT/include/lkl_autoconf.h" <<EOF
+#define LKL_HOST_CONFIG_POSIX y
+#define LKL_HOST_CONFIG_AARCH64 y
+#define LKL_HOST_CONFIG_VIRTIO_NET y
+#define LKL_HOST_CONFIG_VIRTIO_NET_FD y
+EOF
+    elif [[ "$NAME" == mingw* ]]; then
         local ELFCLASS MSYS_ARCH LDFLAGS_EXTRA
         local NT64_CONF="" NT64_AUTOCONF=""
         if [[ "$NAME" == "mingw64" ]]; then
@@ -437,6 +466,7 @@ EOF
 cross_for() {
     case "$1" in
         linux-amd64) echo "" ;;
+        linux-arm64) echo "aarch64-linux-gnu-" ;;
         mingw32)     echo "i686-w64-mingw32-" ;;
         mingw64)     echo "x86_64-w64-mingw32-" ;;
         *) echo "Unknown target: $1" >&2; return 1 ;;
