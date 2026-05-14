@@ -297,6 +297,9 @@ if enable_qemu
     )
 endif
 
+# --- anyfs-lspart (standalone partition lister) ---
+subdir('src/lspart')
+
 # --- CLI Shell ---
 
 readline_dep = dependency('readline', required: false)
