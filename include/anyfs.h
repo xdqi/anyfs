@@ -65,6 +65,13 @@ typedef struct {
 int anyfs_mount(int disk_id, unsigned int part, const char* fstype,
 		const char* name, uint32_t flags, AnyfsMount* out);
 
+/* Like anyfs_mount but takes an existing LKL-visible block-device
+ * path (e.g. "/dev/mapper/foo"). Used by the session layer to mount
+ * the children of a container device that doesn't have a disk_id of
+ * its own (dm-linear over a partition, etc.). */
+int anyfs_mount_blkdev(const char* dev_path, const char* fstype,
+		       const char* name, uint32_t flags, AnyfsMount* out);
+
 /* Unmount a previously mounted filesystem. */
 int anyfs_umount(const char* name);
 

@@ -149,6 +149,25 @@ int anyfs_kernel_init(const AnyfsKernelOpts* opts)
 		return -1;
 
 	g_kernel_started = 1;
+
+	/* Mount sysfs early — the multi-partition session layer walks
+	 * /sys/block/<vdN>/ to discover partitions. Tolerate EEXIST/EBUSY
+	 * if something already mounted it. */
+	lkl_sys_mkdir("/sys", 0555);
+	{
+		long mret = lkl_sys_mount("sysfs", "/sys", "sysfs", 0, NULL);
+		(void)mret; /* -EBUSY/-EEXIST are fine */
+	}
+	/* procfs is mounted lazily by anyfs_mount() when needed; the
+	 * session layer also benefits from it being available — mount it
+	 * here too so /proc/mounts/filesystems are usable right after
+	 * kernel init. */
+	lkl_sys_mkdir("/proc", 0555);
+	{
+		long mret = lkl_sys_mount("proc", "/proc", "proc", 0, NULL);
+		(void)mret;
+	}
+
 	atexit(anyfs_atexit_cleanup);
 	return 0;
 }
@@ -280,27 +299,14 @@ static int get_block_fstypes(char fstypes[][FSTYPE_MAXLEN], int max)
 	return count;
 }
 
-int anyfs_mount(int disk_id, unsigned int part, const char* fstype,
-		const char* name, uint32_t flags, AnyfsMount* out)
+/* Common path: dev_str already points to a /dev node (we may or may
+ * not have mknod'd it). Returns 0 on success, negative on failure;
+ * caller is responsible for any /dev/<encoded> node cleanup it owns. */
+static int mount_via_devpath(const char* dev_str, const char* fstype,
+			     const char* name, uint32_t flags, AnyfsMount* out)
 {
-	if (!name || !out)
-		return -1;
-
 	int auto_detect = (!fstype || strcmp(fstype, "auto") == 0);
 
-	/* Get block device */
-	uint32_t dev;
-	int ret = lkl_get_virtio_blkdev(disk_id, part, &dev);
-	if (ret < 0)
-		return ret;
-
-	/* Create device node */
-	char dev_str[32];
-	snprintf(dev_str, sizeof(dev_str), "/dev/%08x", dev);
-	lkl_sys_access("/dev", 0) < 0 && lkl_sys_mkdir("/dev", 0700);
-	lkl_sys_mknod(dev_str, LKL_S_IFBLK | 0600, dev);
-
-	/* Create mount point */
 	lkl_sys_mkdir("/lklmnt", 0755);
 	char mnt[64];
 	snprintf(mnt, sizeof(mnt), "/lklmnt/%s", name);
@@ -310,8 +316,8 @@ int anyfs_mount(int disk_id, unsigned int part, const char* fstype,
 	if (flags & ANYFS_MOUNT_RDONLY)
 		mount_flags |= LKL_MS_RDONLY;
 
+	int ret;
 	if (!auto_detect) {
-		/* Explicit filesystem type */
 		const char* opts = NULL;
 		if (flags & ANYFS_MOUNT_RDONLY) {
 			if (strcmp(fstype, "xfs") == 0 ||
@@ -321,12 +327,10 @@ int anyfs_mount(int disk_id, unsigned int part, const char* fstype,
 				 strcmp(fstype, "ext3") == 0)
 				opts = "noload";
 		}
-
-		ret = lkl_sys_mount(dev_str, mnt, (char*)fstype, mount_flags,
-				    (char*)opts);
+		ret = lkl_sys_mount((char*)dev_str, mnt, (char*)fstype,
+				    mount_flags, (char*)opts);
 		if (ret < 0) {
 			lkl_sys_rmdir(mnt);
-			lkl_sys_unlink(dev_str);
 			return ret;
 		}
 		strncpy(out->mount_point, mnt, sizeof(out->mount_point) - 1);
@@ -335,16 +339,15 @@ int anyfs_mount(int disk_id, unsigned int part, const char* fstype,
 		out->fstype[sizeof(out->fstype) - 1] = '\0';
 		return 0;
 	}
+
 	if (lkl_sys_access("/proc/filesystems", 0) < 0) {
 		lkl_sys_mkdir("/proc", 0555);
 		lkl_sys_mount("proc", "/proc", "proc", 0, NULL);
 	}
 
-	/* Get list of block filesystems from kernel */
 	char fstypes[MAX_FSTYPES][FSTYPE_MAXLEN];
 	int nfs = get_block_fstypes(fstypes, MAX_FSTYPES);
 
-	/* Try each filesystem type */
 	for (int i = 0; i < nfs; i++) {
 		const char* opts = NULL;
 		if (flags & ANYFS_MOUNT_RDONLY) {
@@ -355,9 +358,8 @@ int anyfs_mount(int disk_id, unsigned int part, const char* fstype,
 				 strcmp(fstypes[i], "ext3") == 0)
 				opts = "noload";
 		}
-
-		ret = lkl_sys_mount(dev_str, mnt, fstypes[i], mount_flags,
-				    (char*)opts);
+		ret = lkl_sys_mount((char*)dev_str, mnt, fstypes[i],
+				    mount_flags, (char*)opts);
 		if (ret == 0) {
 			strncpy(out->mount_point, mnt,
 				sizeof(out->mount_point) - 1);
@@ -369,10 +371,40 @@ int anyfs_mount(int disk_id, unsigned int part, const char* fstype,
 		}
 	}
 
-	/* All failed - clean up */
 	lkl_sys_rmdir(mnt);
-	lkl_sys_unlink(dev_str);
 	return -1;
+}
+
+int anyfs_mount(int disk_id, unsigned int part, const char* fstype,
+		const char* name, uint32_t flags, AnyfsMount* out)
+{
+	if (!name || !out)
+		return -1;
+
+	uint32_t dev;
+	int ret = lkl_get_virtio_blkdev(disk_id, part, &dev);
+	if (ret < 0)
+		return ret;
+
+	char dev_str[32];
+	snprintf(dev_str, sizeof(dev_str), "/dev/%08x", dev);
+	lkl_sys_access("/dev", 0) < 0 && lkl_sys_mkdir("/dev", 0700);
+	lkl_sys_mknod(dev_str, LKL_S_IFBLK | 0600, dev);
+
+	ret = mount_via_devpath(dev_str, fstype, name, flags, out);
+	if (ret < 0)
+		lkl_sys_unlink(dev_str);
+	return ret;
+}
+
+int anyfs_mount_blkdev(const char* dev_path, const char* fstype,
+		       const char* name, uint32_t flags, AnyfsMount* out)
+{
+	if (!dev_path || !name || !out)
+		return -1;
+	/* The node is expected to already exist (caller mknod'd it). We
+	 * do not unlink on failure — that's the session layer's job. */
+	return mount_via_devpath(dev_path, fstype, name, flags, out);
 }
 
 int anyfs_umount(const char* name)
