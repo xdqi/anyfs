@@ -286,9 +286,17 @@ configure_target() {
     rm -f "$DOTCONFIG" "$DOTCONFIG.old"
     rm -rf "$OUT/include/config"
 
-    # defconfig — kconfig itself doesn't need CROSS_COMPILE, and a Wine-based
-    # toolchain would break $(shell,...) probes in Kconfig.
-    make -C "$LINUX_DIR" ARCH=lkl O="$OUT" defconfig 2>/dev/null || true
+    # defconfig — kconfig itself doesn't need CROSS_COMPILE, but Kconfig's
+    # default for OUTPUT_FORMAT shells out to cc-objdump-file-format.sh which
+    # invokes $CC. For non-native targets that probe must hit the cross
+    # compiler so OUTPUT_FORMAT picks up the right elf64-<arch> string.
+    # mingw is an exception: its toolchain is Wine-based and breaks
+    # Kconfig's $(shell,...) probes.
+    local CROSS_KCONFIG=""
+    if [[ "$NAME" != mingw* ]]; then
+        CROSS_KCONFIG="CROSS_COMPILE=$CROSS"
+    fi
+    make -C "$LINUX_DIR" ARCH=lkl O="$OUT" $CROSS_KCONFIG defconfig 2>/dev/null || true
 
     apply_common_config "$DOTCONFIG"
 
@@ -322,7 +330,7 @@ configure_target() {
             ;;
     esac
 
-    make -C "$LINUX_DIR" ARCH=lkl O="$OUT" olddefconfig 2>/dev/null
+    make -C "$LINUX_DIR" ARCH=lkl O="$OUT" $CROSS_KCONFIG olddefconfig 2>/dev/null
 
     # tools/lkl/Makefile.conf — for mingw targets we write it by hand since
     # autoconf can't probe a PE/Wine target.
