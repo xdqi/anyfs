@@ -105,6 +105,17 @@ static void setup_global_conf(void)
 	global_conf.share_fake_fscaps = 0;
 	global_conf.server_signing = 0;
 
+	/*
+	 * sm_check_sessions_capacity() does an atomic decrement on this. The
+	 * normal smb.conf path seeds it to 1024 via add_group_global_conf() →
+	 * process_global_conf_kv() ("max active sessions = 1024"). We skip
+	 * that path, so without an explicit seed the very first tree connect
+	 * decrements 0 → -EINVAL → TOO_MANY_SESSIONS → client sees
+	 * NT_STATUS_ACCESS_DENIED on tree connect. Match the upstream
+	 * default.
+	 */
+	global_conf.sessions_cap = 1024;
+
 	global_conf.server_min_protocol = g_strdup("SMB2_10");
 	global_conf.server_max_protocol = g_strdup("SMB3_11");
 	global_conf.netbios_name = g_strdup("LKLSMB");
