@@ -17,6 +17,14 @@ struct passwd {
 	char* pw_dir;
 	char* pw_shell;
 };
+
+/*
+ * Stub: Wine/mingw has no /etc/passwd. anyfs-ksmbd does NOT rely on
+ * getpwnam for permission bypass — it stamps force_uid/force_gid = 0 on
+ * every share programmatically in lkl_ksmbd.c (see finalize_in_memory_config).
+ * If ksmbd-tools still calls getpwnam (e.g. for usm_add_new_user on a
+ * non-guest principal), returning NULL is fine: that path falls back to
+ * INVALID_UID. */
 static inline struct passwd* getpwnam(const char* n)
 {
 	(void)n;

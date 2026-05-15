@@ -122,10 +122,12 @@ static void setup_global_conf(void)
  * because cp_parse_external_smbconf_group's helpers (is_a_key_value) may
  * write a NUL into the value to strip trailing whitespace.
  *
- * `force user = root` is intentionally absent: that smb.conf knob routes
- * through ksmbd-tools' force_user() → getpwnam("root"), which depends on
- * /etc/passwd and is unreliable across platforms (wine has no /etc/passwd
- * at all). A cross-platform replacement is added in a follow-up commit.
+ * `force user = root` is *intentionally absent*: that smb.conf knob would
+ * route through ksmbd-tools' force_user() → getpwnam("root"), which depends
+ * on /etc/passwd and is unreliable across platforms. We achieve the same
+ * effect — every SMB op runs as uid 0 so the mounted FS's UNIX perm bits
+ * never block us — by stamping force_uid/force_gid directly on each share
+ * in finalize_in_memory_config(). See the comment there.
  */
 static void add_share_group(const char* name, const char* lkl_path)
 {
@@ -165,6 +167,23 @@ static int finalize_in_memory_config(void)
 			pr_err("shm_add_new_share failed for [%s]\n", g->name);
 			ret = -1;
 			continue;
+		}
+
+		/*
+		 * Stamp uid/gid 0 on every share — the cross-platform
+		 * equivalent of `force user = root`. anyfs-ksmbd is a pure
+		 * disk-reader: the mounted FS's UNIX perm bits exist on the
+		 * image, not in our security model, and we must surface every
+		 * file to the SMB client regardless. Doing it here (instead of
+		 * via the conf knob) avoids force_user()'s getpwnam()
+		 * dependency, which behaves differently on Linux glibc, musl
+		 * static builds, and wine (no /etc/passwd at all).
+		 */
+		struct ksmbd_share* sh = shm_lookup_share(g->name);
+		if (sh) {
+			sh->force_uid = 0;
+			sh->force_gid = 0;
+			put_ksmbd_share(sh);
 		}
 	}
 	cp_smbconf_parser_destroy();
