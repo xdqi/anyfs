@@ -50,6 +50,7 @@ int lkl_netdev_slirp_add_hostfwd(struct lkl_netdev* nd, int is_udp,
 #include <management/spnego.h>
 #include <management/tree_conn.h>
 #include <management/user.h>
+#include <rpc.h>
 #include <tools.h>
 #include <worker.h>
 
@@ -114,52 +115,224 @@ static void setup_global_conf(void)
 	global_conf.map_to_guest = KSMBD_CONF_MAP_TO_GUEST_BAD_USER;
 }
 
-/* ── Config file generation ──────────────────────────────────────────── */
+/* ── In-memory ksmbd-tools configuration ─────────────────────────────── */
 
 /*
- * Write a [global] + one [section] per share and load it via ksmbd-tools.
- * Returns 0 on success.
+ * Default share options applied to every --share. Built with mutable buffers
+ * because cp_parse_external_smbconf_group's helpers (is_a_key_value) may
+ * write a NUL into the value to strip trailing whitespace.
+ *
+ * `force user = root` is intentionally absent: that smb.conf knob routes
+ * through ksmbd-tools' force_user() → getpwnam("root"), which depends on
+ * /etc/passwd and is unreliable across platforms (wine has no /etc/passwd
+ * at all). A cross-platform replacement is added in a follow-up commit.
  */
-static int setup_ksmbd_config(const ShareInfo* shares, int n_shares)
+static void add_share_group(const char* name, const char* lkl_path)
 {
-	const char* conf_path = "/tmp/lkl_ksmbd.conf";
-	const char* pwd_path = "/tmp/lkl_ksmbdpwd_nonexistent.db";
+	char path_opt[160];
+	char guest_opt[] = "guest ok = yes";
+	char ro_opt[] = "read only = yes";
+	char browse_opt[] = "browseable = yes";
 
-	FILE* fp = fopen(conf_path, "w");
+	snprintf(path_opt, sizeof(path_opt), "path = %s", lkl_path);
+
+	char* opts[] = {
+	    path_opt, guest_opt, ro_opt, browse_opt, NULL,
+	};
+	cp_parse_external_smbconf_group((char*)name, opts);
+}
+
+/*
+ * After the parser has been populated with [share] groups via
+ * cp_parse_external_smbconf_group, push each non-global group through
+ * shm_add_new_share. This is the part finalize_smbconf_parser would have
+ * done; we replicate it here because that function is static and assumes
+ * it owns the global-conf processing — which we already did via
+ * setup_global_conf().
+ */
+static int finalize_in_memory_config(void)
+{
+	GHashTableIter iter;
+	gpointer key, value;
+	int ret = 0;
+
+	g_hash_table_iter_init(&iter, parser.groups);
+	while (g_hash_table_iter_next(&iter, &key, &value)) {
+		struct smbconf_group* g = value;
+		if (g == parser.global)
+			continue;
+		if (shm_add_new_share(g)) {
+			pr_err("shm_add_new_share failed for [%s]\n", g->name);
+			ret = -1;
+			continue;
+		}
+	}
+	cp_smbconf_parser_destroy();
+	return ret;
+}
+
+/*
+ * Parse a host-side smb.conf into memory and replay each section through
+ * cp_parse_external_smbconf_group. Avoids the ksmbd-tools mmap parser
+ * entirely, which trips on Windows-style CRLF (the parser splits on '\n'
+ * without stripping '\r' and rejects `[global]\r` as an invalid entry).
+ *
+ * Returns 0 on success, -1 on failure.
+ */
+static int parse_host_smbconf(const char* path)
+{
+	FILE* fp = fopen(path, "rb");
 	if (!fp) {
-		perror("fopen conf");
+		perror("fopen smbconf");
 		return -1;
 	}
 
-	fprintf(fp,
-		"[global]\n"
-		"\tserver string = LKL ksmbd Server\n"
-		"\tnetbios name = LKLSMB\n"
-		"\tworkgroup = WORKGROUP\n"
-		"\tserver min protocol = SMB2_10\n"
-		"\tserver max protocol = SMB3_11\n"
-		"\tmap to guest = bad user\n"
-		"\tguest account = %s\n",
-		GUEST_USER);
+	char line[1024];
+	char section[128] = {0};
+	/* Up to MAX_SHARES sections * up to 32 options per section. Strings are
+	 * mutable (cp_parse_external_smbconf_group can NUL-terminate values).
+	 */
+	enum { MAX_OPTS = 32 };
+	char* opts[MAX_OPTS + 1];
+	int n_opts = 0;
+	int have_section = 0;
 
-	for (int i = 0; i < n_shares; i++) {
-		fprintf(fp,
-			"\n"
-			"[%s]\n"
-			"\tpath = %s\n"
-			"\tguest ok = yes\n"
-			"\tread only = yes\n"
-			"\tbrowseable = yes\n"
-			"\tforce user = root\n",
-			shares[i].name, shares[i].lkl_path);
+	/* Stash the current section's option strings so we can pass them all
+	 * at once when we hit the next section header (or EOF). */
+	char* stash[MAX_OPTS];
+	for (int i = 0; i < MAX_OPTS; i++)
+		stash[i] = NULL;
+
+	while (fgets(line, sizeof(line), fp)) {
+		/* Strip CR/LF and trailing whitespace */
+		size_t n = strlen(line);
+		while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r' ||
+				 line[n - 1] == ' ' || line[n - 1] == '\t'))
+			line[--n] = '\0';
+
+		/* Skip leading whitespace */
+		char* p = line;
+		while (*p == ' ' || *p == '\t')
+			p++;
+
+		/* Blank / comment lines */
+		if (*p == '\0' || *p == ';' || *p == '#')
+			continue;
+
+		/* Section header */
+		if (*p == '[') {
+			char* end = strchr(p, ']');
+			if (!end) {
+				fprintf(
+				    stderr,
+				    "warning: malformed section header: %s\n",
+				    p);
+				continue;
+			}
+			*end = '\0';
+			const char* name = p + 1;
+
+			/* Flush the previous section */
+			if (have_section) {
+				opts[n_opts] = NULL;
+				cp_parse_external_smbconf_group(section, opts);
+				for (int i = 0; i < n_opts; i++) {
+					free(stash[i]);
+					stash[i] = NULL;
+				}
+				n_opts = 0;
+			}
+
+			strncpy(section, name, sizeof(section) - 1);
+			section[sizeof(section) - 1] = '\0';
+			have_section = 1;
+			continue;
+		}
+
+		/* Key = value line. Must be inside a section. */
+		if (!have_section) {
+			fprintf(stderr,
+				"warning: option before any section: %s\n", p);
+			continue;
+		}
+		if (!strchr(p, '=')) {
+			fprintf(stderr, "warning: ignored non-kv line: %s\n",
+				p);
+			continue;
+		}
+		if (n_opts >= MAX_OPTS) {
+			fprintf(stderr,
+				"warning: too many options in [%s], extra "
+				"ignored\n",
+				section);
+			continue;
+		}
+		stash[n_opts] = strdup(p);
+		if (!stash[n_opts]) {
+			fprintf(stderr, "strdup failed\n");
+			fclose(fp);
+			return -1;
+		}
+		opts[n_opts] = stash[n_opts];
+		n_opts++;
 	}
+
+	/* Flush the last section */
+	if (have_section) {
+		opts[n_opts] = NULL;
+		cp_parse_external_smbconf_group(section, opts);
+		for (int i = 0; i < n_opts; i++)
+			free(stash[i]);
+	}
+
 	fclose(fp);
+	return 0;
+}
 
-	int ret = load_config((char*)pwd_path, (char*)conf_path);
-	if (ret) {
-		pr_err("load_config failed: %d\n", ret);
+/*
+ * Set up ksmbd-tools in-memory: registers the guest user, builds one share
+ * group per ShareInfo (and/or pulls extra sections out of the host conf if
+ * supplied), then brings up the MOUNTD subsystems (sm/rpc/ipc/spnego/wp).
+ *
+ * Mirrors load_config(MOUNTD) without ever touching a config file inside
+ * LKL — avoids the mmap/CRLF cross-platform fragility entirely.
+ */
+static int setup_ksmbd_config(const ShareInfo* shares, int n_shares,
+			      const char* host_smbconf)
+{
+	extern tool_main_fn* tool_main;
+	tool_main = mountd_main; /* TOOL_IS_MOUNTD must be true */
+
+	usm_init();
+	usm_remove_all_users();
+	shm_init();
+	shm_remove_all_shares();
+	cp_smbconf_parser_init();
+
+	/* global_conf has already been populated by setup_global_conf(); the
+	 * side-effect we still need from finalize_smbconf_parser is registering
+	 * the guest account user. */
+	if (usm_add_guest_account(global_conf.guest_account)) {
+		pr_err("usm_add_guest_account failed\n");
 		return -1;
 	}
+
+	/* Programmatic shares from --share. */
+	for (int i = 0; i < n_shares; i++)
+		add_share_group(shares[i].name, shares[i].lkl_path);
+
+	/* Optional: extra sections from a host-side smb.conf. */
+	if (host_smbconf && parse_host_smbconf(host_smbconf) < 0)
+		return -1;
+
+	if (finalize_in_memory_config() < 0)
+		return -1;
+
+	sm_init();
+	rpc_init();
+	ipc_init();
+	spnego_init();
+	wp_init();
 	return 0;
 }
 
@@ -572,19 +745,14 @@ int main(int argc, char** argv)
 	/* ── 6. Set up ksmbd-tools configuration ────────────────────────────
 	 */
 	setup_global_conf();
-	extern tool_main_fn* tool_main;
-	tool_main = mountd_main;
 
-	if (config_file) {
-		/* User-supplied config file takes precedence */
-		if (load_config("/dev/null", (char*)config_file)) {
-			pr_err("load_config failed\n");
-			goto halt;
-		}
-	} else {
-		if (setup_ksmbd_config(shares, n_shares) < 0)
-			goto halt;
-	}
+	/* Both branches go through the same in-memory entry point. -c FILE
+	 * supplies extra sections from a host-side smb.conf — we parse it
+	 * ourselves and replay through cp_parse_external_smbconf_group rather
+	 * than letting ksmbd-tools mmap a file (which doesn't survive CRLF
+	 * under wine). */
+	if (setup_ksmbd_config(shares, n_shares, config_file) < 0)
+		goto halt;
 
 	if (!(ksmbd_health_status & KSMBD_HEALTH_RUNNING)) {
 		pr_err("ksmbd IPC init failed\n");
