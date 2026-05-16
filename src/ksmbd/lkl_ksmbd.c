@@ -146,11 +146,12 @@ static void add_share_group(const char* name, const char* lkl_path)
 	char guest_opt[] = "guest ok = yes";
 	char ro_opt[] = "read only = yes";
 	char browse_opt[] = "browseable = yes";
+	char crossmnt_opt[] = "crossmnt = yes";
 
 	snprintf(path_opt, sizeof(path_opt), "path = %s", lkl_path);
 
 	char* opts[] = {
-	    path_opt, guest_opt, ro_opt, browse_opt, NULL,
+	    path_opt, guest_opt, ro_opt, browse_opt, crossmnt_opt, NULL,
 	};
 	cp_parse_external_smbconf_group((char*)name, opts);
 }
