@@ -423,6 +423,14 @@ static int start_nfsd(void)
 	if (ret < 0)
 		fprintf(stderr, "Warning: could not set versions\n");
 
+	/* nfsd_get_default_max_blksize() auto-sizes against LKL's tiny
+	 * totalram and bottoms out at 8 KiB, capping rsize at 8K. Force the
+	 * upstream cap (1 MiB; NFSSVC_MAXBLKSIZE) before threads come up so
+	 * clients can negotiate up. Must be written before the threads file. */
+	ret = lkl_write_file("/proc/fs/nfsd/max_block_size", "1048576\n");
+	if (ret < 0)
+		fprintf(stderr, "Warning: could not set max_block_size\n");
+
 	ret = lkl_write_file("/proc/fs/nfsd/threads", "1\n");
 	if (ret < 0) {
 		fprintf(stderr, "Failed to start nfsd threads: %s\n",
@@ -641,8 +649,13 @@ int main(int argc, char** argv)
 	int ifindex = lkl_netdev_get_ifindex(nd_id);
 	lkl_if_up(ifindex);
 	lkl_if_set_ipv4(ifindex, ip_str_to_int(GUEST_IP), GUEST_NMLEN);
+	/* Match the jumbo MTU configured in virtio_net_slirp.c so neither side
+	 * fragments. libslirp tops out at 65521; that's our ceiling here too.
+	 */
+	lkl_if_set_mtu(ifindex, 65521);
 	lkl_set_ipv4_gateway(ip_str_to_int(GUEST_GW));
-	printf("Network: %s/%d gw %s\n", GUEST_IP, GUEST_NMLEN, GUEST_GW);
+	printf("Network: %s/%d gw %s mtu 65521\n", GUEST_IP, GUEST_NMLEN,
+	       GUEST_GW);
 
 	/* Bring up loopback (needed for rpcbind local connection) */
 	lkl_if_up(1);

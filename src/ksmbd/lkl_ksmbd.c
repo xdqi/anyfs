@@ -612,8 +612,13 @@ int main(int argc, char** argv)
 	int ifindex = lkl_netdev_get_ifindex(nd_id);
 	lkl_if_up(ifindex);
 	lkl_if_set_ipv4(ifindex, ip_str_to_int(GUEST_IP), GUEST_NMLEN);
+	/* Match the jumbo MTU configured in virtio_net_slirp.c so neither side
+	 * fragments. libslirp tops out at 65521; that's our ceiling here too.
+	 */
+	lkl_if_set_mtu(ifindex, 65521);
 	lkl_set_ipv4_gateway(ip_str_to_int(GUEST_GW));
-	pr_info("Network: %s/%d gw %s\n", GUEST_IP, GUEST_NMLEN, GUEST_GW);
+	pr_info("Network: %s/%d gw %s mtu 65521\n", GUEST_IP, GUEST_NMLEN,
+		GUEST_GW);
 
 	/* ── 4. Open disk images ────────────────────────────────────────────
 	 */
