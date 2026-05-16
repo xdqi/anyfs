@@ -96,11 +96,17 @@ static void setup_global_conf(void)
 	global_conf.ipc_timeout = 30;
 	global_conf.deadtime = 0;
 	global_conf.file_max = 10000;
-	global_conf.smb2_max_read = 65536;
-	global_conf.smb2_max_write = 65536;
-	global_conf.smb2_max_trans = 65536;
+	/*
+	 * 1 MiB IO ceiling. Default 64 KiB throttles large reads through a
+	 * slirp NAT'd LKL guest more than necessary; we have RAM and clients
+	 * negotiate down on their own. `smbd_max_io_size` is the RDMA path's
+	 * ceiling but ksmbd also clamps non-RDMA buffer alloc against it.
+	 */
+	global_conf.smb2_max_read = 1048576;
+	global_conf.smb2_max_write = 1048576;
+	global_conf.smb2_max_trans = 1048576;
 	global_conf.smb2_max_credits = 8192;
-	global_conf.smbd_max_io_size = 65536;
+	global_conf.smbd_max_io_size = 1048576;
 	global_conf.max_connections = 128;
 	global_conf.share_fake_fscaps = 0;
 	global_conf.server_signing = 0;
@@ -147,11 +153,26 @@ static void add_share_group(const char* name, const char* lkl_path)
 	char ro_opt[] = "read only = yes";
 	char browse_opt[] = "browseable = yes";
 	char crossmnt_opt[] = "crossmnt = yes";
+	/*
+	 * Override ksmbd-tools defaults that don't fit a read-only disk-reader:
+	 *   - oplocks: we can't take lease-break callbacks back through slirp
+	 * NAT and the RO image never changes, so oplocks just add state.
+	 *   - store dos attributes: would chase user.DOSATTRIB xattr on every
+	 *     stat; the on-disk FSes we mount don't have it, every lookup pays
+	 *     a getxattr -> -ENODATA round trip.
+	 *   - hide dot files: default yes makes `.config/`, `.bashrc` etc.
+	 *     invisible to Windows clients. We're a forensic disk reader — the
+	 *     user wants to see everything.
+	 */
+	char oplocks_opt[] = "oplocks = no";
+	char dosattr_opt[] = "store dos attributes = no";
+	char hidedot_opt[] = "hide dot files = no";
 
 	snprintf(path_opt, sizeof(path_opt), "path = %s", lkl_path);
 
 	char* opts[] = {
-	    path_opt, guest_opt, ro_opt, browse_opt, crossmnt_opt, NULL,
+	    path_opt,	 guest_opt,   ro_opt,	   browse_opt, crossmnt_opt,
+	    oplocks_opt, dosattr_opt, hidedot_opt, NULL,
 	};
 	cp_parse_external_smbconf_group((char*)name, opts);
 }
