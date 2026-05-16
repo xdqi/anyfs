@@ -394,10 +394,12 @@ endif
 
 # --- NFSv4 server (LKL nfsd, no external tools needed) ---
 if enable_ksmbd  # reuses same LKL build with NFSD config
+    # glib is needed because libslirp depends on it (g_log/g_malloc/etc).
+    # When linking libslirp statically those symbols don't come in transitively.
     lkl_nfsd = executable('anyfs-nfsd',
         'src/nfsd/lkl_nfsd.c',
         include_directories: [anyfs_inc],
-        dependencies: [lkl_dep, slirp_dep, thread_dep],
+        dependencies: [lkl_dep, slirp_dep, glib_sys_dep2, thread_dep],
         link_with: [anyfs_core],
         install: true,
         install_rpath: '$ORIGIN/../lib',
