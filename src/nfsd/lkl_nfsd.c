@@ -431,7 +431,9 @@ static int start_nfsd(void)
 	if (ret < 0)
 		fprintf(stderr, "Warning: could not set max_block_size\n");
 
-	ret = lkl_write_file("/proc/fs/nfsd/threads", "1\n");
+	/* 8 server threads — one was a serialisation bottleneck under
+	 * concurrent reads (8-way O_DIRECT stalled minutes before draining). */
+	ret = lkl_write_file("/proc/fs/nfsd/threads", "8\n");
 	if (ret < 0) {
 		fprintf(stderr, "Failed to start nfsd threads: %s\n",
 			lkl_strerror(ret));
