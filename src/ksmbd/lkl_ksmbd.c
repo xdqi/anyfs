@@ -77,9 +77,38 @@ static void sigint_handler(int sig)
 	running = 0;
 }
 
+/* ── Runtime-tunable knobs ───────────────────────────────────────────── */
+/*
+ * Per-connection peak kernel memory (slab + in-flight kvzalloc) is roughly
+ * 10-16 MiB at smb2_max_read=1 MiB with smbclient's ~8 in-flight reads. So
+ * the relevant ceilings the user might want to dial down are:
+ *   --max-read   = ksmbd smb2_max_read / smb2_max_write / smb2_max_trans
+ *                  / smbd_max_io_size  (controls the per-IO buffer kvzalloc)
+ *   --max-conn   = ksmbd max_connections (hard cap on simultaneous TCP)
+ *   --max-credits= ksmbd smb2_max_credits (per-connection in-flight ceiling)
+ *   --mem-mb     = LKL kernel arena size (mem= boot arg)
+ *
+ * Defaults below match the previous hard-coded values (1 MiB IO, 128 conn,
+ * 8192 credits) and the new mem=32M default from anyfs_kernel_init.
+ */
+typedef struct {
+	int max_read;	 /* bytes; <=0 ⇒ default */
+	int max_conn;	 /* connections; <=0 ⇒ default */
+	int max_credits; /* credits;  <=0 ⇒ default */
+} KsmbdLimits;
+
+#define DEF_MAX_READ 1048576
+#define DEF_MAX_CONN 128
+#define DEF_MAX_CREDITS 8192
+
 /* ── Global config setup ─────────────────────────────────────────────── */
-static void setup_global_conf(void)
+static void setup_global_conf(const KsmbdLimits* lim)
 {
+	int max_read = lim->max_read > 0 ? lim->max_read : DEF_MAX_READ;
+	int max_conn = lim->max_conn > 0 ? lim->max_conn : DEF_MAX_CONN;
+	int max_credits =
+	    lim->max_credits > 0 ? lim->max_credits : DEF_MAX_CREDITS;
+
 	memset(&global_conf, 0, sizeof(global_conf));
 
 	global_conf.tcp_port = SMB_PORT;
@@ -87,17 +116,18 @@ static void setup_global_conf(void)
 	global_conf.deadtime = 0;
 	global_conf.file_max = 10000;
 	/*
-	 * 1 MiB IO ceiling. Default 64 KiB throttles large reads through a
-	 * slirp NAT'd LKL guest more than necessary; we have RAM and clients
-	 * negotiate down on their own. `smbd_max_io_size` is the RDMA path's
-	 * ceiling but ksmbd also clamps non-RDMA buffer alloc against it.
+	 * IO ceiling. Default 1 MiB matches the per-IO kvzalloc size ksmbd
+	 * allocates for SMB2_READ. Each in-flight read therefore costs roughly
+	 * this much; lower it under tight LKL mem= budgets. `smbd_max_io_size`
+	 * is the RDMA path's ceiling but ksmbd also clamps non-RDMA buffer
+	 * alloc against it.
 	 */
-	global_conf.smb2_max_read = 1048576;
-	global_conf.smb2_max_write = 1048576;
-	global_conf.smb2_max_trans = 1048576;
-	global_conf.smb2_max_credits = 8192;
-	global_conf.smbd_max_io_size = 1048576;
-	global_conf.max_connections = 128;
+	global_conf.smb2_max_read = max_read;
+	global_conf.smb2_max_write = max_read;
+	global_conf.smb2_max_trans = max_read;
+	global_conf.smb2_max_credits = max_credits;
+	global_conf.smbd_max_io_size = max_read;
+	global_conf.max_connections = max_conn;
 	global_conf.share_fake_fscaps = 0;
 	global_conf.server_signing = 0;
 
@@ -427,6 +457,29 @@ static void usage(FILE* f, const char* prog)
 	    "  -p N               [deprecated] Equivalent to --share p<N> "
 	    "(single-disk only).\n"
 	    "  -P PORT            Host port for SMB (default: %d).\n"
+	    "\n"
+	    "Resource limits (raise/lower to trade memory for concurrency):\n"
+	    "  --mem-mb N         LKL kernel arena size in MiB (default: 32).\n"
+	    "                     Peak kernel use is ~10-16 MiB per concurrent "
+	    "SMB\n"
+	    "                     session at the default 1 MiB IO size, plus "
+	    "page\n"
+	    "                     cache. Increase if you hit "
+	    "STATUS_INVALID_HANDLE\n"
+	    "                     under heavy concurrency.\n"
+	    "  --max-read BYTES   Max SMB2 read/write/transact (default: %d).\n"
+	    "                     Lower this (e.g. 262144) to shrink the "
+	    "per-IO\n"
+	    "                     kvzalloc buffer; higher values give better "
+	    "single-\n"
+	    "                     stream throughput at higher memory cost.\n"
+	    "  --max-conn N       Max simultaneous SMB connections (default: "
+	    "%d).\n"
+	    "  --max-credits N    Max SMB2 credits per connection (default: "
+	    "%d).\n"
+	    "                     Caps the number of in-flight requests one "
+	    "client\n"
+	    "                     can have outstanding.\n"
 	    "  -h, --help         Show this help.\n"
 	    "\n"
 	    "Examples:\n"
@@ -434,8 +487,11 @@ static void usage(FILE* f, const char* prog)
 	    "  %s disk.img -P 4450\n"
 	    "  %s boot.img data.qcow2 --share esp=disk0/p1 --share "
 	    "home=disk1/p1\n"
+	    "  %s disk.img --share p1 --mem-mb 128 --max-read 262144   # "
+	    "low-mem profile\n"
 	    "  Then: smbclient //localhost/<name> -U guest%%guest --port=%d\n",
-	    prog, HOST_FWD_PORT, prog, prog, prog, HOST_FWD_PORT);
+	    prog, HOST_FWD_PORT, DEF_MAX_READ, DEF_MAX_CONN, DEF_MAX_CREDITS,
+	    prog, prog, prog, prog, HOST_FWD_PORT);
 }
 
 /* ── main ────────────────────────────────────────────────────────────── */
@@ -452,12 +508,18 @@ int main(int argc, char** argv)
 	const char* config_file = NULL;
 	int log_level = PR_INFO;
 	int host_port = HOST_FWD_PORT;
-	int legacy_part = -1; /* -p N, -1 = not set */
+	int legacy_part = -1;		/* -p N, -1 = not set */
+	int mem_mb = 0;			/* 0 ⇒ anyfs_kernel_init default (32) */
+	KsmbdLimits limits = {0, 0, 0}; /* 0 ⇒ defaults */
 
 	/* ── Option parsing ─────────────────────────────────────────────────
 	 */
 	static const struct option long_opts[] = {
 	    {"share", required_argument, NULL, 1000},
+	    {"mem-mb", required_argument, NULL, 1001},
+	    {"max-read", required_argument, NULL, 1002},
+	    {"max-conn", required_argument, NULL, 1003},
+	    {"max-credits", required_argument, NULL, 1004},
 	    {"help", no_argument, NULL, 'h'},
 	    {NULL, 0, NULL, 0}};
 
@@ -476,6 +538,46 @@ int main(int argc, char** argv)
 				return 1;
 			}
 			share_specs[n_share_specs++] = optarg;
+			break;
+		case 1001: /* --mem-mb */
+			mem_mb = atoi(optarg);
+			if (mem_mb <= 0) {
+				fprintf(
+				    stderr,
+				    "error: --mem-mb must be > 0 (got '%s')\n",
+				    optarg);
+				return 1;
+			}
+			break;
+		case 1002: /* --max-read */
+			limits.max_read = atoi(optarg);
+			if (limits.max_read < 4096) {
+				fprintf(stderr,
+					"error: --max-read must be >= 4096 "
+					"(got '%s')\n",
+					optarg);
+				return 1;
+			}
+			break;
+		case 1003: /* --max-conn */
+			limits.max_conn = atoi(optarg);
+			if (limits.max_conn <= 0) {
+				fprintf(stderr,
+					"error: --max-conn must be > 0 (got "
+					"'%s')\n",
+					optarg);
+				return 1;
+			}
+			break;
+		case 1004: /* --max-credits */
+			limits.max_credits = atoi(optarg);
+			if (limits.max_credits <= 0) {
+				fprintf(stderr,
+					"error: --max-credits must be > 0 (got "
+					"'%s')\n",
+					optarg);
+				return 1;
+			}
 			break;
 		case 'c':
 			config_file = optarg;
@@ -570,9 +672,7 @@ int main(int argc, char** argv)
 
 	/* ── 1. Boot LKL kernel ─────────────────────────────────────────────
 	 */
-	/* mem_mb = 0 → take anyfs_kernel_init's default (32M with the tight
-	 * TCP sysctls applied there). */
-	AnyfsKernelOpts kern_opts = {.mem_mb = 0, .loglevel = 4};
+	AnyfsKernelOpts kern_opts = {.mem_mb = mem_mb, .loglevel = 4};
 	int ret = anyfs_kernel_init(&kern_opts);
 	if (ret) {
 		pr_err("Failed to start kernel\n");
@@ -770,7 +870,7 @@ int main(int argc, char** argv)
 
 	/* ── 6. Set up ksmbd-tools configuration ────────────────────────────
 	 */
-	setup_global_conf();
+	setup_global_conf(&limits);
 
 	/* Both branches go through the same in-memory entry point. -c FILE
 	 * supplies extra sections from a host-side smb.conf — we parse it
