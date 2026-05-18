@@ -2,10 +2,11 @@
 /*
  * lkl_ksmbd.c - LKL-based SMB3 server using ksmbd + ksmbd-tools
  *
- * Boots a Linux Kernel Library instance with the ksmbd module,
- * sets up networking via libslirp (user-mode, no root needed),
- * mounts one or more disk images, and runs the ksmbd-tools IPC daemon
- * to serve SMB3 shares.
+ * Boots a Linux Kernel Library instance with the ksmbd module, binds
+ * the in-kernel SMB listener to lo, mounts one or more disk images,
+ * and runs the ksmbd-tools IPC daemon to serve SMB3 shares. A host
+ * userspace TCP proxy (host_proxy.c) bridges host *:port to the
+ * LKL-internal 127.0.0.1:445, so libslirp is not on the data path.
  *
  * Build: meson compile -C build
  * Run:   ./anyfs-ksmbd [options] <image>[?<query>] [<image>...] --share
@@ -33,14 +34,8 @@
 #include "../core/share_spec.h"
 #include "anyfs.h"
 #include "anyfs_disk.h"
+#include "host_proxy.h"
 #include <lkl.h>
-
-/* Forward declarations for the slirp netdev backend (defined in
- * virtio_net_slirp.c, compiled alongside the binary). */
-struct lkl_netdev* lkl_netdev_slirp_create(void);
-int lkl_netdev_slirp_add_hostfwd(struct lkl_netdev* nd, int is_udp,
-				 const char* host_addr, int host_port,
-				 const char* guest_addr, int guest_port);
 
 #include <config_parser.h>
 #include <ipc.h>
@@ -59,9 +54,11 @@ int lkl_netdev_slirp_add_hostfwd(struct lkl_netdev* nd, int is_udp,
 #define MAX_SHARES 32
 
 /* ── Network defaults ─────────────────────────────────────────────────── */
-#define GUEST_IP "10.0.2.15"
-#define GUEST_GW "10.0.2.2"
-#define GUEST_NMLEN 24
+/*
+ * ksmbd binds to lo inside LKL; a host-side userspace proxy bridges
+ * host *:HOST_FWD_PORT -> LKL 127.0.0.1:SMB_PORT. libslirp is not on
+ * the data path.
+ */
 #define SMB_PORT 445
 #define HOST_FWD_PORT 4455
 #define GUEST_USER "guest"
@@ -78,13 +75,6 @@ static void sigint_handler(int sig)
 {
 	(void)sig;
 	running = 0;
-}
-
-static unsigned int ip_str_to_int(const char* s)
-{
-	unsigned int a, b, c, d;
-	sscanf(s, "%u.%u.%u.%u", &a, &b, &c, &d);
-	return (a) | (b << 8) | (c << 16) | (d << 24);
 }
 
 /* ── Global config setup ─────────────────────────────────────────────── */
@@ -130,6 +120,14 @@ static void setup_global_conf(void)
 	global_conf.guest_account = g_strdup(GUEST_USER);
 
 	global_conf.map_to_guest = KSMBD_CONF_MAP_TO_GUEST_BAD_USER;
+
+	/*
+	 * Bind the in-kernel listener only to lo. The host-side TCP proxy
+	 * (see host_proxy.c) connects to 127.0.0.1:445 from outside LKL,
+	 * so binding lo is sufficient — no other netdev exists.
+	 */
+	global_conf.interfaces = g_strsplit("lo", ",", -1);
+	global_conf.bind_interfaces_only = 1;
 }
 
 /* ── In-memory ksmbd-tools configuration ─────────────────────────────── */
@@ -570,55 +568,26 @@ int main(int argc, char** argv)
 	pr_logger_init(PR_LOGGER_STDIO);
 	set_log_level(log_level);
 
-	/* ── 1. Create slirp network device ──────────────────────────────── */
-	struct lkl_netdev* nd = lkl_netdev_slirp_create();
-	if (!nd) {
-		pr_err("Failed to create slirp netdev\n");
-		return 1;
-	}
-
-	int ret = lkl_netdev_slirp_add_hostfwd(nd, 0, "0.0.0.0", host_port,
-					       GUEST_IP, SMB_PORT);
-	if (ret < 0) {
-		pr_err("Failed to add port forward\n");
-		return 1;
-	}
-	pr_info("Port forward: host *:%d -> guest %s:%d\n", host_port, GUEST_IP,
-		SMB_PORT);
-
-	/* ── 2. Boot LKL kernel ─────────────────────────────────────────────
+	/* ── 1. Boot LKL kernel ─────────────────────────────────────────────
 	 */
-	AnyfsKernelOpts kern_opts = {.mem_mb = 64, .loglevel = 4};
-	ret = anyfs_kernel_init(&kern_opts);
+	/* mem_mb = 0 → take anyfs_kernel_init's default (32M with the tight
+	 * TCP sysctls applied there). */
+	AnyfsKernelOpts kern_opts = {.mem_mb = 0, .loglevel = 4};
+	int ret = anyfs_kernel_init(&kern_opts);
 	if (ret) {
 		pr_err("Failed to start kernel\n");
 		return 1;
 	}
 	pr_info("LKL kernel started (ksmbd built-in)\n");
 
-	/* ── 3. Configure network ───────────────────────────────────────────
+	/*
+	 * No virtio-net / slirp: the data path is host TCP -> host_proxy
+	 * threads -> lkl_sys_read/write -> LKL TCP on lo. We just need lo
+	 * up so ksmbd's netdev notifier creates the listener socket bound
+	 * to it. (lo is auto-up after boot, but the call is idempotent and
+	 * documents intent.)
 	 */
-	struct lkl_netdev_args nd_args;
-	__lkl__u8 mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
-	memset(&nd_args, 0, sizeof(nd_args));
-	nd_args.mac = mac;
-
-	int nd_id = lkl_netdev_add(nd, &nd_args);
-	if (nd_id < 0) {
-		pr_err("Failed to add netdev: %s\n", lkl_strerror(nd_id));
-		goto halt;
-	}
-
-	int ifindex = lkl_netdev_get_ifindex(nd_id);
-	lkl_if_up(ifindex);
-	lkl_if_set_ipv4(ifindex, ip_str_to_int(GUEST_IP), GUEST_NMLEN);
-	/* Match the jumbo MTU configured in virtio_net_slirp.c so neither side
-	 * fragments. libslirp tops out at 65521; that's our ceiling here too.
-	 */
-	lkl_if_set_mtu(ifindex, 65521);
-	lkl_set_ipv4_gateway(ip_str_to_int(GUEST_GW));
-	pr_info("Network: %s/%d gw %s mtu 65521\n", GUEST_IP, GUEST_NMLEN,
-		GUEST_GW);
+	lkl_if_up(1); /* loopback is always ifindex 1 in LKL */
 
 	/* ── 4. Open disk images ────────────────────────────────────────────
 	 */
@@ -816,6 +785,15 @@ int main(int argc, char** argv)
 		goto cleanup;
 	}
 
+	/*
+	 * ksmbd is now listening on lo:SMB_PORT inside LKL. Start the host
+	 * TCP proxy that bridges host:host_port to it.
+	 */
+	if (host_proxy_start(host_port, SMB_PORT) < 0) {
+		pr_err("host_proxy_start failed\n");
+		goto cleanup;
+	}
+
 	pr_info("SMB server ready at localhost:%d\n", host_port);
 	for (int i = 0; i < n_shares; i++)
 		pr_info(
@@ -831,6 +809,7 @@ int main(int argc, char** argv)
 	}
 
 	pr_info("Shutting down...\n");
+	host_proxy_stop();
 
 cleanup:
 	ipc_destroy();

@@ -375,10 +375,11 @@ if enable_ksmbd
     lkl_ksmbd = executable('anyfs-ksmbd',
         'src/ksmbd/lkl_ksmbd.c',
         'src/ksmbd/ipc_lkl.c',
+        'src/ksmbd/host_proxy.c',
         'src/ksmbd/stubs_lkl.c',
         ksmbd_tools_sources,
         include_directories: [anyfs_inc, ksmbd_tools_inc],
-        dependencies: [lkl_dep, slirp_dep, glib_sys_dep2],
+        dependencies: [lkl_dep, slirp_dep, glib_sys_dep2, thread_dep],
         link_with: [ksmbd_tools_lib, anyfs_core],
         c_args: [
             '-DSYSCONFDIR="/etc"',

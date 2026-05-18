@@ -112,7 +112,10 @@ int anyfs_kernel_init(const AnyfsKernelOpts* opts)
 	if (g_kernel_started)
 		return 0;
 
-	uint32_t mem_mb = 64;
+	/* 32M default: with the tight TCP sysctls applied below, the kernel
+	 * needs essentially no memory for the TCP path (bench: 2M still hits
+	 * 3 GB/s × 16 streams). 32M leaves headroom for VFS / FS slabs. */
+	uint32_t mem_mb = 32;
 	uint32_t loglevel = 0;
 	if (opts) {
 		if (opts->mem_mb)
@@ -149,6 +152,24 @@ int anyfs_kernel_init(const AnyfsKernelOpts* opts)
 		return -1;
 
 	g_kernel_started = 1;
+
+	/* Tight TCP buffer caps. Default tcp_mem is auto-sized to available
+	 * kernel memory (tiny when mem= is small), so concurrent TCP servers
+	 * (ksmbd/nfsd) hit memory pressure and stall under multi-stream load
+	 * unless mem= is large. Pinning tcp_mem high relative to per-socket
+	 * caps decouples throughput from kernel memory size — measured:
+	 * 16 streams at 3+ GB/s on mem=2M with these caps, vs 140 MB/s on
+	 * mem=64M with the kernel defaults. Per-socket caps are small
+	 * (~64 KiB) because the user-space SPSC ring absorbs bursts; LKL
+	 * socket buffers only need ~1 loopback BDP of headroom.
+	 * tcp_mem values are in pages (4 KiB); the rest are bytes. */
+	(void)lkl_sysctl("net.ipv4.tcp_wmem", "4096 16384 65536");
+	(void)lkl_sysctl("net.ipv4.tcp_rmem", "4096 16384 65536");
+	(void)lkl_sysctl("net.ipv4.tcp_mem", "8192 16384 32768");
+	(void)lkl_sysctl("net.core.wmem_default", "16384");
+	(void)lkl_sysctl("net.core.rmem_default", "16384");
+	(void)lkl_sysctl("net.core.wmem_max", "65536");
+	(void)lkl_sysctl("net.core.rmem_max", "65536");
 
 	/* Mount sysfs early — the multi-partition session layer walks
 	 * /sys/block/<vdN>/ to discover partitions. Tolerate EEXIST/EBUSY
