@@ -215,13 +215,12 @@ static void handle_unix_gid(int fd, char* query)
 /*
  * Handle nfsd.fh upcall: "domain fsidtype \xfsid\n" -> respond with path.
  *
- * We use FSID_NUM (type 1) with a 4-byte big-endian export index as the fsid.
- * fsid 0 is reserved for the kernel's synthesized NFSv4 pseudo-root — we
- * never claim it ourselves. Share N (0-based slot) uses fsid=N+1, so slot 0
- * → fsid bytes {0,0,0,1}, slot 1 → {0,0,0,2}, etc.
- *
- * The path in the response is the bind-mount path (/<share-name>) so the
- * pseudo-fs walks "<share-name>" to the export.
+ * We use FSID_NUM (type 1) with a 4-byte big-endian fsid:
+ *   fsid 0      -> "/" (the LKL rootfs, marked NFSEXP_V4ROOT below). The
+ *                  NFSv4 client's PUTROOTFH lands here; it then LOOKs up
+ *                  share names as children of this pseudo-root.
+ *   fsid 1..N   -> g_exports[idx-1].bind_path (the share bind mount at
+ *                  /<share-name>). Slot 0 -> fsid bytes {0,0,0,1}, etc.
  */
 static void handle_expkey(int fd, char* query)
 {
@@ -241,21 +240,26 @@ static void handle_expkey(int fd, char* query)
 
 	/* We only handle FSID_NUM (type 1) with 4-byte fsid */
 	if (fsidtype == 1 && fsid_len == 4) {
-		/* Decode big-endian fsid (1-indexed) */
+		/* Decode big-endian fsid */
 		unsigned int idx = ((unsigned char)fsid_bytes[0] << 24) |
 				   ((unsigned char)fsid_bytes[1] << 16) |
 				   ((unsigned char)fsid_bytes[2] << 8) |
 				   (unsigned char)fsid_bytes[3];
 
-		if (idx >= 1 && (int)idx <= g_n_exports) {
-			int slot = (int)idx - 1;
+		const char* path = NULL;
+		if (idx == 0)
+			path = "/";
+		else if ((int)idx <= g_n_exports)
+			path = g_exports[idx - 1].bind_path;
+
+		if (path) {
 			snprintf(resp, sizeof(resp),
 				 "%s 1 \\x%02x%02x%02x%02x %ld %s\n", domain,
 				 (idx >> 24) & 0xff, (idx >> 16) & 0xff,
 				 (idx >> 8) & 0xff, idx & 0xff, (long)expiry,
-				 g_exports[slot].bind_path);
+				 path);
 			printf("[mountd] expkey: %s fsid=%u -> %s\n", domain,
-			       idx, g_exports[slot].bind_path);
+			       idx, path);
 			lkl_sys_write(fd, resp, strlen(resp));
 			return;
 		}
@@ -280,10 +284,9 @@ static void handle_expkey(int fd, char* query)
 /*
  * Handle nfsd.export upcall: "domain path\n" -> respond with export flags.
  *
- * The client-visible NFS path for export i is "/<name>", which is also the
- * server-side bind_path (a bind mount of the share's LKL fs). We match the
- * upcall against bind_path; fsid is the 1-based slot so 0 stays reserved
- * for the kernel's pseudo-root.
+ * Path "/" -> the NFSv4 pseudo-root export (NFSEXP_V4ROOT, fsid=0). All
+ * other paths are matched against g_exports[i].bind_path; fsid is the
+ * 1-based slot so 0 stays reserved for the pseudo-root.
  */
 static void handle_export(int fd, char* query)
 {
@@ -295,6 +298,21 @@ static void handle_export(int fd, char* query)
 		return;
 	if (qword_get_user(&p, path, sizeof(path)) <= 0)
 		return;
+
+	/* NFSv4 pseudo-root: required so PUTROOTFH succeeds and the client
+	 * can LOOKUP share names from it. Read-only, all-squash; the kernel
+	 * walks child mounts (our /<name> bind mounts) automatically. */
+	if (strcmp(path, "/") == 0) {
+		unsigned int flags = NFSEXP_V4ROOT | NFSEXP_INSECURE |
+				     NFSEXP_NOSUBTREECHECK | NFSEXP_FSID |
+				     NFSEXP_READONLY | NFSEXP_ALLSQUASH;
+		snprintf(resp, sizeof(resp), "%s %s %ld %u 0 0 0\n", domain,
+			 path, (long)expiry, flags);
+		printf("[mountd] export: %s %s -> flags=%#x fsid=0 (v4root)\n",
+		       domain, path, flags);
+		lkl_sys_write(fd, resp, strlen(resp));
+		return;
+	}
 
 	/* Search for a matching export by bind path */
 	for (int i = 0; i < g_n_exports; i++) {

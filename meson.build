@@ -332,6 +332,16 @@ test_raw_mount = executable('test_raw_mount',
     c_args: gio_args + qemu_args,
 )
 
+# Exercises just the bind-mount logic anyfs-nfsd uses to expose each share
+# at /<name> — no nfsd, no host_proxy, no NFS client. Lets the pseudo-root
+# semantics be validated without an NFS test rig.
+test_nfsd_pseudo_root = executable('test_nfsd_pseudo_root',
+    'tests/test_nfsd_pseudo_root.c',
+    include_directories: anyfs_inc,
+    dependencies: [anyfs_dep],
+    c_args: gio_args + qemu_args,
+)
+
 bench_backends = executable('bench_backends',
     'tests/bench_backends.c',
     include_directories: anyfs_inc,
