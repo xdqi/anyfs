@@ -9,7 +9,7 @@
 #                       (default: linux-amd64,mingw32,mingw64)
 #   --components=LIST   Comma-separated subset of: core,server,fuse
 #                       core   = libanyfs_core.a (with qemublk backend if avail)
-#                       server = anyfs-ksmbd + anyfs-nfsd
+#                       server = anyfs-ksmbd + anyfs-nfsd + anyfs-lspart
 #                       fuse   = anyfs-fuse (Linux) / anyfs-winfsp (Windows)
 #                       (default: core,server,fuse)
 #   --src=DIR           anyfs-reader source root (default: <script-parent>)
@@ -141,7 +141,10 @@ component_target_names() {
     local target="$1" out=()
     has_comp core   && out+=("anyfs_core")
     if has_comp server; then
-        out+=("anyfs-ksmbd" "anyfs-nfsd")
+        # anyfs-lspart is the discovery companion for ksmbd/nfsd
+        # (the servers print "use anyfs-lspart" in their --share help
+        # text), so it ships in the same component.
+        out+=("anyfs-ksmbd" "anyfs-nfsd" "anyfs-lspart")
     fi
     if has_comp fuse; then
         case "$target" in
