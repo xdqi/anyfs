@@ -52,8 +52,10 @@ jobs:
       # ── Caches ──────────────────────────────────────────────────────────────
       # Kernel source + per-target build (lkl-linux-amd64/) live in one bucket.
       # Key rebuilds when LKL_REF moves OR any of the config/patch scripts
-      # change (gen_lkl_config.sh embeds the LKL_RPCBIND_GUARD patcher, so its
-      # hash captures patch changes).
+      # change OR this workflow file changes (gen_lkl_config.sh embeds the
+      # LKL_RPCBIND_GUARD patcher and dispatches to oot_fs.sh, so their hashes
+      # capture patch changes; adding the workflow yml lets the cache rebuild
+      # when we add steps like the OOT fetch).
       - name: Cache LKL kernel tree + per-target build
         id: cache-lkl
         uses: actions/cache@v4
@@ -61,9 +63,18 @@ jobs:
           path: |
             ~/linux
             lkl-linux-amd64
-          key: lkl-${{ env.LKL_REF }}-${{ hashFiles('scripts/gen_lkl_config.sh', 'scripts/build_lkl.sh', 'scripts/oot_fs.sh') }}
+          key: lkl-${{ env.LKL_REF }}-${{ hashFiles('scripts/gen_lkl_config.sh', 'scripts/build_lkl.sh', 'scripts/oot_fs.sh', '.github/workflows/linux.yml') }}
           restore-keys: |
             lkl-${{ env.LKL_REF }}-
+
+      - name: Cache OOT FS sources (NTFS PLUS + APFS + OpenZFS)
+        id: cache-oot
+        uses: actions/cache@v4
+        with:
+          path: ~/oot-fs
+          key: oot-fs-${{ hashFiles('scripts/oot_fs.sh') }}
+          restore-keys: |
+            oot-fs-
 
       - name: Cache QEMU tree + build
         id: cache-qemu
@@ -103,6 +114,16 @@ jobs:
           cd "$HOME/ksmbd-tools"
           meson setup builddir
           meson compile -C builddir
+
+      # Out-of-tree FS sources: NTFS PLUS, APFS, OpenZFS. gen_lkl_config.sh
+      # internally runs `oot_fs.sh stage`, which silently no-ops if the
+      # source directories don't exist — so without a prior fetch the
+      # produced kernel lacks all three drivers.
+      - name: Fetch OOT FS sources
+        if: steps.cache-oot.outputs.cache-hit != 'true'
+        run: |
+          ./scripts/oot_fs.sh fetch
+          ls -la "$HOME/oot-fs" || true
 
       # ── Build pipeline ──────────────────────────────────────────────────────
       - name: Generate LKL kernel config (applies LKL_RPCBIND_GUARD)
