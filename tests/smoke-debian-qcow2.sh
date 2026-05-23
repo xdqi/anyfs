@@ -195,11 +195,30 @@ if [[ $NFSD_READY -eq 1 ]]; then
     log_pass "nfsd: server ready on port $NFS_PORT"
 
     if [[ $WITH_NFS_MOUNT -eq 1 ]]; then
+        # Settle delay: the "ready" log line fires when the LKL socket is
+        # bound; the NFSv4 export advertisement / mountd cache may still
+        # be initializing for another moment. A short pause avoids racing
+        # the first PUTROOTFH compound (which appeared to mount cleanly
+        # but return an empty listing in the first CI run).
+        sleep 2
+
         MOUNT_DIR="$(mktemp -d /tmp/anyfs-nfs.XXXXXX)"
-        if sudo mount -t nfs4 "127.0.0.1:/root" "$MOUNT_DIR" \
-                -o "port=$NFS_PORT,vers=4,soft,timeo=50,retrans=2" 2>&1; then
-            MOUNT_OUT="$(ls -1 "$MOUNT_DIR" 2>&1 || true)"
-            echo "$MOUNT_OUT"
+        echo "  mount: 127.0.0.1:/root -> $MOUNT_DIR (port=$NFS_PORT)"
+        MOUNT_OUT_FILE="$(mktemp)"
+        # Drop `soft` so a wedged server gives a clearer failure than a
+        # silent empty listing; raise verbosity so failure modes (auth,
+        # path, version) are visible in the CI log.
+        if sudo mount -t nfs4 -v "127.0.0.1:/root" "$MOUNT_DIR" \
+                -o "port=$NFS_PORT,vers=4,timeo=50,retrans=2" \
+                > "$MOUNT_OUT_FILE" 2>&1; then
+            echo "  mount stdout/stderr:"
+            sed 's/^/    /' "$MOUNT_OUT_FILE"
+
+            echo "  ls -la $MOUNT_DIR:"
+            LS_OUT="$(sudo ls -la "$MOUNT_DIR" 2>&1 || true)"
+            echo "$LS_OUT" | sed 's/^/    /'
+
+            MOUNT_OUT="$(sudo ls -1 "$MOUNT_DIR" 2>&1 || true)"
             MNT_OK=1
             for name in etc usr sbin; do
                 if ! echo "$MOUNT_OUT" | grep -qx "$name"; then
@@ -211,10 +230,19 @@ if [[ $NFSD_READY -eq 1 ]]; then
 
             sudo umount "$MOUNT_DIR" 2>/dev/null
         else
-            log_fail "nfsd: nfs4 mount" "sudo mount failed (see stderr)"
+            echo "  mount FAILED. stdout/stderr:"
+            sed 's/^/    /' "$MOUNT_OUT_FILE"
+            log_fail "nfsd: nfs4 mount" "sudo mount returned non-zero"
         fi
+        rm -f "$MOUNT_OUT_FILE"
         rmdir "$MOUNT_DIR" 2>/dev/null
         MOUNT_DIR=""
+
+        # On any nfsd failure (mount didn't list / mount errored), the
+        # daemon log is the most useful single artifact — print it
+        # before we kill the daemon, regardless of pass/fail.
+        echo "  --- nfsd log (tail) ---"
+        tail -n 80 "$NFSD_LOG" | sed 's/^/    /'
     fi
 else
     echo "--- nfsd log ---"; cat "$NFSD_LOG"
