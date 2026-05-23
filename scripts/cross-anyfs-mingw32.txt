@@ -1,0 +1,21 @@
+[binaries]
+c = 'i686-w64-mingw32-gcc'
+cpp = 'i686-w64-mingw32-g++'
+ar = 'i686-w64-mingw32-ar'
+strip = 'i686-w64-mingw32-strip'
+windres = 'i686-w64-mingw32-windres'
+pkg-config = 'i686-w64-mingw32-pkg-config'
+exe_wrapper = 'wine'
+
+[built-in options]
+c_args = ['-I/opt/msys2-cross/mingw32/include']
+c_link_args = ['-L/opt/msys2-cross/mingw32/lib']
+
+[properties]
+sys_root = '/opt/msys2-cross/mingw32'
+
+[host_machine]
+system = 'windows'
+cpu_family = 'x86'
+cpu = 'i686'
+endian = 'little'
