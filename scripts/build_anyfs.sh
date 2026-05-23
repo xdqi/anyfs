@@ -18,6 +18,11 @@
 #   --qemu-root=DIR     QEMU source tree (default: ~/qemu)
 #   --ksmbd-root=DIR    ksmbd-tools source tree (default: ~/ksmbd-tools)
 #   --winfsp-root=DIR   WinFSP source tree (default: ~/winfsp)
+#   --lkl-src=DIR       Linux kernel source tree (default: ~/linux). Meson
+#                       needs this for tools/lkl/include/{lkl.h,lkl_host.h};
+#                       the option default in meson_options.txt is the literal
+#                       string '${LINUX_SRC}' which cannot be auto-resolved,
+#                       so this flag must point at the real tree.
 #   --reconfigure       Wipe each build dir and run meson setup fresh
 #   -j N                Parallelism (default: nproc)
 #   -h, --help
@@ -40,6 +45,7 @@ OUT_PFX="build-anyfs"
 QEMU_ROOT="$HOME/qemu"
 KSMBD_ROOT="$HOME/ksmbd-tools"
 WINFSP_ROOT="$HOME/winfsp"
+LKL_SRC="$HOME/linux"
 RECONFIGURE=0
 JOBS="$(nproc)"
 
@@ -59,6 +65,8 @@ while [[ $# -gt 0 ]]; do
         --ksmbd-root)   KSMBD_ROOT="$2"; shift 2 ;;
         --winfsp-root=*) WINFSP_ROOT="${1#--winfsp-root=}"; shift ;;
         --winfsp-root)  WINFSP_ROOT="$2"; shift 2 ;;
+        --lkl-src=*)    LKL_SRC="${1#--lkl-src=}"; shift ;;
+        --lkl-src)      LKL_SRC="$2"; shift 2 ;;
         --reconfigure)  RECONFIGURE=1; shift ;;
         -j)             JOBS="$2"; shift 2 ;;
         -j*)            JOBS="${1#-j}"; shift ;;
@@ -179,9 +187,19 @@ build_one() {
         return 1
     fi
 
+    # The kernel source tree is also required (provides tools/lkl/include/lkl.h
+    # and arch/lkl/include sources that meson references at configure time).
+    if [[ ! -f "$LKL_SRC/tools/lkl/include/lkl.h" ]]; then
+        echo "ERROR: --lkl-src='$LKL_SRC' does not look like a Linux kernel tree" >&2
+        echo "       (missing tools/lkl/include/lkl.h). Clone tavip/linux there" >&2
+        echo "       or pass --lkl-src=PATH explicitly." >&2
+        return 1
+    fi
+
     # Per-target options
     local meson_opts=(
         "-Dlkl_dist=$target"
+        "-Dlkl_src=$LKL_SRC"
         "-Dlkl_shared=$lkl_shared_opt"
     )
 
