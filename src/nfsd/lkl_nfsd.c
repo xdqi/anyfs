@@ -2,9 +2,11 @@
 /*
  * lkl_nfsd.c - LKL-based NFSv4 server
  *
- * Boots a Linux Kernel Library instance with the NFS server (nfsd),
- * sets up networking via libslirp, mounts one or more disk images, and
- * starts nfsd serving NFSv4 only on port 2049 (forwarded to a host port).
+ * Boots a Linux Kernel Library instance with the NFS server (nfsd) bound
+ * to lo inside LKL, mounts one or more disk images, and runs nfsd serving
+ * NFSv4 only on port 2049. A host userspace TCP proxy (host_proxy.c)
+ * bridges host *:port to LKL 127.0.0.1:2049, so libslirp/virtio-net are
+ * not on the data path — same pattern as anyfs-ksmbd.
  *
  * Includes a mini "mountd" that handles sunrpc cache upcalls:
  *   - auth.unix.ip:  maps client IP -> auth domain "unix"
@@ -37,25 +39,21 @@
 
 #include "../core/path_dsl.h"
 #include "../core/share_spec.h"
+#include "../host_proxy/host_proxy.h"
 #include "anyfs.h"
 #include "anyfs_disk.h"
 #include <lkl.h>
-
-/* Forward declarations for the slirp netdev backend (defined in
- * virtio_net_slirp.c, compiled alongside the binary). */
-struct lkl_netdev* lkl_netdev_slirp_create(void);
-int lkl_netdev_slirp_add_hostfwd(struct lkl_netdev* nd, int is_udp,
-				 const char* host_addr, int host_port,
-				 const char* guest_addr, int guest_port);
 
 /* ── Compile-time limits ─────────────────────────────────────────────── */
 #define MAX_DISKS 16
 #define MAX_SHARES 32
 
 /* ── Network defaults ─────────────────────────────────────────────────── */
-#define GUEST_IP "10.0.2.15"
-#define GUEST_GW "10.0.2.2"
-#define GUEST_NMLEN 24
+/*
+ * nfsd binds to lo inside LKL; a host-side userspace proxy bridges
+ * host *:HOST_FWD_PORT -> LKL 127.0.0.1:NFS_PORT. libslirp / virtio-net
+ * are not on the data path.
+ */
 #define NFS_PORT 2049
 #define HOST_FWD_PORT 20049
 
@@ -71,13 +69,6 @@ static void sigint_handler(int sig)
 {
 	(void)sig;
 	running = 0;
-}
-
-static unsigned int ip_str_to_int(const char* s)
-{
-	unsigned int a, b, c, d;
-	sscanf(s, "%u.%u.%u.%u", &a, &b, &c, &d);
-	return (a) | (b << 8) | (c << 16) | (d << 24);
 }
 
 /* Write a string to a file inside LKL */
@@ -608,59 +599,24 @@ int main(int argc, char** argv)
 	signal(SIGINT, sigint_handler);
 	signal(SIGTERM, sigint_handler);
 
-	/* ── 1. Create slirp network device ──────────────────────────────── */
-	struct lkl_netdev* nd = lkl_netdev_slirp_create();
-	if (!nd) {
-		fprintf(stderr, "Failed to create slirp netdev\n");
-		return 1;
-	}
-
-	int ret = lkl_netdev_slirp_add_hostfwd(nd, 0, "0.0.0.0", host_port,
-					       GUEST_IP, NFS_PORT);
-	if (ret < 0) {
-		fprintf(stderr, "Failed to add port forward\n");
-		return 1;
-	}
-	printf("Port forward: host *:%d -> guest %s:%d\n", host_port, GUEST_IP,
-	       NFS_PORT);
-
-	/* ── 2. Boot LKL kernel ─────────────────────────────────────────────
+	/* ── 1. Boot LKL kernel ─────────────────────────────────────────────
 	 */
-	AnyfsKernelOpts kern_opts = {.mem_mb = 64, .loglevel = 4};
-	ret = anyfs_kernel_init(&kern_opts);
+	AnyfsKernelOpts kern_opts = {.mem_mb = 0 /* anyfs default (32M) */,
+				     .loglevel = 4};
+	int ret = anyfs_kernel_init(&kern_opts);
 	if (ret) {
 		fprintf(stderr, "Failed to start kernel\n");
 		return 1;
 	}
 	printf("LKL kernel started (nfsd built-in)\n");
 
-	/* ── 3. Configure network ───────────────────────────────────────────
+	/*
+	 * No virtio-net / slirp: the data path is host TCP -> host_proxy
+	 * threads -> lkl_sys_read/write -> LKL TCP on lo. We just need lo
+	 * up so nfsd's listener binds to it. (lo is auto-up after boot,
+	 * but the call is idempotent and documents intent.)
 	 */
-	struct lkl_netdev_args nd_args;
-	__lkl__u8 mac[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x57};
-	memset(&nd_args, 0, sizeof(nd_args));
-	nd_args.mac = mac;
-
-	int nd_id = lkl_netdev_add(nd, &nd_args);
-	if (nd_id < 0) {
-		fprintf(stderr, "Failed to add netdev: %s\n",
-			lkl_strerror(nd_id));
-		goto halt;
-	}
-
-	int ifindex = lkl_netdev_get_ifindex(nd_id);
-	lkl_if_up(ifindex);
-	lkl_if_set_ipv4(ifindex, ip_str_to_int(GUEST_IP), GUEST_NMLEN);
-	/* Match the jumbo MTU configured in virtio_net_slirp.c so neither side
-	 * fragments. libslirp tops out at 65521; that's our ceiling here too.
-	 */
-	lkl_if_set_mtu(ifindex, 65521);
-	lkl_set_ipv4_gateway(ip_str_to_int(GUEST_GW));
-	printf("Network: %s/%d gw %s mtu 65521\n", GUEST_IP, GUEST_NMLEN,
-	       GUEST_GW);
-
-	/* Bring up loopback (needed for rpcbind local connection) */
-	lkl_if_up(1);
+	lkl_if_up(1); /* loopback is always ifindex 1 in LKL */
 
 	/* ── 4. Open disk images ────────────────────────────────────────────
 	 */
@@ -844,6 +800,15 @@ int main(int argc, char** argv)
 		goto halt;
 	}
 
+	/*
+	 * nfsd is now listening on lo:NFS_PORT inside LKL. Start the host
+	 * TCP proxy that bridges host:host_port to it.
+	 */
+	if (host_proxy_start((uint16_t)host_port, NFS_PORT) < 0) {
+		fprintf(stderr, "host_proxy_start failed\n");
+		goto halt;
+	}
+
 	printf("\n=== NFSv4 server ready ===\n");
 	for (int i = 0; i < g_n_exports; i++)
 		printf("  mount -t nfs4 localhost:/%s /mnt -o port=%d,vers=4\n",
@@ -857,6 +822,7 @@ int main(int argc, char** argv)
 	}
 
 	printf("\nShutting down...\n");
+	host_proxy_stop();
 	pthread_join(cache_tid, NULL);
 
 halt:
