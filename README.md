@@ -11,7 +11,8 @@ Uses [LKL](https://github.com/lkl/linux) (Linux Kernel Library) to run actual ke
   - **raw** — direct `pread()`, fastest (~1.3 GB/s)
   - **gio** — GLib GIO `GInputStream` (~1.1 GB/s)
   - **qemu** — QEMU block layer for qcow2/vmdk/vdi/vhd (~0.8 GB/s)
-- Userspace SMB3 (`anyfs-ksmbd`) and NFSv4 (`anyfs-nfsd`) servers for mounting disk images over the network
+- Userspace SMB3 (`anyfs-ksmbd`) and NFSv4 (`anyfs-nfsd`) servers — a host-side TCP splice routes traffic into the in-LKL servers without libslirp on the data path
+- FUSE frontend (`anyfs-fuse`) on Linux; WinFSP frontend (`anyfs-winfsp`) on Windows
 - Minimal C API: 4 functions for kernel/disk management, then use LKL syscalls directly
 
 ## API
@@ -27,23 +28,25 @@ anyfs_kernel_init(NULL);  // or pass AnyfsKernelOpts
 // 2. Add disk (auto-selects backend, or specify ANYFS_BACKEND_QEMU etc.)
 int disk_id = anyfs_disk_add("disk.qcow2", ANYFS_DISK_READONLY);
 
-// 3. Mount — use LKL directly
-char mnt[32];
-lkl_mount_dev(disk_id, 0, "ext4", LKL_MS_RDONLY, NULL, mnt, sizeof(mnt));
+// 3. Mount partition 1 — anyfs_mount picks an LKL mount point under /lklmnt/
+AnyfsMount m;
+anyfs_mount(disk_id, 1, "ext4", LKL_MS_RDONLY, NULL, &m);
 
 // 4. Use LKL syscalls — full Linux VFS at your disposal
-long fd = lkl_sys_open("/mnt/.../etc/passwd", LKL_O_RDONLY, 0);
+char path[256];
+snprintf(path, sizeof path, "%s/etc/passwd", m.mount_point);
+long fd = lkl_sys_open(path, LKL_O_RDONLY, 0);
 lkl_sys_read(fd, buf, sizeof(buf));
 lkl_sys_close(fd);
 
 struct lkl_stat st;
-lkl_sys_lstat("/mnt/.../some/file", &st);
+lkl_sys_lstat(path, &st);
 
-struct lkl_dir *dir = lkl_opendir("/mnt/...", &err);
+struct lkl_dir *dir = lkl_opendir(m.mount_point, &err);
 // ...
 
 // 5. Cleanup
-lkl_umount_dev(disk_id, 0, 0, 1000);
+anyfs_umount(m.mount_point);
 anyfs_disk_remove(disk_id);
 anyfs_kernel_halt();
 ```
@@ -89,41 +92,52 @@ Run yourself: `./builddir/bench_backends <image> <fstype> [part]`
 
 ## File Servers
 
-anyfs-reader includes two userspace file servers that expose a disk image over the network using LKL's built-in ksmbd and nfsd subsystems. Both use libslirp for userspace networking (no root required).
+anyfs-reader includes two userspace file servers that expose disk-image partitions over the network using LKL's in-tree ksmbd and nfsd subsystems. No root, no kernel modules; a host-side TCP splice (`src/host_proxy/`) routes client traffic into the in-LKL listener — libslirp is not on the data path.
 
-| Server | Protocol | Host Port | Build Option |
-|--------|----------|-----------|--------------|
-| `lkl_ksmbd` | SMB3 (CIFS) | 10445 | `-Denable_ksmbd=true` |
-| `lkl_nfsd` | NFSv4 | 20049 | (same flag) |
+| Server         | Protocol      | Host port (default) | Build option           |
+| -------------- | ------------- | :-----------------: | ---------------------- |
+| `anyfs-ksmbd`  | SMB3 (CIFS)   | 4455                | `-Denable_ksmbd=true`  |
+| `anyfs-nfsd`   | NFSv4         | 20049               | (same flag)            |
 
 ```bash
-# Build servers
-meson setup builddir-ksmbd -Dlkl_root=$HOME/linux/tools/lkl -Denable_ksmbd=true
-ninja -C builddir-ksmbd
+# Build the servers
+meson setup builddir-ksmbd -Dlkl_root=$HOME/linux/tools/lkl \
+    -Denable_ksmbd=true -Dksmbd_tools_root=$HOME/ksmbd-tools
+ninja -C builddir-ksmbd anyfs-ksmbd anyfs-nfsd
+
+# Discover partition paths first
+./builddir-ksmbd/src/lspart/anyfs-lspart disk.img
 
 # SMB3 server
-./builddir-ksmbd/lkl_ksmbd -w disk.img
-smbclient //localhost/share -p 10445 -N
+./builddir-ksmbd/anyfs-ksmbd disk.img --share data=disk0/p1
+smbclient //localhost/data -U guest%guest --port=4455
 
 # NFSv4 server
-./builddir-ksmbd/lkl_nfsd -w disk.img
-mount -t nfs4 localhost:/ /mnt -o port=20049,vers=4
+./builddir-ksmbd/anyfs-nfsd -w disk.img --share data=disk0/p1
+mount -t nfs4 localhost:/data /mnt -o port=20049,vers=4
 ```
 
-See [docs/lkl-servers.md](docs/lkl-servers.md) for kernel config, NFSv4 implementation details, and pynfs test results.
+See [docs/lkl-servers.md](docs/lkl-servers.md) for kernel config, the `--share` DSL, NFSv4 implementation details, and pynfs results.
 
 ## Project Structure
 
 ```
-include/anyfs.h              — Public API (4 functions)
+include/anyfs.h              — Public API (4 functions + a few mount helpers)
+include/anyfs_disk.h         — Multi-partition session layer
 src/core/anyfs.c             — Kernel init + disk management
+src/core/anyfs_disk.c        — Partition session + container recursion
 src/core/raw_blk_backend.c   — pread-based block backend
 src/core/gio_blk_backend.c   — GIO synchronous backend
 src/core/qemu_blk_backend.c  — QEMU block backend bridge
+src/host_proxy/              — Host-side TCP splice (used by ksmbd/nfsd)
 src/ksmbd/lkl_ksmbd.c        — SMB3 server (LKL + ksmbd-tools)
-src/nfsd/lkl_nfsd.c          — NFSv4 server (LKL nfsd)
-tests/                       — Tests and benchmarks
-docs/                        — Architecture & design docs
+src/nfsd/lkl_nfsd.c          — NFSv4 server (LKL nfsd + mini mountd)
+src/fuse/anyfs_fuse.c        — FUSE3 frontend (Linux) and WinFSP frontend (Windows)
+src/lspart/anyfs_lspart.c    — Partition lister
+src/bench/                   — Benchmark / diagnostic utilities
+tests/                       — Regression tests
+docs/                        — Architecture, distribution, server docs
+scripts/                     — gen_lkl_config / build_lkl / build_qemu / build_anyfs / package_*
 ```
 
 ## Documentation

@@ -1,195 +1,242 @@
-# 分发方案
+# Distribution
 
-## 目标平台
+## Targets
 
-| 平台 | 架构 | LKL 工具链 |
-|------|------|-----------|
-| Linux | amd64 | 原生 gcc |
-| Windows | i386 | `i686-w64-mingw32-` 交叉编译，需 `~/binutils-gdb` (v2.25.1) 的补丁版 binutils |
+| Platform | Arch          | Toolchain                                                              |
+| -------- | ------------- | ---------------------------------------------------------------------- |
+| Linux    | amd64         | Native `gcc`                                                            |
+| Windows  | i386 (Win32)  | `i686-w64-mingw32-` cross (MSYS2 headers/libs + binutils-2.46 patches) |
+| Windows  | x86_64 (Win64)| `x86_64-w64-mingw32-` cross (MSYS2 headers/libs + binutils-2.46 patches)|
 
-## 二进制命名
+The mingw targets need the patched binutils-2.46 (LKL weak-symbol fixes) installed
+into `$BINUTILS_DIR` (default `$HOME/binutils-gdb/build-combined/install/bin`). The
+2.25.1 binutils shipped under `linux/tools/lkl/bin/` is below the 2.30 minimum kernel
+6.13+ Kconfig requires, so `scripts/gen_lkl_config.sh` writes absolute `LD`/`AR`/etc.
+paths into each per-target `Makefile.conf` to force the patched binutils.
 
-所有可执行文件统一 `anyfs-*` 前缀：
+## Binary naming
 
-| 原名 | 分发名 |
-|------|--------|
-| lkl_ksmbd | anyfs-ksmbd |
-| lkl_nfsd | anyfs-nfsd |
-| busybox | anyfs-busybox (仅 Linux) |
+Every shipped executable uses the `anyfs-` prefix:
 
-## 目录布局
+| Source target          | Distributed name      |
+| ---------------------- | --------------------- |
+| `anyfs-ksmbd`          | `anyfs-ksmbd[.exe]`   |
+| `anyfs-nfsd`           | `anyfs-nfsd[.exe]`    |
+| `anyfs-fuse`           | `anyfs-fuse` (Linux)  |
+| `anyfs-winfsp`         | `anyfs-winfsp.exe`    |
+| `anyfs-lspart`         | `anyfs-lspart[.exe]`  |
 
-### Linux (`anyfs-reader-linux-amd64.tar.gz`)
+The retired binaries (`anyfs-shell`, `anyfs-gui`, the 7-Zip plugin) are not part of
+any distribution.
+
+## Layout
+
+### Linux (`anyfs-reader-<version>-linux-amd64.tar.gz`)
 
 ```
 anyfs-reader/
 ├── bin/
-│   ├── anyfs-ksmbd        (rpath=$ORIGIN/../lib)
+│   ├── anyfs-ksmbd        (RUNPATH = $ORIGIN/../lib)
 │   ├── anyfs-nfsd
-│   └── anyfs-busybox      (动态链接)
+│   └── anyfs-fuse         (when built)
 └── lib/
-    ├── liblkl.so           (~20MB, 35 文件系统 + nfsd + ksmbd)
-    ├── libanyfs-qemublk.so    (~10MB, QEMU block 层)
-    ├── libslirp.so.0       (liblkl 网络依赖)
+    ├── liblkl.so                  (~20 MiB, 35 filesystems + nfsd + ksmbd)
+    ├── libanyfs-qemublk.so        (~10 MiB, QEMU block layer)
+    ├── libslirp.so.0              (LKL networking dep; even though servers use host_proxy)
     ├── liburing.so.2
     └── libaio.so.1t64
 ```
 
-系统依赖（不打包，要求目标系统安装）：
-- libglib-2.0, libz, libzstd, libbz2, libm, libc
+System dependencies (not bundled — assumed present on target):
 
-### Windows (`anyfs-reader-win32.zip`)
+- `libglib-2.0`, `libz`, `libzstd`, `libbz2`, `libm`, `libc`.
+
+### Windows (`anyfs-reader-<version>-win32.tar.gz` / `…-win64.tar.gz`)
 
 ```
-anyfs-reader/
+anyfs-win{32,64}/
 ├── anyfs-ksmbd.exe
 ├── anyfs-nfsd.exe
-├── lkl.dll
-├── glib-2.0-0.dll
-├── libslirp-0.dll
-├── anyfs-qemublk.dll         (QEMU block 层合并)
-└── (mingw 运行时 dll)
+├── anyfs-lspart.exe
+├── anyfs-winfsp.exe       (Win32 only, requires WinFSP installed system-wide)
+├── liblkl.dll
+├── libanyfs-qemublk.dll
+├── libglib-2.0-0.dll
+├── libintl-8.dll
+├── libiconv-2.dll
+├── libpcre2-8-0.dll
+├── libbz2-1.dll
+├── libzstd.dll
+├── zlib1.dll
+├── libwinpthread-1.dll
+├── libgcc_s_*.dll
+└── libstdc++-6.dll
 ```
 
-注意: Windows 版不包含 busybox。
+`libslirp-*.dll` is **not** shipped: `anyfs-ksmbd` and `anyfs-nfsd` use the
+`host_proxy` TCP splice, and no other distributed binary imports slirp. If a stale
+symlink lingers from older builds, `scripts/package_mingw64.sh` filters it out.
 
-## 构建配置
+## Build Configuration
 
-### 后端选择
+### Backend selection
 
-分发版本**仅包含 QEMU backend**（支持 raw/qcow2/vmdk/vdi 等所有格式）。
-GIO backend 和 raw backend 不包含在分发中。
+Distribution builds enable **QEMU block backend only** (covers raw/qcow2/vmdk/vdi/vhd
+etc.). The GIO and raw-only backends are not part of the dist set — they exist as
+build options for development.
 
-### LKL 内核配置
+### LKL kernel config
 
-启用所有能编译通过的文件系统：
+`scripts/gen_lkl_config.sh` generates `lkl-<target>/.config` plus
+`tools/lkl/Makefile.conf` and `tools/lkl/include/lkl_autoconf.h` for each requested
+target. The overlay enables:
+
+- ext2/ext3/ext4 (incl. journal), xfs, btrfs, vfat/exfat, ntfs3, f2fs, squashfs,
+  iso9660, udf, hfsplus, minix, reiserfs, jfs, nilfs2, erofs (plus 15+ more — see
+  the script).
+- proc, sysfs, debugfs (LKL internals).
+- nfsd v4 + ksmbd (server features).
+- `CONFIG_DEBUG_INFO_NONE=y` to keep `liblkl.so` around 20 MiB.
+
+**Do not edit `arch/lkl/configs/defconfig` or anything under `~/linux/` directly** —
+all anyfs-specific overrides live in `gen_lkl_config.sh`'s `apply_common_config()`
+overlay. Editing the kernel tree leaks state across targets.
+
+### QEMU shared library
+
+The shipped `libanyfs-qemublk.{so,dll}` bundles QEMU's `libblock.a`, `libqemuutil.a`,
+`libio.a`, `libqom.a`, `libcrypto.a`, `libauthz.a`, and `libevent-loop-base.a` into a
+single shared object.
+
+Prereqs: QEMU is built with `-fPIC` + `b_pie=false`, and `util/fdmon-poll.c` is
+patched to drop the `static` from its `static __thread` declarations. GCC always
+uses local-exec TLS for `static __thread`, which produces `R_X86_64_TPOFF32`
+relocations that cannot live in a shared library.
 
 ```bash
-make ARCH=lkl menuconfig
+# 1) Build QEMU (PIC)
+scripts/build_qemu.sh \
+    --targets=linux-amd64 \
+    --qemu-src=$HOME/qemu \
+    --out-prefix=build-anyfs
+
+# 2) The script produces:
+#    $HOME/qemu/build-anyfs-linux-amd64/libanyfs-qemublk.so
 ```
 
-必须启用：
-- ext2, ext3, ext4 (含 journal)
-- xfs
-- btrfs
-- fat, vfat, exfat
-- ntfs3
-- f2fs
-- squashfs
-- iso9660, udf
-- hfsplus
-- minix, reiserfs, jfs
-- nilfs2, erofs
-- proc, sysfs (LKL 内部需要)
-
-服务器相关：
-- nfsd (v4)
-- ksmbd
-
-优化：
-- CONFIG_DEBUG_INFO_NONE=y (缩小体积, liblkl.so 约 20MB)
-
-### QEMU 动态库
-
-将 QEMU 的 `libblock.a`, `libqemuutil.a`, `libio.a`, `libqom.a`, `libcrypto.a`, `libauthoriz.a`
-以及 `libevent-loop-base.a` 合并为单一共享库 `libanyfs-qemublk.so` / `anyfs-qemublk.dll`。
-
-前置条件：QEMU 需用 `-fPIC` + `b_pie=false` 构建，且需打补丁 `util/fdmon-poll.c`
-移除 `static __thread` 中的 `static`（GCC 对 static __thread 始终使用 local-exec TLS，
-产生 R_X86_64_TPOFF32 重定位，无法放入共享库）。
+Internals of the merge (handled by `scripts/build_qemu.sh`):
 
 ```bash
-# 构建 QEMU（PIC 模式）
-cd ~/qemu
-mkdir build-anyfs-shared && cd build-anyfs-shared
-../configure --disable-system --disable-user --enable-tools \
-    --disable-docs --disable-gtk --disable-sdl --disable-spice \
-    --disable-vnc --disable-curses --disable-opengl \
-    --extra-cflags="-fPIC"
-meson configure -Db_pie=false
-ninja
-
-# 合并为共享库（使用 --start-group 解决循环依赖）
-# 见 scripts/build_qemu_shared.sh
 gcc -shared -o libanyfs-qemublk.so \
     -Wl,--whole-archive libblock.a \
     -Wl,--no-whole-archive \
-    -Wl,--start-group libqemuutil.a libio.a libqom.a libcrypto.a libauthz.a libevent-loop-base.a -Wl,--end-group \
+    -Wl,--start-group libqemuutil.a libio.a libqom.a libcrypto.a libauthz.a \
+                      libevent-loop-base.a -Wl,--end-group \
     -lglib-2.0 -lz -lzstd -luring -laio -lbz2
 ```
 
-注意：只对 `libblock.a` 使用 `--whole-archive`，其他用 `--start-group`。
-若对 `libqemuutil.a` 也用 whole-archive 会拉入 QMP 命令注册导致需要完整系统模拟器符号。
+Use `--whole-archive` only on `libblock.a` — pulling `libqemuutil.a` whole forces
+QMP command registration, which in turn drags in symbols only the full system
+emulator provides. The remaining archives go in `--start-group` to resolve the
+circular dependencies between them.
 
-## 构建步骤
+## Build Steps
 
-### Phase 1: LKL 内核重新配置
-
-```bash
-cd ~/linux
-make ARCH=lkl menuconfig    # 启用所有文件系统
-make -C tools/lkl clean
-make -C tools/lkl            # 生成 liblkl.so + liblkl.a
-```
-
-### Phase 2: Linux amd64
+### Phase 1 — LKL kernels (one tree per target)
 
 ```bash
 cd ~/anyfs-reader
-meson setup builddir-dist \
-    -Dlkl_root=$HOME/linux/tools/lkl \
-    -Dlkl_shared=true \
-    -Denable_qemu=true \
-    -Dqemu_root=$HOME/qemu \
-    -Dqemu_build=$HOME/qemu/build-anyfs-shared \
-    -Dqemu_shared=true \
-    -Denable_ksmbd=true \
-    -Dksmbd_tools_root=$HOME/ksmbd-tools \
-    --prefix=$HOME/anyfs-reader/dist
-
-meson compile -C builddir-dist
-
-# 打包（自动收集依赖、设置 RUNPATH、创建 tar.gz）
-./scripts/package_linux.sh builddir-dist
+./scripts/gen_lkl_config.sh \
+    --linux=${LINUX_SRC} \
+    --targets=linux-amd64,mingw32,mingw64
+./scripts/build_lkl.sh \
+    --linux=${LINUX_SRC} \
+    --targets=linux-amd64,mingw32,mingw64 \
+    -j$(nproc)
 ```
 
-### Phase 3: Windows i386 交叉编译
+Outputs: `lkl-<target>/tools/lkl/lib/liblkl.{a,so,dll}` for each requested target.
+
+### Phase 2 — QEMU shared library
 
 ```bash
-# 1. 构建补丁版 binutils
-cd ~/binutils-gdb
-./configure --target=i686-w64-mingw32 --prefix=$HOME/mingw-patched
-make -j$(nproc) && make install
-export PATH=$HOME/mingw-patched/bin:$PATH
-
-# 2. 交叉编译 LKL
-cd ~/linux
-make CROSS_COMPILE=i686-w64-mingw32- -C tools/lkl
-
-# 3. 交叉编译 GLib (meson cross file)
-# 4. 交叉编译 QEMU block 层
-# 5. 交叉编译 anyfs-reader (meson cross file)
-# 6. 收集 DLL，打包
-zip -r anyfs-reader-win32.zip anyfs-reader/
+./scripts/build_qemu.sh \
+    --targets=linux-amd64,mingw32,mingw64 \
+    --qemu-src=$HOME/qemu
 ```
 
-## 依赖关系
+Produces `~/qemu/build-anyfs-<target>/libanyfs-qemublk.{so,dll}`.
 
-### Linux 运行时依赖
+### Phase 3 — anyfs-reader binaries
 
-| 库 | 来源 | 说明 |
-|----|------|------|
-| liblkl.so | 自建 | LKL 内核 |
-| libanyfs-qemublk.so | 自建 | QEMU block 层 |
-| libglib-2.0.so | 系统 | GLib |
-| libslirp.so | 系统 | 用户态网络 |
+```bash
+./scripts/build_anyfs.sh \
+    --targets=linux-amd64,mingw32,mingw64 \
+    --components=core,server,fuse \
+    --qemu-root=$HOME/qemu \
+    --ksmbd-root=$HOME/ksmbd-tools \
+    --winfsp-root=$HOME/winfsp \
+    -j$(nproc)
+```
 
-### Windows 运行时依赖
+Per target this drives:
 
-| 库 | 来源 |
-|----|------|
-| lkl.dll | 自建 |
-| anyfs-qemublk.dll | 自建 |
-| glib-2.0-0.dll | 交叉编译 |
-| libslirp-0.dll | 交叉编译 |
-| mingw 运行时 | mingw-w64 |
+- `meson setup build-anyfs-<target>` with the right `lkl_dist`, `enable_*`, and
+  cross-file flags.
+- `meson compile -C build-anyfs-<target>`.
+
+Missing optional inputs (no ksmbd-tools, no WinFSP, …) skip the affected
+components with a warning rather than failing the whole build.
+
+### Phase 4 — Package
+
+```bash
+# Linux
+./scripts/package_linux.sh build-anyfs-linux-amd64
+# /tmp/anyfs-reader-<YYYYMMDD>-linux-amd64-pkg/  →  *.tar.gz
+
+# Win32
+./scripts/package_win32.sh 0.1.0
+# /tmp/anyfs-reader-0.1.0-win32.tar.gz
+
+# Win64
+./scripts/package_mingw64.sh 0.1.0
+# /tmp/anyfs-reader-0.1.0-win64.tar.gz
+```
+
+Each script dereference-copies the binaries, strips them, sets `RUNPATH=$ORIGIN`
+on Linux, drops the stale `libslirp-*.dll` symlinks on Windows, and tars the
+output.
+
+## Runtime Dependency Matrix
+
+### Linux
+
+| Library                 | Source       | Notes                                |
+| ----------------------- | ------------ | ------------------------------------ |
+| `liblkl.so`             | self-built   | LKL kernel + nfsd + ksmbd            |
+| `libanyfs-qemublk.so`   | self-built   | QEMU block layer                     |
+| `libslirp.so.0`         | system pkg   | LKL dep (not on the data path)       |
+| `libglib-2.0.so`        | system pkg   | GLib (used by libslirp + QEMU block) |
+| `liburing.so.2`         | system pkg   | QEMU io_uring backend                |
+| `libaio.so.1t64`        | system pkg   | QEMU linux-aio backend               |
+
+### Windows
+
+| DLL                     | Source              |
+| ----------------------- | ------------------- |
+| `liblkl.dll`            | self-built (mingw)  |
+| `libanyfs-qemublk.dll`  | self-built (mingw)  |
+| `libglib-2.0-0.dll`     | MSYS2 cross         |
+| `libintl-8.dll`         | MSYS2 cross         |
+| `libiconv-2.dll`        | MSYS2 cross         |
+| `libpcre2-8-0.dll`      | MSYS2 cross         |
+| `libbz2-1.dll`          | MSYS2 cross         |
+| `libzstd.dll`           | MSYS2 cross         |
+| `zlib1.dll`             | MSYS2 cross         |
+| `libwinpthread-1.dll`   | mingw-w64 runtime   |
+| `libgcc_s_*.dll`        | mingw-w64 runtime   |
+| `libstdc++-6.dll`       | mingw-w64 runtime   |
+
+WinFSP must be installed system-wide (`winfsp.msi` from <https://winfsp.dev>) before
+running `anyfs-winfsp.exe`.

@@ -1,179 +1,178 @@
-# Win32 (i686-w64-mingw32) Cross-Compilation Notes
+# Windows Cross-Compilation Notes (i686 / x86_64 MinGW)
 
 ## Overview
 
-Cross-compile the entire anyfs-reader stack (LKL kernel + libslirp + anyfs-reader tools) for
-Windows 32-bit (PE32 i386) from a Linux host. Tested under Wine.
+Cross-compile the whole stack (LKL kernel + QEMU block layer + anyfs-reader tools)
+from a Linux host for Windows using the MinGW toolchains:
+
+- Win32 (PE32 i386): `i686-w64-mingw32-*`
+- Win64 (PE32+ amd64): `x86_64-w64-mingw32-*`
+
+Both targets are tested under wine. End-to-end packaging is driven by
+`scripts/build_lkl.sh` + `scripts/build_qemu.sh` + `scripts/build_anyfs.sh`. This
+note focuses on the Windows-specific patches and gotchas; the user-facing build
+flow lives in [distribution.md](distribution.md).
 
 ## Toolchain
 
-- **Compiler**: `i686-w64-mingw32-gcc` (GCC 14, Debian package `gcc-mingw-w64-i686`)
-- **Patched Binutils**: v2.25.1 with LKL-specific patches for PE/COFF weak symbol resolution
-  - Source: `~/binutils-gdb` (built at `~/mingw-patched/bin/`)
-  - Deployed to: `~/linux/tools/lkl/bin/` (ld, objcopy)
-  - Required because standard mingw `ld` can't handle `.previous` directives and weak symbols in LKL
-- **MSYS2 libraries**: `/opt/msys2/mingw32/` (glib2, zstd, bzip2, zlib, readline, intl, iconv, pcre2)
+- **Compiler**: `i686-w64-mingw32-gcc` / `x86_64-w64-mingw32-gcc` (GCC 14+,
+  Debian package `gcc-mingw-w64`).
+- **Patched binutils v2.46**: required for LKL's PE/COFF weak-symbol resolution.
+  Standard mingw `ld` mishandles `.previous` directives and weak externals; the
+  patched build lives under `$BINUTILS_DIR` (default
+  `$HOME/binutils-gdb/build-combined/install/bin`). `scripts/gen_lkl_config.sh`
+  wires absolute paths to `LD`/`AS`/`AR`/etc. into each target's
+  `tools/lkl/Makefile.conf` so the LKL Kbuild uses the 2.46 binaries regardless
+  of `$PATH` ordering. The 2.25.1 binaries shipped under
+  `linux/tools/lkl/bin/` are below the 2.30 minimum kernel 6.13+ Kconfig
+  requires and must not be used.
+- **MSYS2 sysroot**: `/opt/msys2/mingw32/` and `/opt/msys2/mingw64/` provide
+  the Windows builds of glib2, zstd, bzip2, zlib, intl, iconv, pcre2.
 
-## 1. liblkl.dll (LKL Kernel as DLL)
+## 1. liblkl.dll (LKL kernel as a DLL)
 
-### Location
-- DLL: `~/linux/tools/lkl/lib/liblkl.dll` (16MB, stripped)
-- Headers: `~/linux/tools/lkl/include/`
-- Win32 compat headers: `~/linux/tools/lkl/include/mingw32/` (empty sys/socket.h stub)
-- Config: `~/linux/.config` (i686, 35 filesystems, ksmbd, nfsd v4, DEBUG_INFO_NONE)
+### Locations after `scripts/build_lkl.sh`
 
-### Key Patches Applied to LKL
+- DLL: `lkl-<target>/tools/lkl/lib/liblkl.dll`
+- Headers: `lkl-<target>/tools/lkl/include/`
+- Win32 compat headers: `lkl-<target>/tools/lkl/include/mingw32/`
+- Config: `lkl-<target>/.config` (i686/x86_64, 35 filesystems, ksmbd, nfsd v4,
+  `DEBUG_INFO_NONE`).
 
-1. **nt-host.c: page_alloc/page_free**
-   - Problem: `malloc()` memory is not executable, kernel crashes on boot
-   - Fix: Added `VirtualAlloc(PAGE_EXECUTE_READWRITE)` / `VirtualFree` implementations
+### Key LKL patches applied for the Windows port
 
-2. **virtio_net_slirp.c: Win32 compat layer**
-   - Ported POSIX pipe/poll/fcntl/clock_gettime to Win32:
-     - `socketpair()` via loopback TCP connection
-     - `WSAPoll()` instead of `poll()`
-     - `ioctlsocket(FIONBIO)` instead of `fcntl(O_NONBLOCK)`
-     - `QueryPerformanceCounter` instead of `clock_gettime`
-     - `CreateThread` instead of `pthread_create`
-     - `CRITICAL_SECTION` instead of `pthread_mutex`
-   - Added `WSAStartup(MAKEWORD(2,2))` in `lkl_netdev_slirp_create()`
+1. **`tools/lkl/lib/nt-host.c`: `page_alloc` / `page_free`**
+   - Problem: kernel-image pages allocated by `malloc()` are non-executable and
+     boot crashes the moment ksmbd's trampolines run.
+   - Fix: `VirtualAlloc(PAGE_EXECUTE_READWRITE)` / `VirtualFree` replacements.
 
-3. **scripts/mod/Makefile: elfconfig.h bypass**
-   - Problem: `mk_elfconfig` can't parse PE/COFF objects
-   - Fix: Commented out the elfconfig.h rule, pre-create with ELFCLASS32
+2. **`tools/lkl/lib/virtio_net_slirp.c`: Win32 compat layer**
+   - POSIX → Win32 translations:
+     - `socketpair()` via a loopback TCP connection
+     - `WSAPoll()` for `poll()`
+     - `ioctlsocket(FIONBIO)` for `fcntl(O_NONBLOCK)`
+     - `QueryPerformanceCounter` for `clock_gettime`
+     - `CreateThread` for `pthread_create`
+     - `CRITICAL_SECTION` for `pthread_mutex`
+   - Added `WSAStartup(MAKEWORD(2,2))` in `lkl_netdev_slirp_create()`.
+   - The shipped ksmbd/nfsd binaries do **not** use slirp (host_proxy splice
+     instead). The compat layer survives only because the rest of `virtio_net_*`
+     pulls those declarations.
 
-4. **Makefile.autoconf: Enable VIRTIO_NET + VIRTIO_NET_SLIRP for pe-i386**
-   - Modified `nt_host` section to include slirp CFLAGS/LDLIBS for 32-bit NT
+3. **`scripts/mod/Makefile`: `elfconfig.h` bypass**
+   - Problem: `mk_elfconfig` can't parse PE/COFF objects.
+   - Fix: comment out the `elfconfig.h` rule; pre-create the file with
+     `ELFCLASS32` for Win32 or `ELFCLASS64` for Win64.
 
-5. **.config adjustments**
-   - Run `scripts/config -d DEBUG_INFO -e DEBUG_INFO_NONE` before build
-   - `olddefconfig` re-enables DEBUG_INFO otherwise → bloats DLL to 100MB+
+4. **`Makefile.autoconf`: NT host wiring**
+   - Force-enable `VIRTIO_NET` + `VIRTIO_NET_SLIRP` for PE targets (otherwise the
+     autoconf would skip them).
 
-### Build Command
+5. **`.config`: `DEBUG_INFO_NONE`**
+   - `olddefconfig` re-enables `DEBUG_INFO` and the DLL balloons to 100 MB+.
+     `gen_lkl_config.sh`'s overlay pins `DEBUG_INFO_NONE=y` after the
+     `olddefconfig` pass.
+
+### Build command (driven by helper scripts)
+
 ```bash
-cd ~/linux/tools/lkl
-make mrproper
-cp ~/anyfs-reader/configs/lkl_defconfig .config
-# Remove CONFIG_64BIT line (auto-detect from compiler)
-sed -i '/CONFIG_64BIT/d' .config
-make olddefconfig CROSS_COMPILE=i686-w64-mingw32- ARCH=lkl
-scripts/config -d DEBUG_INFO -e DEBUG_INFO_NONE
-make -j$(nproc) CROSS_COMPILE=i686-w64-mingw32- ARCH=lkl
+cd ~/anyfs-reader
+./scripts/gen_lkl_config.sh \
+    --linux=${LINUX_SRC} \
+    --targets=mingw32,mingw64
+./scripts/build_lkl.sh \
+    --linux=${LINUX_SRC} \
+    --targets=mingw32,mingw64 \
+    -j$(nproc)
 ```
 
-### Dependencies (DLLs needed at runtime)
-- `libslirp-0.dll` (from libslirp cross-build)
-- `libglib-2.0-0.dll` (MSYS2, needed by libslirp)
-- `libintl-8.dll` (MSYS2, needed by glib)
-- `libiconv-2.dll` (MSYS2, needed by intl)
-- `libpcre2-8-0.dll` (MSYS2, needed by glib)
-- `libgcc_s_dw2-1.dll` (mingw runtime)
-- `libwinpthread-1.dll` (mingw runtime)
+## 2. QEMU block backend DLL
 
-## 2. libslirp-0.dll (User-mode Networking)
+- DLL: `~/qemu/build-anyfs-<target>/libanyfs-qemublk.dll` (~2 MiB stripped)
+- Strategy: `libblock.a` as `--whole-archive`, the others in `--start-group`.
+- Uses `--export-all-symbols` + `--enable-auto-import` so callers don't need
+  `dllimport`.
+- No pixman / liburing / libaio on Windows.
 
-### Location
-- DLL: `~/libslirp/build-mingw32/libslirp-0.dll` (952KB)
-- Import lib: `~/libslirp/build-mingw32/libslirp.dll.a`
-- Pkg-config: `~/libslirp/build-mingw32/slirp.pc`
-- Headers: `~/libslirp/build-mingw32/include/slirp/`
-
-### Build Command
 ```bash
-cd ~/libslirp
-meson setup build-mingw32 --cross-file <cross-file> -Ddefault_library=shared
-ninja -C build-mingw32
+./scripts/build_qemu.sh \
+    --targets=mingw32,mingw64 \
+    --qemu-src=$HOME/qemu
 ```
 
-## 3. anyfs-reader (Shell + ksmbd + nfsd)
+Under the hood `build_qemu.sh` runs the QEMU configure (`--disable-system
+--disable-user --enable-tools --disable-fuse --target-list=` and friends) and
+then links the merged DLL with:
 
-### Cross-file
-- `~/anyfs-reader/cross-win32.txt`
-- Includes paths to MSYS2 headers/libs, libslirp build dir, LKL mingw32 compat headers
-
-### Meson Options
 ```bash
-meson setup builddir-win32 --cross-file cross-win32.txt \
-  -Dlkl_root=${LINUX_SRC}/tools/lkl \
-  -Dlkl_shared=true \
-  -Denable_qemu=true \
-  -Denable_gio=false \
-  -Denable_ksmbd=true \
-  -Dksmbd_tools_root=${KSMBD_TOOLS_SRC}
-```
-
-### Executables
-- `anyfs-ksmbd.exe` — SMB3 file server (slirp networking, no root)
-- `anyfs-nfsd.exe` — NFSv4 file server (slirp networking, no root)
-
-### QEMU Block Backend
-- DLL: `~/qemu/build-win32/libanyfs-qemublk.dll` (2.0MB stripped)
-- Strategy: `libblock.a` as `--whole-archive`, others in `--start-group`
-- Uses `--export-all-symbols` + `--enable-auto-import` (no dllimport needed)
-- No pixman/liburing/libaio on Windows
-- Configure command:
-```bash
-cd ~/qemu && mkdir build-win32 && cd build-win32
-PKG_CONFIG_LIBDIR=$HOME/qemu/build-win32-pkgconfig \
-../configure --cross-prefix=i686-w64-mingw32- --cpu=i386 \
-    --disable-system --disable-user --enable-tools \
-    --disable-guest-agent --disable-docs --disable-gtk --disable-sdl \
-    --disable-opengl --disable-vnc --disable-spice --disable-gnutls \
-    --disable-blkio --disable-numa --disable-cap-ng --disable-seccomp \
-    --disable-libssh --disable-curl --disable-rbd --disable-glusterfs \
-    --disable-vde --disable-nettle --disable-gcrypt --disable-smartcard \
-    --disable-usb-redir --disable-libudev --disable-fuse \
-    --disable-libiscsi --disable-libnfs --disable-pixman --disable-png \
-    --target-list= \
-    --extra-cflags="-I/opt/msys2/mingw32/include" \
-    --extra-ldflags="-L/opt/msys2/mingw32/lib"
-ninja libblock.a libqemuutil.a libio.a libqom.a libcrypto.a libauthz.a libevent-loop-base.a
-
-# Link into DLL
 i686-w64-mingw32-gcc -shared -o libanyfs-qemublk.dll \
     -Wl,--export-all-symbols -Wl,--enable-auto-import \
     -Wl,--whole-archive libblock.a \
     -Wl,--no-whole-archive \
-    -Wl,--start-group libqemuutil.a libio.a libqom.a libcrypto.a libauthz.a libevent-loop-base.a -Wl,--end-group \
+    -Wl,--start-group libqemuutil.a libio.a libqom.a libcrypto.a libauthz.a \
+                      libevent-loop-base.a -Wl,--end-group \
     -L/opt/msys2/mingw32/lib -lglib-2.0 -lintl -liconv -lzstd -lz -lbz2 \
     -lws2_32 -liphlpapi -lpathcch -lsynchronization -lwinmm -lpthread
 i686-w64-mingw32-strip libanyfs-qemublk.dll
 ```
 
-## 4. Testing Under Wine
+## 3. anyfs-reader (ksmbd + nfsd + lspart + winfsp)
+
+Cross files: `scripts/cross-anyfs-mingw32.txt` and
+`scripts/cross-anyfs-mingw64.txt`. They wire in the MSYS2 sysroot include/lib
+paths plus the LKL Win32 compat headers.
 
 ```bash
-# All 32 boot tests pass:
-WINEPATH="$HOME/linux/tools/lkl/lib-win32" wine tests/boot.exe
-
-# Echo server with slirp networking:
-WINEPATH="$HOME/linux/tools/lkl/lib-win32" wine lkl_echo_slirp.exe
-echo "hello" | nc localhost 12345  # ← works!
+./scripts/build_anyfs.sh \
+    --targets=mingw32,mingw64 \
+    --components=core,server,fuse \
+    --qemu-root=$HOME/qemu \
+    --ksmbd-root=$HOME/ksmbd-tools \
+    --winfsp-root=$HOME/winfsp \
+    -j$(nproc)
 ```
+
+Outputs (per target):
+
+- `build-anyfs-<target>/anyfs-ksmbd.exe` — SMB3 server (host_proxy data path)
+- `build-anyfs-<target>/anyfs-nfsd.exe` — NFSv4 server (host_proxy data path)
+- `build-anyfs-<target>/src/lspart/anyfs-lspart.exe` — partition lister
+- `build-anyfs-<target>/anyfs-winfsp.exe` — WinFSP frontend (Win32 only)
+
+`build-anyfs-<target>/bin/` is a symlink farm covering the full runtime closure
+(LKL DLL, libanyfs-qemublk, MSYS2 DLLs, mingw runtime). `scripts/package_win32.sh`
+and `scripts/package_mingw64.sh` dereference-copy from there.
+
+## 4. Testing under wine
+
+```bash
+# liblkl boot tests (32 tests)
+WINEPATH="$HOME/anyfs-reader/lkl-mingw64/tools/lkl/lib" wine tests/boot.exe
+
+# host_proxy-backed ksmbd: serve disk.img, then connect from the host
+WINEPATH="$HOME/anyfs-reader/build-anyfs-mingw64/bin" \
+    wine build-anyfs-mingw64/anyfs-ksmbd.exe disk.img --share data=disk0/p1 &
+smbclient //localhost/data -U guest%guest --port=4455 -c 'ls'
+```
+
+For why wine throughput on `anyfs-ksmbd.exe` is ~5–6× slower than native Linux
+(it is, and that's wineserver IPC, not anyfs), use the `--busy-spin` flag — see
+[lkl-servers.md](lkl-servers.md).
 
 ## 5. Known Issues
 
-- `net-test.exe` fails to link (references `lkl_netdev_wintap_create` which isn't built for 32-bit)
-  - This is just a test binary, not affecting liblkl.dll functionality
-- Wine explorer errors are cosmetic (no GUI needed)
-- `lkl_pci lkl_pci: probe with driver lkl_pci failed` — normal (no PCI bus in Wine)
+- `net-test.exe` fails to link (references `lkl_netdev_wintap_create` which is
+  not built for 32-bit). It is a test binary; the DLL itself is fine.
+- `lkl_pci lkl_pci: probe with driver lkl_pci failed` printed at startup is
+  normal — wine has no PCI bus.
+- Wine explorer error dialogs are cosmetic when launching `anyfs-winfsp.exe`
+  without an actual WinFSP driver loaded.
 
-## 6. File Layout for Distribution
+## 6. Distribution layout
 
-```
-anyfs-win32/
-├── bin/
-│   ├── anyfs-ksmbd.exe
-│   └── anyfs-nfsd.exe
-├── lib/
-│   ├── liblkl.dll
-│   ├── libslirp-0.dll
-│   ├── libglib-2.0-0.dll
-│   ├── libintl-8.dll
-│   ├── libiconv-2.dll
-│   ├── libpcre2-8-0.dll
-│   ├── libgcc_s_dw2-1.dll
-│   └── libwinpthread-1.dll
-└── etc/
-    └── ksmbd.conf.example
-```
+See [distribution.md §Layout](distribution.md). In short:
+
+- Win32: `anyfs-reader-<ver>-win32.tar.gz`, flat layout with `.exe` + `.dll`
+  side-by-side (no `bin/` / `lib/` split because Windows resolves `.dll` from
+  the same directory).
+- Win64: `anyfs-reader-<ver>-win64.tar.gz`, same flat layout.
