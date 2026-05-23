@@ -60,6 +60,9 @@
  * is blocked. We declare it manually.
  */
 #include <fcntl.h>
+/* WinFSP doesn't provide POSIX file-mode bits — pull them from
+ * mingw's <sys/stat.h>, which defines S_IFDIR/S_IFREG/etc. */
+#include <sys/stat.h>
 typedef struct fuse_stat fuse_stat;
 typedef struct fuse_statvfs fuse_statvfs;
 typedef struct fuse_timespec fuse_timespec;
@@ -566,30 +569,17 @@ static int fuse_path_to_lkl(const char* fuse_path, char* out, size_t out_len)
  */
 static char* build_partitions_table(int disk_idx, size_t* len)
 {
-	char* buf = NULL;
-	size_t bufsz = 4096;
-	buf = malloc(bufsz);
-	if (!buf)
-		return NULL;
-
-	FILE* f = fmemopen(buf, bufsz, "w");
-	if (!f) {
-		free(buf);
-		return NULL;
-	}
-
-	anyfs_dump_header(f);
+	AnyfsStrbuf sb;
+	anyfs_strbuf_init(&sb);
+	anyfs_dump_header(&sb);
 	if (disk_idx < 0) {
 		for (int i = 0; i < g_ndisks; i++)
-			anyfs_dump_disk(f, g_disks[i].disk, i);
+			anyfs_dump_disk(&sb, g_disks[i].disk, i);
 	} else {
 		if (disk_idx < g_ndisks)
-			anyfs_dump_disk(f, g_disks[disk_idx].disk, disk_idx);
+			anyfs_dump_disk(&sb, g_disks[disk_idx].disk, disk_idx);
 	}
-
-	*len = (size_t)ftell(f);
-	fclose(f);
-	return buf;
+	return anyfs_strbuf_detach(&sb, len);
 }
 
 /* ── FUSE operations (adapted from lklfuse.c) ─────────────────────── */

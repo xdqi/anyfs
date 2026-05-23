@@ -103,11 +103,21 @@ int main(int argc, char** argv)
 		disks[n_open++] = d;
 	}
 
-	anyfs_dump_header(stdout);
+	AnyfsStrbuf sb;
+	anyfs_strbuf_init(&sb);
+	anyfs_dump_header(&sb);
 	int disk_idx = 0;
 	for (int i = 0; i < n_open; i++) {
-		anyfs_dump_disk(stdout, disks[i], disk_idx++);
+		anyfs_dump_disk(&sb, disks[i], disk_idx++);
 	}
+	if (sb.err) {
+		fprintf(stderr,
+			"anyfs-lspart: out of memory building output\n");
+		rc = 1;
+	} else if (sb.len) {
+		fwrite(sb.buf, 1, sb.len, stdout);
+	}
+	anyfs_strbuf_free(&sb);
 
 	for (int i = 0; i < n_open; i++)
 		anyfs_disk_close(disks[i]);
