@@ -142,18 +142,6 @@ function swStreamDownload(opts: StreamDownloadOpts): StreamDownloadHandle {
         const channel = new MessageChannel();
         const port = channel.port1;
 
-        sw.postMessage(
-            { kind: 'streamsave:register', url: path, fileName, size, port: channel.port2 },
-            [channel.port2],
-        );
-
-        // Hidden iframe navigates to the magic URL → SW intercepts → browser
-        // sees Content-Disposition: attachment → download bar appears.
-        const iframe = document.createElement('iframe');
-        iframe.hidden = true;
-        iframe.src = path;
-        document.body.appendChild(iframe);
-
         const reader = stream.getReader();
         let cancelled = false;
         let written = 0;
@@ -167,11 +155,51 @@ function swStreamDownload(opts: StreamDownloadOpts): StreamDownloadHandle {
             } catch {}
         };
 
-        // SW can send {kind:'cancel'} if the browser kills the download.
+        // The SW acks {kind:'ready'} once the register entry is live in
+        // its pending map, and may later send {kind:'cancel'} if the
+        // browser kills the download. We have to wire the handler before
+        // posting the register message, otherwise Firefox can deliver
+        // 'ready' before we attach.
+        let onReady: () => void = () => {};
+        const readyP = new Promise<void>((resolve, reject) => {
+            const t = window.setTimeout(
+                () => reject(new Error('streamsave SW register timeout (5s)')),
+                5000,
+            );
+            onReady = () => {
+                clearTimeout(t);
+                resolve();
+            };
+        });
         port.onmessage = (ev) => {
             const m = ev.data;
-            if (m && m.kind === 'cancel') cancelFn(m.reason);
+            if (!m) return;
+            if (m.kind === 'ready') {
+                onReady();
+                return;
+            }
+            if (m.kind === 'cancel') cancelFn(m.reason);
         };
+
+        sw.postMessage(
+            { kind: 'streamsave:register', url: path, fileName, size, port: channel.port2 },
+            [channel.port2],
+        );
+
+        // Don't trigger the navigation until the SW has actually put
+        // the entry in pending. If the iframe fetches first, the SW's
+        // fetch handler returns without respondWith and the navigation
+        // falls through to the network. (Visible in Firefox; Chrome
+        // hides the race because its SW dispatches message-before-
+        // fetch for this pattern.)
+        await readyP;
+
+        // Hidden iframe navigates to the magic URL → SW intercepts → browser
+        // sees Content-Disposition: attachment → download bar appears.
+        const iframe = document.createElement('iframe');
+        iframe.hidden = true;
+        iframe.src = path;
+        document.body.appendChild(iframe);
 
         try {
             for (;;) {

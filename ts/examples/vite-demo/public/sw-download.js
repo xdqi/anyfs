@@ -43,6 +43,14 @@ self.addEventListener('message', (event) => {
         };
         port.onmessage = (ev) => onPortMessage(entry, ev.data);
         pending.set(url, entry);
+        // Tell the client the entry is live BEFORE they trigger the
+        // iframe navigation. Without this, Firefox can dispatch the
+        // fetch event to this SW before processing this register
+        // message; pending.get() then returns undefined, we don't
+        // respondWith, and the iframe navigation falls through to
+        // the network. (Chrome happens to order message-before-fetch
+        // consistently for this pattern; Firefox doesn't.)
+        try { port.postMessage({ kind: 'ready' }); } catch {}
     }
 });
 
