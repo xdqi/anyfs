@@ -21,7 +21,7 @@
  * [name=]path ... Test:  mount -t nfs4 localhost:/<name> /mnt -o port=20049
  *
  * Examples:
- *   anyfs-nfsd disk.img --share data=p1
+ *   anyfs-nfsd disk.img --share data=disk0/p1
  *   anyfs-nfsd boot.img data.qcow2 --share esp=disk0/p1 --share home=disk1/p1
  */
 
@@ -462,24 +462,29 @@ static void usage(FILE* f, const char* prog)
 	    "Options:\n"
 	    "  --share [name=]path\n"
 	    "                     Expose a partition as an NFS export.\n"
-	    "                     'path' uses the canonical path DSL:\n"
-	    "                       p1              single-disk: partition 1 "
-	    "(auto disk0/p1)\n"
-	    "                       disk0/p1        explicit disk + partition\n"
+	    "                     'path' uses the canonical disk<N>/p<M> form "
+	    "as printed\n"
+	    "                     in the PATH column of `anyfs-lspart "
+	    "<image>`:\n"
+	    "                       disk0/p1        partition 1 of the first "
+	    "image\n"
 	    "                       disk1/p2        partition 2 of the second "
 	    "image\n"
+	    "                       p1              shortcut for disk0/p1 "
+	    "(single-image only)\n"
 	    "                     'name' is the NFS export name (client mounts "
 	    "/<name>).\n"
-	    "  -p N               [deprecated] Equivalent to --share p<N> "
-	    "(single-disk only).\n"
+	    "  -p N               [deprecated] Equivalent to --share "
+	    "disk0/p<N> (single-image only).\n"
 	    "  -P PORT            Host port for NFS (default: %d).\n"
 	    "  -w                 Read-write export (default: read-only).\n"
 	    "  -h, --help         Show this help.\n"
 	    "\n"
 	    "Examples:\n"
-	    "  %s disk.img --share data=p1\n"
+	    "  %s disk.img --share data=disk0/p1\n"
 	    "  %s boot.img data.qcow2 --share esp=disk0/p1 --share "
 	    "home=disk1/p1\n"
+	    "  Discover paths first with: anyfs-lspart disk.img\n"
 	    "  Then: mount -t nfs4 localhost:/<name> /mnt -o port=%d,vers=4\n",
 	    prog, HOST_FWD_PORT, prog, prog, HOST_FWD_PORT);
 }
@@ -584,12 +589,14 @@ int main(int argc, char** argv)
 	/* ── Require at least one share ─────────────────────────────────────
 	 */
 	if (n_share_specs == 0) {
-		fprintf(stderr,
-			"error: no shares specified. "
-			"Use '--share [name=]p<N>' (e.g. --share p1) to expose "
-			"a partition.\n"
-			"Run '%s -h' for help.\n",
-			argv[0]);
+		fprintf(
+		    stderr,
+		    "error: no shares specified. "
+		    "Use '--share [name=]disk<N>/p<M>' (e.g. --share disk0/p1) "
+		    "to expose a partition.\n"
+		    "Run 'anyfs-lspart %s' to see partitions in this image.\n"
+		    "Run '%s -h' for help.\n",
+		    n_images > 0 ? disk_images[0] : "<image>", argv[0]);
 		return 1;
 	}
 

@@ -13,11 +13,11 @@
  * name=path ... Test:  smbclient //localhost/esp -U guest%guest --port=4455
  *
  * Examples:
- *   anyfs-ksmbd disk.img --share data=p1
+ *   anyfs-ksmbd disk.img --share data=disk0/p1
  *   anyfs-ksmbd boot.img data.qcow2 --share esp=disk0/p1 --share home=disk1/p1
  *   anyfs-ksmbd disk.img -P 4450          (back-compat: auto share p0
  * whole-disk) anyfs-ksmbd disk.img -p 2             (deprecated: equivalent to
- * --share p2)
+ * --share disk0/p2)
  */
 
 #define _GNU_SOURCE
@@ -442,12 +442,16 @@ static void usage(FILE* f, const char* prog)
 	    "Options:\n"
 	    "  --share [name=]path\n"
 	    "                     Expose a partition as an SMB share.\n"
-	    "                     'path' uses the canonical path DSL:\n"
-	    "                       p1              single-disk: partition 1 "
-	    "(auto disk0/p1)\n"
-	    "                       disk0/p1        explicit disk + partition\n"
+	    "                     'path' uses the canonical disk<N>/p<M> form "
+	    "as printed\n"
+	    "                     in the PATH column of `anyfs-lspart "
+	    "<image>`:\n"
+	    "                       disk0/p1        partition 1 of the first "
+	    "image\n"
 	    "                       disk1/p2        partition 2 of the second "
 	    "image\n"
+	    "                       p1              shortcut for disk0/p1 "
+	    "(single-image only)\n"
 	    "                     'name' is the SMB share name (default: "
 	    "auto-derived from path).\n"
 	    "  -c FILE            Use FILE as ksmbd.conf (overrides built-in "
@@ -499,12 +503,13 @@ static void usage(FILE* f, const char* prog)
 	    "  -h, --help         Show this help.\n"
 	    "\n"
 	    "Examples:\n"
-	    "  %s disk.img --share data=p1\n"
+	    "  %s disk.img --share data=disk0/p1\n"
 	    "  %s disk.img -P 4450\n"
 	    "  %s boot.img data.qcow2 --share esp=disk0/p1 --share "
 	    "home=disk1/p1\n"
-	    "  %s disk.img --share p1 --mem-mb 128 --max-read 262144   # "
+	    "  %s disk.img --share disk0/p1 --mem-mb 128 --max-read 262144   # "
 	    "low-mem profile\n"
+	    "  Discover paths first with: anyfs-lspart disk.img\n"
 	    "  Then: smbclient //localhost/<name> -U guest%%guest --port=%d\n",
 	    prog, HOST_FWD_PORT, DEF_MAX_READ, DEF_MAX_CONN, DEF_MAX_CREDITS,
 	    prog, prog, prog, prog, HOST_FWD_PORT);
@@ -681,12 +686,14 @@ int main(int argc, char** argv)
 	/* ── Default share if none specified ─────────────────────────────── */
 	/* If no --share and no -p, emit a helpful error. */
 	if (n_share_specs == 0) {
-		fprintf(stderr,
-			"error: no shares specified. "
-			"Use '--share [name=]p<N>' (e.g. --share p1) to expose "
-			"a partition.\n"
-			"Run '%s -h' for help.\n",
-			argv[0]);
+		fprintf(
+		    stderr,
+		    "error: no shares specified. "
+		    "Use '--share [name=]disk<N>/p<M>' (e.g. --share disk0/p1) "
+		    "to expose a partition.\n"
+		    "Run 'anyfs-lspart %s' to see partitions in this image.\n"
+		    "Run '%s -h' for help.\n",
+		    disk_images[0], argv[0]);
 		return 1;
 	}
 
