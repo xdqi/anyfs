@@ -1,0 +1,36 @@
+{
+    "name": "@anyfs/trees",
+    "version": "0.0.1",
+    "type": "module",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "default": "./dist/index.js"
+        }
+    },
+    "files": [
+        "dist"
+    ],
+    "scripts": {
+        "build": "tsup src/index.ts --format esm --dts --clean --external react --external react-dom --external @anyfs/core --external @anyfs/react"
+    },
+    "peerDependencies": {
+        "react": "^18 || ^19",
+        "react-dom": "^18 || ^19"
+    },
+    "dependencies": {
+        "@anyfs/core": "workspace:*",
+        "@anyfs/react": "workspace:*",
+        "chonky": "^2.3.2",
+        "chonky-icon-fontawesome": "^2.3.2"
+    },
+    "devDependencies": {
+        "typescript": "^5.5.4",
+        "tsup": "^8.3.0",
+        "@types/react": "^19.0.0",
+        "react": "^19.0.0",
+        "react-dom": "^19.0.0"
+    }
+}
