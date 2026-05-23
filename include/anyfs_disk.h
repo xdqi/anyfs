@@ -142,9 +142,9 @@ int anyfs_disk_enter_path(AnyfsDisk* d, const struct AnyfsPathComp* comp,
  * slot id of the resolved leaf. Negative on any failure along the
  * walk / mount.
  *
- * Surfaces that need both modes (FUSE Mode B opendir, anyfs-shell ls)
- * use this; surfaces that strictly want a mounted FS (ksmbd, nfsd,
- * FUSE Mode A) keep using anyfs_disk_enter_path. */
+ * Surfaces that need both modes (FUSE Mode B opendir) use this;
+ * surfaces that strictly want a mounted FS (ksmbd, nfsd, FUSE Mode A)
+ * keep using anyfs_disk_enter_path. */
 int anyfs_disk_walk(AnyfsDisk* d, const struct AnyfsPathComp* comp,
 		    size_t n_comp, uint32_t flags, int* leaf_slot_id_out,
 		    char lkl_path[64]);

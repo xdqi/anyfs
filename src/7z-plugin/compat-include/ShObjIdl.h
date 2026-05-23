@@ -1,1 +1,0 @@
-/ opt / msys2 - cross / mingw64 / include / shobjidl.h

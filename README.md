@@ -11,55 +11,8 @@ Uses [LKL](https://github.com/lkl/linux) (Linux Kernel Library) to run actual ke
   - **raw** — direct `pread()`, fastest (~1.3 GB/s)
   - **gio** — GLib GIO `GInputStream` (~1.1 GB/s)
   - **qemu** — QEMU block layer for qcow2/vmdk/vdi/vhd (~0.8 GB/s)
-- Interactive shell (`anyfs-shell`) with guestfish-like experience
+- Userspace SMB3 (`anyfs-ksmbd`) and NFSv4 (`anyfs-nfsd`) servers for mounting disk images over the network
 - Minimal C API: 4 functions for kernel/disk management, then use LKL syscalls directly
-
-## Quick Start
-
-```bash
-# Build (with QEMU backend)
-meson setup builddir -Dlkl_root=$HOME/linux/tools/lkl \
-    -Denable_qemu=true \
-    -Dqemu_root=$HOME/qemu \
-    -Dqemu_build=$HOME/qemu/build-anyfs2
-ninja -C builddir
-
-# Interactive shell
-./builddir/anyfs-shell
-><anyfs> open disk.qcow2
-<disk.qcow2> mount ext4
-<disk.qcow2:ext4 /> ls
-<disk.qcow2:ext4 /> cat /etc/hostname
-<disk.qcow2:ext4 /> df
-<disk.qcow2:ext4 /> download /var/log/syslog ./syslog.txt
-
-# Or one-liner
-./builddir/anyfs-shell disk.img ext4
-```
-
-## Shell Commands
-
-| Command | Description |
-|---------|-------------|
-| `open <image> [backend]` | Open disk image (backend: raw/gio/qemu, default: qemu) |
-| `mount <fstype> [part]` | Mount filesystem |
-| `umount` | Unmount |
-| `ls [path]` | List directory |
-| `ll [path]` | Long listing with file sizes |
-| `cat <path>` | Print file contents |
-| `head [-n N] <path>` | First N lines |
-| `tail [-n N] <path>` | Last N lines |
-| `stat <path>` | File info (type, size, inode, mode, uid/gid) |
-| `hexdump <path> [off] [len]` | Hex dump |
-| `find [path]` | Recursive file listing |
-| `download <remote> <local>` | Copy file to host |
-| `df` | Filesystem disk space usage |
-| `cd <path>` | Change guest directory |
-| `pwd` | Print guest working directory |
-| `lcd <path>` | Change host directory |
-| `!<cmd>` | Shell escape (run host command) |
-
-Tab completion works for commands and guest filesystem paths.
 
 ## API
 
@@ -159,16 +112,6 @@ mount -t nfs4 localhost:/ /mnt -o port=20049,vers=4
 
 See [docs/lkl-servers.md](docs/lkl-servers.md) for kernel config, NFSv4 implementation details, and pynfs test results.
 
-## GUI File Manager
-
-A GTK3-based graphical file browser (`anyfs-gui`) is available when GTK3 is installed. It provides a tree view of guest filesystem contents with read-only or read-write access.
-
-```bash
-# Requires gtk+-3.0
-./builddir/anyfs-gui disk.img
-./builddir/anyfs-gui -w disk.img   # read-write mode
-```
-
 ## Project Structure
 
 ```
@@ -177,10 +120,8 @@ src/core/anyfs.c             — Kernel init + disk management
 src/core/raw_blk_backend.c   — pread-based block backend
 src/core/gio_blk_backend.c   — GIO synchronous backend
 src/core/qemu_blk_backend.c  — QEMU block backend bridge
-src/cli/shell.c              — Interactive shell (guestfish-like)
-src/gui/anyfs_gui.c          — GTK3 GUI file manager
-src/ksmbd/lkl_ksmbd.c       — SMB3 server (LKL + ksmbd-tools)
-src/nfsd/lkl_nfsd.c         — NFSv4 server (LKL nfsd)
+src/ksmbd/lkl_ksmbd.c        — SMB3 server (LKL + ksmbd-tools)
+src/nfsd/lkl_nfsd.c          — NFSv4 server (LKL nfsd)
 tests/                       — Tests and benchmarks
 docs/                        — Architecture & design docs
 ```
@@ -191,4 +132,4 @@ See [docs/README.md](docs/README.md) for the full documentation index.
 
 ## License
 
-TBD
+GPL-2.0 — see [LICENSE](LICENSE).

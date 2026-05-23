@@ -25,7 +25,7 @@ rm -rf "$STAGING"
 meson install -C "$SRC_DIR/$BUILD_DIR" --destdir "$STAGING"
 
 # Find the install prefix (meson uses absolute prefix under destdir)
-PREFIX=$(find "$STAGING" -name anyfs-shell -type f -exec dirname {} \;)
+PREFIX=$(find "$STAGING" -name anyfs-ksmbd -type f -exec dirname {} \;)
 PREFIX=$(dirname "$PREFIX")  # go up from bin/
 
 echo "Install prefix: $PREFIX"
@@ -36,7 +36,7 @@ rm -rf "$PKG"
 mkdir -p "$PKG/bin" "$PKG/lib"
 
 # Copy binaries
-for bin in anyfs-gui anyfs-shell anyfs-ksmbd anyfs-nfsd; do
+for bin in anyfs-ksmbd anyfs-nfsd; do
     if [ -f "$PREFIX/bin/$bin" ]; then
         cp "$PREFIX/bin/$bin" "$PKG/bin/"
         echo "  bin/$bin"

@@ -6,11 +6,7 @@
 |----------|-------------|
 | [../README.md](../README.md) | Project overview, features, quick start, build instructions, benchmarks |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Internal architecture, design decisions, I/O path, backend interface, QEMU integration details |
-| [anyfs-gui.md](anyfs-gui.md) | GTK3 GUI file manager: features, usage, drag-and-drop, architecture |
 | [lkl-servers.md](lkl-servers.md) | LKL file servers (ksmbd SMB3 + nfsd NFSv4): usage, kernel config, NFSv4 implementation, pynfs results |
-| [lkl-busybox-plan.md](lkl-busybox-plan.md) | Design plan for BusyBox-based LKL shell (future/experimental) |
-| [doublecmd-wfx-plan.md](doublecmd-wfx-plan.md) | Design plan for a Double Commander WFX (filesystem) plugin wrapping libanyfs |
-| [multi-partition-ux.md](multi-partition-ux.md) | Cross-surface UX design for multi-partition disk images (lazy-mount, shared session API) |
 
 ## Language
 

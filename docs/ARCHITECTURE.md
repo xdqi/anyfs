@@ -17,7 +17,7 @@
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  应用 (anyfs-shell / 自定义程序)                  │
+│  应用 (anyfs-ksmbd / anyfs-nfsd / 自定义程序)     │
 │  直接调用 LKL syscalls:                          │
 │    lkl_sys_open, lkl_sys_read, lkl_sys_lstat,   │
 │    lkl_opendir, lkl_sys_statfs, ...              │

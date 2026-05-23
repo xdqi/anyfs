@@ -379,24 +379,6 @@ lkl_shmem_relay_bench = executable('lkl-shmem-relay-bench',
 # --- anyfs-lspart (standalone partition lister) ---
 subdir('src/lspart')
 
-# --- CLI Shell ---
-
-readline_dep = dependency('readline', required: false)
-if not readline_dep.found()
-    readline_dep = cc.find_library('readline', required: false)
-endif
-
-if readline_dep.found()
-    anyfs_shell = executable('anyfs-shell',
-        'src/cli/shell.c',
-        include_directories: [anyfs_inc, include_directories('src/core')],
-        dependencies: [anyfs_dep, readline_dep],
-        c_args: gio_args + qemu_args,
-        install: true,
-        install_rpath: '$ORIGIN/../lib',
-    )
-endif
-
 # --- ksmbd SMB3 server (LKL + ksmbd-tools) ---
 enable_ksmbd = get_option('enable_ksmbd')
 if enable_ksmbd
@@ -542,34 +524,5 @@ if enable_winfsp
         win_subsystem: 'console',
         install: true,
         install_rpath: '',
-    )
-endif
-
-# --- GTK3 GUI File Manager ---
-gtk3_dep = dependency('gtk+-3.0', required: false)
-if gtk3_dep.found()
-    # GUI links anyfs_core directly (not via anyfs_dep) to avoid
-    # static glib from enable_gio conflicting with GTK3's dynamic glib.
-    gui_deps = [lkl_dep, gtk3_dep]
-    gui_args = []
-    if enable_qemu
-        gui_deps += [qemu_dep]
-        gui_args += ['-DANYFS_HAS_QEMU=1']
-    endif
-    gui_link_args = []
-    gui_subsystem = 'console'
-    if host_machine.system() == 'windows'
-        gui_subsystem = 'windows'
-    endif
-    anyfs_gui = executable('anyfs-gui',
-        'src/gui/anyfs_gui.c',
-        include_directories: [anyfs_inc],
-        dependencies: gui_deps,
-        link_with: [anyfs_core],
-        c_args: gui_args,
-        link_args: gui_link_args,
-        win_subsystem: gui_subsystem,
-        install: true,
-        install_rpath: '$ORIGIN/../lib',
     )
 endif

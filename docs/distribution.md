@@ -13,8 +13,6 @@
 
 | 原名 | 分发名 |
 |------|--------|
-| anyfs-gui | anyfs-gui |
-| anyfs-shell | anyfs-shell |
 | lkl_ksmbd | anyfs-ksmbd |
 | lkl_nfsd | anyfs-nfsd |
 | busybox | anyfs-busybox (仅 Linux) |
@@ -26,9 +24,7 @@
 ```
 anyfs-reader/
 ├── bin/
-│   ├── anyfs-gui          (rpath=$ORIGIN/../lib)
-│   ├── anyfs-shell
-│   ├── anyfs-ksmbd
+│   ├── anyfs-ksmbd        (rpath=$ORIGIN/../lib)
 │   ├── anyfs-nfsd
 │   └── anyfs-busybox      (动态链接)
 └── lib/
@@ -41,15 +37,11 @@ anyfs-reader/
 
 系统依赖（不打包，要求目标系统安装）：
 - libglib-2.0, libz, libzstd, libbz2, libm, libc
-- GTK3 栈（仅 anyfs-gui 需要）
-- libreadline（仅 anyfs-shell 需要）
 
 ### Windows (`anyfs-reader-win32.zip`)
 
 ```
 anyfs-reader/
-├── anyfs-gui.exe
-├── anyfs-shell.exe
 ├── anyfs-ksmbd.exe
 ├── anyfs-nfsd.exe
 ├── lkl.dll
@@ -189,10 +181,8 @@ zip -r anyfs-reader-win32.zip anyfs-reader/
 |----|------|------|
 | liblkl.so | 自建 | LKL 内核 |
 | libanyfs-qemublk.so | 自建 | QEMU block 层 |
-| libglib-2.0.so | 系统 | GLib (GTK3 也依赖) |
+| libglib-2.0.so | 系统 | GLib |
 | libslirp.so | 系统 | 用户态网络 |
-| libgtk-3.so | 系统 | GUI (anyfs-gui) |
-| libreadline.so | 系统 | Shell (anyfs-shell) |
 
 ### Windows 运行时依赖
 

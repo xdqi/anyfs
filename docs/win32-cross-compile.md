@@ -103,10 +103,8 @@ meson setup builddir-win32 --cross-file cross-win32.txt \
 ```
 
 ### Executables
-- `anyfs-shell.exe` — Interactive filesystem shell (readline)
 - `anyfs-ksmbd.exe` — SMB3 file server (slirp networking, no root)
 - `anyfs-nfsd.exe` — NFSv4 file server (slirp networking, no root)
-- No `anyfs-gui.exe` (GTK3 is Linux-only)
 
 ### QEMU Block Backend
 - DLL: `~/qemu/build-win32/libanyfs-qemublk.dll` (2.0MB stripped)
@@ -165,7 +163,6 @@ echo "hello" | nc localhost 12345  # ← works!
 ```
 anyfs-win32/
 ├── bin/
-│   ├── anyfs-shell.exe
 │   ├── anyfs-ksmbd.exe
 │   └── anyfs-nfsd.exe
 ├── lib/
