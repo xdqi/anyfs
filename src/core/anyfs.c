@@ -352,6 +352,12 @@ static int mount_via_devpath(const char* dev_str, const char* fstype,
 				 strcmp(fstype, "ext3") == 0)
 				opts = "noload";
 		}
+		// The Linux UFS driver needs ufstype= to pick the right
+		// superblock layout. Default is 44bsd UFS1 (ufstype=old) which
+		// fails on every modern image. FreeBSD/NetBSD/OpenBSD all ship
+		// ufs2 today.
+		if (strcmp(fstype, "ufs") == 0 && !opts)
+			opts = "ufstype=ufs2";
 		ret = lkl_sys_mount((char*)dev_str, mnt, (char*)fstype,
 				    mount_flags, (char*)opts);
 		if (ret < 0) {
@@ -383,6 +389,11 @@ static int mount_via_devpath(const char* dev_str, const char* fstype,
 				 strcmp(fstypes[i], "ext3") == 0)
 				opts = "noload";
 		}
+		// ufstype=ufs2 covers modern FreeBSD/NetBSD/OpenBSD; the
+		// default 44bsd layout doesn't match anything you'd actually
+		// mount today.
+		if (strcmp(fstypes[i], "ufs") == 0 && !opts)
+			opts = "ufstype=ufs2";
 		ret = lkl_sys_mount((char*)dev_str, mnt, fstypes[i],
 				    mount_flags, (char*)opts);
 		if (ret == 0) {
