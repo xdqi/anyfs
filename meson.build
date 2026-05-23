@@ -348,6 +348,34 @@ if enable_qemu
     )
 endif
 
+# --- Benchmarks (zerobench / loopbench / shmem-relay-bench) ---
+# Diagnostic harnesses isolating each layer of the SMB/NFS data path:
+#   lkl-zerobench         : upper-bound host_proxy throughput probe
+#   lkl-loopbench         : pure LKL loopback (no host_proxy) baseline
+#   lkl-shmem-relay-bench : abandoned kthread+ring relay experiment
+# install=false on all three — these are dev tools, not shipped binaries.
+lkl_zerobench = executable('lkl-zerobench',
+    'src/bench/lkl_zerobench.c',
+    include_directories: [anyfs_inc],
+    dependencies: [lkl_dep, thread_dep, host_proxy_dep],
+    link_with: [anyfs_core],
+    install: false,
+)
+lkl_loopbench = executable('lkl-loopbench',
+    'src/bench/lkl_loopbench.c',
+    include_directories: [anyfs_inc],
+    dependencies: [lkl_dep, thread_dep],
+    link_with: [anyfs_core],
+    install: false,
+)
+lkl_shmem_relay_bench = executable('lkl-shmem-relay-bench',
+    'src/bench/lkl_shmem_relay_bench.c',
+    include_directories: [anyfs_inc],
+    dependencies: [lkl_dep, thread_dep],
+    link_with: [anyfs_core],
+    install: false,
+)
+
 # --- anyfs-lspart (standalone partition lister) ---
 subdir('src/lspart')
 
