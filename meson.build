@@ -423,14 +423,22 @@ if enable_ksmbd
     )
     ksmbd_config_inc = include_directories('.')
 
+    fastsync_srcs = ['src/ksmbd/lkl_fastsync.c']
+    fastsync_link_args = []
+    if host_machine.system() == 'windows'
+        fastsync_link_args += ['-lsynchronization']
+    endif
+
     lkl_ksmbd = executable('anyfs-ksmbd',
         'src/ksmbd/lkl_ksmbd.c',
         'src/ksmbd/ipc_lkl.c',
         'src/ksmbd/stubs_lkl.c',
+        fastsync_srcs,
         ksmbd_tools_sources,
         include_directories: [anyfs_inc, ksmbd_tools_inc],
         dependencies: [lkl_dep, slirp_dep, glib_sys_dep2, thread_dep, host_proxy_dep],
         link_with: [ksmbd_tools_lib, anyfs_core],
+        link_args: fastsync_link_args,
         c_args: [
             '-DSYSCONFDIR="/etc"',
             '-DRUNSTATEDIR="/run"',

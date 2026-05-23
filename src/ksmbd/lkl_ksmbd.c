@@ -35,6 +35,7 @@
 #include "../host_proxy/host_proxy.h"
 #include "anyfs.h"
 #include "anyfs_disk.h"
+#include "lkl_fastsync.h"
 #include <lkl.h>
 
 #include <config_parser.h>
@@ -487,6 +488,14 @@ static void usage(FILE* f, const char* prog)
 	    "the\n"
 	    "                     cost of pegging two CPUs. Useful only under "
 	    "wine.\n"
+	    "  --no-fast-sync     [Windows] Disable "
+	    "WaitOnAddress/CRITICAL_SECTION\n"
+	    "                     overrides for LKL sem/mutex; revert to "
+	    "stock\n"
+	    "                     CreateSemaphore/WaitForSingleObject. The "
+	    "fast\n"
+	    "                     impl is on by default on Windows because it\n"
+	    "                     skips wineserver IPC on every sched wake.\n"
 	    "  -h, --help         Show this help.\n"
 	    "\n"
 	    "Examples:\n"
@@ -518,6 +527,11 @@ int main(int argc, char** argv)
 	int legacy_part = -1;		/* -p N, -1 = not set */
 	int mem_mb = 0;			/* 0 ⇒ anyfs_kernel_init default (32) */
 	KsmbdLimits limits = {0, 0, 0}; /* 0 ⇒ defaults */
+#ifdef _WIN32
+	int fast_sync = 1; /* on by default on Windows */
+#else
+	int fast_sync = 0; /* no-op on POSIX anyway */
+#endif
 
 	/* ── Option parsing ─────────────────────────────────────────────────
 	 */
@@ -528,6 +542,7 @@ int main(int argc, char** argv)
 	    {"max-conn", required_argument, NULL, 1003},
 	    {"max-credits", required_argument, NULL, 1004},
 	    {"busy-spin", no_argument, NULL, 1005},
+	    {"no-fast-sync", no_argument, NULL, 1006},
 	    {"help", no_argument, NULL, 'h'},
 	    {NULL, 0, NULL, 0}};
 
@@ -589,6 +604,9 @@ int main(int argc, char** argv)
 			break;
 		case 1005: /* --busy-spin */
 			host_proxy_set_busy_spin(1);
+			break;
+		case 1006: /* --no-fast-sync */
+			fast_sync = 0;
 			break;
 		case 'c':
 			config_file = optarg;
@@ -683,6 +701,8 @@ int main(int argc, char** argv)
 
 	/* ── 1. Boot LKL kernel ─────────────────────────────────────────────
 	 */
+	if (fast_sync)
+		lkl_fastsync_install();
 	AnyfsKernelOpts kern_opts = {.mem_mb = mem_mb, .loglevel = 4};
 	int ret = anyfs_kernel_init(&kern_opts);
 	if (ret) {
