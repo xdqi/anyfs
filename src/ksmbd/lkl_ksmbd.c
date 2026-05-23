@@ -32,9 +32,9 @@
 
 #include "../core/path_dsl.h"
 #include "../core/share_spec.h"
+#include "../host_proxy/host_proxy.h"
 #include "anyfs.h"
 #include "anyfs_disk.h"
-#include "host_proxy.h"
 #include <lkl.h>
 
 #include <config_parser.h>

@@ -305,6 +305,20 @@ anyfs_dep = declare_dependency(
     dependencies: [lkl_dep, gio_dep] + (enable_qemu ? [qemu_dep] : []),
 )
 
+# --- host_proxy (shared between anyfs-ksmbd, anyfs-nfsd, lkl-zerobench) ---
+# Pure userspace TCP <-> LKL TCP splice. No slirp, no virtio-net. Two
+# threads (host syscalls + lkl_sys_*), per-conn SPSC rings.
+host_proxy_lib = static_library('host_proxy',
+    'src/host_proxy/host_proxy.c',
+    include_directories: [include_directories('src/host_proxy')],
+    dependencies: [lkl_dep, thread_dep],
+)
+host_proxy_dep = declare_dependency(
+    include_directories: include_directories('src/host_proxy'),
+    link_with: host_proxy_lib,
+    dependencies: [lkl_dep, thread_dep],
+)
+
 # --- Tests ---
 
 test_raw_mount_deps = [anyfs_dep]
@@ -412,11 +426,10 @@ if enable_ksmbd
     lkl_ksmbd = executable('anyfs-ksmbd',
         'src/ksmbd/lkl_ksmbd.c',
         'src/ksmbd/ipc_lkl.c',
-        'src/ksmbd/host_proxy.c',
         'src/ksmbd/stubs_lkl.c',
         ksmbd_tools_sources,
         include_directories: [anyfs_inc, ksmbd_tools_inc],
-        dependencies: [lkl_dep, slirp_dep, glib_sys_dep2, thread_dep],
+        dependencies: [lkl_dep, slirp_dep, glib_sys_dep2, thread_dep, host_proxy_dep],
         link_with: [ksmbd_tools_lib, anyfs_core],
         c_args: [
             '-DSYSCONFDIR="/etc"',
