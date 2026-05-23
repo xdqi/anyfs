@@ -12,6 +12,7 @@
 | [winfsp-windows-fuse-plan.md](winfsp-windows-fuse-plan.md) | WinFSP port: step-by-step implementation plan                                |
 | [win32-cross-compile.md](win32-cross-compile.md)  | Cross-compiling the whole stack for Windows i386 from Linux                          |
 | [distribution.md](distribution.md)                | Build, packaging, and runtime-dependency matrix for Linux/Win32/Win64 releases       |
+| [ts-packages.md](ts-packages.md)                  | TypeScript / browser packages (`@anyfs/core`, `react`, `trees`, `native`) and demos  |
 
 ## Language
 

@@ -119,6 +119,33 @@ mount -t nfs4 localhost:/data /mnt -o port=20049,vers=4
 
 See [docs/lkl-servers.md](docs/lkl-servers.md) for kernel config, the `--share` DSL, NFSv4 implementation details, and pynfs results.
 
+## Browser / Node packages
+
+The `ts/` workspace ships the same anyfs stack as a wasm bundle plus thin JS
+wrappers, so disk images can be inspected entirely client-side:
+
+| Package          | Role                                                                          |
+| ---------------- | ----------------------------------------------------------------------------- |
+| `@anyfs/core`    | wasm kernel (LKL + QEMU block layer) + JS bindings; runs in a Web Worker      |
+| `@anyfs/react`   | React 18/19 hooks (`useDir`, `useFile`) over `@anyfs/core`                    |
+| `@anyfs/trees`   | `<AnyfsFileBrowser>` — Chonky-based file UI                                   |
+| `@anyfs/native`  | Node N-API addon, links the native libs instead of wasm (Linux/macOS)         |
+
+A live build of the browser demo (`ts/examples/vite-demo`) is hosted at
+**<https://anyfs.kosaka.moe>** — drop a disk image onto the page or paste an
+HTTP URL and the kernel boots in-browser. An Electron wrapper of the same demo
+lives at `ts/examples/electron-demo`.
+
+```bash
+cd ts
+pnpm install
+pnpm -r --filter './packages/*' build
+pnpm -F vite-demo dev    # http://localhost:5173
+```
+
+See [docs/ts-packages.md](docs/ts-packages.md) for the full layout, build
+recipes, and the wasm-specific gotchas.
+
 ## Project Structure
 
 ```
