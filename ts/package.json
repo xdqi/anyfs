@@ -1,0 +1,19 @@
+{
+    "name": "anyfs-ts",
+    "private": true,
+    "version": "0.0.0",
+    "type": "module",
+    "scripts": {
+        "build": "pnpm -r --filter './packages/*' build",
+        "test": "pnpm -r --filter './packages/*' test"
+    },
+    "devDependencies": {
+        "typescript": "^5.5.4",
+        "tsup": "^8.3.0"
+    },
+    "pnpm": {
+        "onlyBuiltDependencies": [
+            "esbuild"
+        ]
+    }
+}
