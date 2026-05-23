@@ -1,0 +1,182 @@
+name: linux
+
+# Builds the Linux x86_64 distribution tarball (anyfs-ksmbd + anyfs-nfsd +
+# anyfs-fuse + liblkl.so + libanyfs-qemublk.so) and uploads it as an artifact.
+#
+# LKL kernel:  github.com/tavip/linux  branch lkl-6.18  (PR lkl/linux#632)
+# QEMU:        v11.0.0  (matches the local tree; fdmon-poll.c no longer needs
+#                        the `static __thread` workaround on this version)
+# ksmbd-tools: master  (pinned in env below)
+#
+# The `net/sunrpc/svc.c` rpcbind guard is applied by gen_lkl_config.sh itself
+# (function patch_sunrpc_lkl_guard; idempotent via LKL_RPCBIND_GUARD marker),
+# so anyfs-nfsd in the produced artifact does not hang at startup.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: linux-amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+
+    env:
+      LKL_REPO:   https://github.com/tavip/linux.git
+      LKL_REF:    lkl-6.18
+      QEMU_REPO:  https://gitlab.com/qemu-project/qemu.git
+      QEMU_REF:   v11.0.0
+      KSMBD_REPO: https://github.com/cifsd-team/ksmbd-tools.git
+      KSMBD_REF:  master
+
+    steps:
+      - name: Checkout anyfs-reader
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential meson ninja-build pkg-config python3 \
+            flex bison bc rsync libelf-dev libssl-dev \
+            libglib2.0-dev libslirp-dev liburing-dev libaio-dev \
+            libzstd-dev libbz2-dev zlib1g-dev libpixman-1-dev \
+            libfuse3-dev libnl-3-dev libnl-genl-3-dev \
+            patchelf ca-certificates \
+            smbclient nfs-common curl
+
+      # ── Caches ──────────────────────────────────────────────────────────────
+      # Kernel source + per-target build (lkl-linux-amd64/) live in one bucket.
+      # Key rebuilds when LKL_REF moves OR any of the config/patch scripts
+      # change (gen_lkl_config.sh embeds the LKL_RPCBIND_GUARD patcher, so its
+      # hash captures patch changes).
+      - name: Cache LKL kernel tree + per-target build
+        id: cache-lkl
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/linux
+            lkl-linux-amd64
+          key: lkl-${{ env.LKL_REF }}-${{ hashFiles('scripts/gen_lkl_config.sh', 'scripts/build_lkl.sh', 'scripts/oot_fs.sh') }}
+          restore-keys: |
+            lkl-${{ env.LKL_REF }}-
+
+      - name: Cache QEMU tree + build
+        id: cache-qemu
+        uses: actions/cache@v4
+        with:
+          path: ~/qemu
+          key: qemu-${{ env.QEMU_REF }}-${{ hashFiles('scripts/build_qemu.sh') }}
+          restore-keys: |
+            qemu-${{ env.QEMU_REF }}-
+
+      - name: Cache ksmbd-tools
+        id: cache-ksmbd
+        uses: actions/cache@v4
+        with:
+          path: ~/ksmbd-tools
+          key: ksmbd-${{ env.KSMBD_REF }}
+
+      # ── Clones (skipped on cache hit) ───────────────────────────────────────
+      - name: Clone LKL kernel
+        if: steps.cache-lkl.outputs.cache-hit != 'true'
+        run: |
+          rm -rf "$HOME/linux"
+          git clone --depth=1 --branch="${LKL_REF}" "${LKL_REPO}" "$HOME/linux"
+          test -d "$HOME/linux/arch/lkl" || { echo "::error::arch/lkl missing in cloned tree"; exit 1; }
+
+      - name: Clone QEMU
+        if: steps.cache-qemu.outputs.cache-hit != 'true'
+        run: |
+          rm -rf "$HOME/qemu"
+          git clone --depth=1 --branch="${QEMU_REF}" "${QEMU_REPO}" "$HOME/qemu"
+
+      - name: Clone & build ksmbd-tools
+        if: steps.cache-ksmbd.outputs.cache-hit != 'true'
+        run: |
+          rm -rf "$HOME/ksmbd-tools"
+          git clone --depth=1 --branch="${KSMBD_REF}" "${KSMBD_REPO}" "$HOME/ksmbd-tools"
+          cd "$HOME/ksmbd-tools"
+          meson setup builddir
+          meson compile -C builddir
+
+      # ── Build pipeline ──────────────────────────────────────────────────────
+      - name: Generate LKL kernel config (applies LKL_RPCBIND_GUARD)
+        run: |
+          ./scripts/gen_lkl_config.sh \
+            --linux="$HOME/linux" \
+            --out="$GITHUB_WORKSPACE" \
+            --targets=linux-amd64
+
+      - name: Build LKL kernel
+        run: |
+          ./scripts/build_lkl.sh \
+            --linux="$HOME/linux" \
+            --out="$GITHUB_WORKSPACE" \
+            --targets=linux-amd64 \
+            -j"$(nproc)"
+          # package_linux.sh falls back to $HOME/linux/tools/lkl/lib/liblkl.so —
+          # link the per-target build there so packaging finds it.
+          mkdir -p "$HOME/linux/tools/lkl/lib"
+          ln -sf "$GITHUB_WORKSPACE/lkl-linux-amd64/tools/lkl/lib/liblkl.so" \
+                 "$HOME/linux/tools/lkl/lib/liblkl.so"
+
+      - name: Build QEMU block layer
+        run: |
+          ./scripts/build_qemu.sh \
+            --qemu-src="$HOME/qemu" \
+            --targets=linux-amd64 \
+            -j"$(nproc)"
+
+      - name: Build anyfs-reader (core + server + fuse)
+        run: |
+          ./scripts/build_anyfs.sh \
+            --targets=linux-amd64 \
+            --components=core,server,fuse \
+            --lkl-src="$HOME/linux" \
+            --qemu-root="$HOME/qemu" \
+            --ksmbd-root="$HOME/ksmbd-tools" \
+            -j"$(nproc)"
+
+      # ── Integration smoke test ──────────────────────────────────────────────
+      # Boots each anyfs binary against a Debian 13 generic-cloud qcow2 and
+      # asserts lspart/smbclient/nfs see a real Debian rootfs. This catches
+      # regressions in the QEMU block backend, ksmbd-tools wiring, and the
+      # host_proxy data path that a pure compile job would miss.
+      - name: Cache Debian 13 qcow2
+        id: cache-debian
+        uses: actions/cache@v4
+        with:
+          path: /tmp/debian-13-genericcloud-amd64.qcow2
+          key: debian-13-genericcloud-amd64-v1
+
+      - name: Download Debian 13 qcow2
+        if: steps.cache-debian.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL --retry 3 -o /tmp/debian-13-genericcloud-amd64.qcow2 \
+            https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
+          ls -lh /tmp/debian-13-genericcloud-amd64.qcow2
+
+      - name: Run integration smoke test
+        run: |
+          ./tests/smoke-debian-qcow2.sh \
+            --build-dir="$GITHUB_WORKSPACE/build-anyfs-linux-amd64" \
+            --nfs-mount \
+            /tmp/debian-13-genericcloud-amd64.qcow2
+
+      - name: Package distribution tarball
+        run: |
+          ./scripts/package_linux.sh build-anyfs-linux-amd64
+          ls -la /tmp/anyfs-reader-*-linux-amd64.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: anyfs-reader-linux-amd64
+          path: /tmp/anyfs-reader-*-linux-amd64.tar.gz
+          if-no-files-found: error
+          retention-days: 14
