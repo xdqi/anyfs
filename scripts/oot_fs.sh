@@ -497,6 +497,21 @@ EOF
             }
             { print }
         ' "$isadefs" > "$isadefs.new" && mv "$isadefs.new" "$isadefs"
+        # The prologue's `#undef __x86_64/__amd64/__x86/__i386` is necessary
+        # but not sufficient: the file immediately below has a
+        # `#if defined(__x86_64) || defined(__x86_64__) ... #if !defined(__x86_64)
+        # # define __x86_64 #endif` block that re-defines the bare-name macros
+        # back to an empty body. (`__x86_64__` is a separate GCC builtin and
+        # we deliberately leave it alone — ZFS uses it to detect the x86_64
+        # ABI, which is correct here.) Gate those re-defines behind
+        # !CONFIG_LKL so the undef sticks for ZFS C source. Same shape as
+        # the simd.h / simd_stat.c patches above. Idempotent — the marker
+        # added by sed is "&& !defined(CONFIG_LKL)" itself.
+        sed -i \
+            -e 's|^#if !defined(__x86_64)$|#if !defined(__x86_64) \&\& !defined(CONFIG_LKL)|' \
+            -e 's|^#if !defined(__amd64)$|#if !defined(__amd64) \&\& !defined(CONFIG_LKL)|' \
+            -e 's|^#if !defined(__x86)$|#if !defined(__x86) \&\& !defined(CONFIG_LKL)|' \
+            "$isadefs"
         log "patched ZFS isa_defs.h to undef x86 builtins + force __linux__ on CONFIG_LKL builds"
     fi
 
