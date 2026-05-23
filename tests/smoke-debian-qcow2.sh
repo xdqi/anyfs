@@ -213,7 +213,7 @@ if [[ $NFSD_READY -eq 1 ]]; then
         # fail the step in under a minute and dump the nfsd log.
         if sudo timeout --signal=KILL 45s \
                 mount -t nfs4 -v "127.0.0.1:/root" "$MOUNT_DIR" \
-                -o "port=$NFS_PORT,vers=4,timeo=50,retrans=2" \
+                -o "port=$NFS_PORT,vers=4.0,timeo=50,retrans=2" \
                 > "$MOUNT_OUT_FILE" 2>&1; then
             echo "  mount stdout/stderr:"
             sed 's/^/    /' "$MOUNT_OUT_FILE"

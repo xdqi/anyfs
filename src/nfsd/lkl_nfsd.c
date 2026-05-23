@@ -500,7 +500,12 @@ static int start_nfsd(void)
 	}
 	printf("Mounted nfsd control filesystem\n");
 
-	ret = lkl_write_file("/proc/fs/nfsd/versions", "-3 +4\n");
+	/* Limit to NFSv4.0: 4.1/4.2 require a backchannel binding during
+	 * CREATE_SESSION, which the kernel tries to drive over the same TCP
+	 * connection. host_proxy only bridges client->server, so the backchannel
+	 * negotiation stalls and the mount wedges silently after PUTROOTFH. v4.0
+	 * uses SETCLIENTID instead of sessions and is unidirectional. */
+	ret = lkl_write_file("/proc/fs/nfsd/versions", "-3 +4 +4.0 -4.1 -4.2\n");
 	if (ret < 0)
 		fprintf(stderr, "Warning: could not set versions\n");
 
