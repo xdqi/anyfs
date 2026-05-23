@@ -108,6 +108,14 @@ int qemu_blk_open(const char* image_path, int readonly,
 {
 	Error* errp = NULL;
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+	/* Force Asyncify-active state on the calling thread so QEMU's coroutine
+	 * yields and poll() calls see isAsyncContext=true. Without this, the
+	 * first poll(timeout>0) spin-loops because ASYNCIFY isn't engaged on
+	 * a worker-thread synchronous entry. */
+	emscripten_sleep(0);
+#endif
 	if (!qemu_initialized) {
 		bdrv_init();
 		if (qemu_init_main_loop(&errp) < 0) {
@@ -119,7 +127,11 @@ int qemu_blk_open(const char* image_path, int readonly,
 		qemu_initialized = 1;
 	}
 
-	int flags = readonly ? (BDRV_O_RDWR | BDRV_O_SNAPSHOT) : BDRV_O_RDWR;
+	/* readonly=1 maps to plain BDRV_O_RDONLY (=0), not SNAPSHOT, so QEMU
+	 * doesn't try to create a writable overlay in /var/tmp — which doesn't
+	 * exist under emscripten MEMFS, and which silently discards writes
+	 * anyway. Callers that need write-through must pass readonly=0. */
+	int flags = readonly ? 0 : BDRV_O_RDWR;
 	BlockBackend* blk = blk_new_open(image_path, NULL, NULL, flags, &errp);
 	if (!blk) {
 		fprintf(stderr, "blk_new_open(%s) failed: %s\n", image_path,

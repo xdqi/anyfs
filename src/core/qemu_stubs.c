@@ -74,9 +74,10 @@ void* string_input_visitor_new(const char* str)
 	(void)str;
 	return NULL;
 }
-void* string_output_visitor_new(int human)
+void* string_output_visitor_new(int human, char** result)
 {
 	(void)human;
+	(void)result;
 	return NULL;
 }
 void* visitor_forward_field(void* v, const char* n, const char* fn)
