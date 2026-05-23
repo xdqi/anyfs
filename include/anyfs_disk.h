@@ -82,6 +82,18 @@ void anyfs_disk_close(AnyfsDisk* d);
 const char* anyfs_disk_display(const AnyfsDisk* d);
 int anyfs_disk_id(const AnyfsDisk* d);
 
+/* Disk-level metadata: logical (virtual block-device) size from sysfs
+ * and the outer partition-table flavour ("gpt", "dos", or ""). */
+typedef struct {
+	uint64_t logical_size; /* virtual block device size, in bytes */
+	char pt_type[16];      /* "gpt", "dos", or "" if no PT detected */
+} AnyfsDiskMeta;
+
+/* Populate `*out` with the disk's logical size and PT flavour.
+ * Returns 0 on success, negative on error. Safe to call any time
+ * after anyfs_disk_open. */
+int anyfs_disk_meta(AnyfsDisk* d, AnyfsDiskMeta* out);
+
 /* Copy the disk's top-level partitions into `buf` (parent == -1).
  * Returns the number written (capped at buf_n). `got` is set to the
  * *full* count even if buf_n was too small. */

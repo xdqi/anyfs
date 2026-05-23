@@ -322,6 +322,45 @@ int anyfs_partprobe_blkdev(const char* lkl_blkdev_path, AnyfsInnerPart* out,
 	return anyfs_partprobe_buf(buf, got, out, max);
 }
 
+const char* anyfs_pttype_buf(const void* raw, size_t len)
+{
+	if (!raw || len < 512)
+		return "";
+	const unsigned char* buf = (const unsigned char*)raw;
+	/* Prefer GPT: a protective MBR + real GPT both report as GPT. */
+	if (len >= 520 && memcmp(buf + 512, "EFI PART", 8) == 0)
+		return "gpt";
+	if (buf[510] == 0x55 && buf[511] == 0xAA) {
+		for (int i = 0; i < 4; i++) {
+			const unsigned char* e = buf + 446 + i * 16;
+			if ((e[0] == 0x00 || e[0] == 0x80) && e[4] != 0x00 &&
+			    e[4] != 0xEE)
+				return "dos";
+		}
+	}
+	return "";
+}
+
+const char* anyfs_pttype_blkdev(const char* lkl_blkdev_path)
+{
+	if (!lkl_blkdev_path)
+		return "";
+	int fd = lkl_sys_open(lkl_blkdev_path, LKL_O_RDONLY, 0);
+	if (fd < 0)
+		return "";
+	unsigned char buf[4096];
+	size_t got = 0;
+	while (got < sizeof(buf)) {
+		long n = lkl_sys_pread64(fd, (char*)buf + got,
+					 sizeof(buf) - got, (long long)got);
+		if (n <= 0)
+			break;
+		got += (size_t)n;
+	}
+	lkl_sys_close(fd);
+	return anyfs_pttype_buf(buf, got);
+}
+
 int anyfs_kindprobe_meta(const char* lkl_blkdev_path, char fstype[32],
 			 char label[64], char uuid[40])
 {
@@ -342,16 +381,32 @@ int anyfs_kindprobe_meta(const char* lkl_blkdev_path, char fstype[32],
 	if (hfd < 0)
 		return -1;
 
-	/* libblkid needs a path. /proc/self/fd/<n> is the standard way to
-	 * give it a fd-backed file. */
-	char fdpath[64];
-	snprintf(fdpath, sizeof(fdpath), "/proc/self/fd/%d", hfd);
-
-	blkid_probe pr = blkid_new_probe_from_filename(fdpath);
+	/* libblkid needs to be pointed at the spool file. On Linux/POSIX
+	 * hosts we go through /proc/self/fd/<n> (the canonical filename for
+	 * a fd-backed file). Emscripten's MEMFS doesn't expose /proc, so
+	 * under wasm we use blkid_probe_set_device which takes the fd
+	 * directly. */
+	blkid_probe pr;
+#ifdef __EMSCRIPTEN__
+	pr = blkid_new_probe();
 	if (!pr) {
 		close(hfd);
 		return -1;
 	}
+	if (blkid_probe_set_device(pr, hfd, 0, 0) != 0) {
+		blkid_free_probe(pr);
+		close(hfd);
+		return -1;
+	}
+#else
+	char fdpath[64];
+	snprintf(fdpath, sizeof(fdpath), "/proc/self/fd/%d", hfd);
+	pr = blkid_new_probe_from_filename(fdpath);
+	if (!pr) {
+		close(hfd);
+		return -1;
+	}
+#endif
 	blkid_probe_enable_superblocks(pr, 1);
 	blkid_probe_set_superblocks_flags(
 	    pr, BLKID_SUBLKS_TYPE | BLKID_SUBLKS_LABEL | BLKID_SUBLKS_UUID);

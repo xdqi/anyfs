@@ -416,6 +416,48 @@ int anyfs_disk_id(const AnyfsDisk* d)
 	return d ? d->disk_id : -1;
 }
 
+int anyfs_disk_meta(AnyfsDisk* d, AnyfsDiskMeta* out)
+{
+	if (!d || !out)
+		return -1;
+	out->logical_size = 0;
+	out->pt_type[0] = '\0';
+
+	/* Logical size: /sys/block/<vda>/size is in 512-byte sectors. */
+	char sysfs_path[128];
+	snprintf(sysfs_path, sizeof(sysfs_path), "/sys/block/%s/size",
+		 d->sysfs_name);
+	int fd = lkl_sys_open(sysfs_path, LKL_O_RDONLY, 0);
+	if (fd >= 0) {
+		char sbuf[64];
+		long n = lkl_sys_read(fd, sbuf, sizeof(sbuf) - 1);
+		lkl_sys_close(fd);
+		if (n > 0) {
+			sbuf[n] = '\0';
+			char* end = NULL;
+			unsigned long long sectors = strtoull(sbuf, &end, 10);
+			if (end != sbuf)
+				out->logical_size = (uint64_t)sectors * 512u;
+		}
+	}
+
+	/* PT flavour: probe the start of /dev/<vda>. The partition setup path
+	 * mknods /dev/<vdaN> per partition; the whole-disk node may not exist
+	 * yet, so create it best-effort. */
+	char blk_path[80];
+	snprintf(blk_path, sizeof(blk_path), "/dev/%s", d->sysfs_name);
+	uint32_t whole_dev = 0;
+	if (lkl_get_virtio_blkdev(d->disk_id, 0, &whole_dev) == 0) {
+		if (lkl_sys_access("/dev", 0) < 0)
+			(void)lkl_sys_mkdir("/dev", 0700);
+		(void)lkl_sys_mknod(blk_path, LKL_S_IFBLK | 0600, whole_dev);
+	}
+	const char* pt = anyfs_pttype_blkdev(blk_path);
+	strncpy(out->pt_type, pt, sizeof(out->pt_type) - 1);
+	out->pt_type[sizeof(out->pt_type) - 1] = '\0';
+	return 0;
+}
+
 int anyfs_disk_list(AnyfsDisk* d, AnyfsPartInfo* buf, size_t buf_n, size_t* got)
 {
 	return anyfs_disk_list_children(d, ROOT_PARENT, buf, buf_n, got);

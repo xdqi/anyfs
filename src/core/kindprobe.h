@@ -64,6 +64,16 @@ int anyfs_partprobe_buf(const void* buf, size_t len, AnyfsInnerPart* out,
 int anyfs_partprobe_blkdev(const char* lkl_blkdev_path, AnyfsInnerPart* out,
 			   int max);
 
+/* Classify the partition-table flavour of a buffer covering the start
+ * of a block device. Returns "gpt", "dos", or "" (empty = no table
+ * detected). GPT is preferred when both signatures coexist
+ * (protective-MBR + real GPT). */
+const char* anyfs_pttype_buf(const void* buf, size_t len);
+
+/* Convenience: pread the prefix off the LKL block device and classify.
+ * Returns the same strings as anyfs_pttype_buf. */
+const char* anyfs_pttype_blkdev(const char* lkl_blkdev_path);
+
 #ifdef __cplusplus
 }
 #endif
