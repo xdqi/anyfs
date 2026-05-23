@@ -207,8 +207,12 @@ if [[ $NFSD_READY -eq 1 ]]; then
         MOUNT_OUT_FILE="$(mktemp)"
         # Drop `soft` so a wedged server gives a clearer failure than a
         # silent empty listing; raise verbosity so failure modes (auth,
-        # path, version) are visible in the CI log.
-        if sudo mount -t nfs4 -v "127.0.0.1:/root" "$MOUNT_DIR" \
+        # path, version) are visible in the CI log. Wrap in `timeout 45s`
+        # because a wedged-but-not-erroring server made mount.nfs4 retry
+        # for ~50 min before CI hit its own runner timeout — we'd rather
+        # fail the step in under a minute and dump the nfsd log.
+        if sudo timeout --signal=KILL 45s \
+                mount -t nfs4 -v "127.0.0.1:/root" "$MOUNT_DIR" \
                 -o "port=$NFS_PORT,vers=4,timeo=50,retrans=2" \
                 > "$MOUNT_OUT_FILE" 2>&1; then
             echo "  mount stdout/stderr:"
