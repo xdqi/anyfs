@@ -14,15 +14,22 @@
  *   - nfsd.fh:       maps (domain, fsid) -> export path
  *   - nfsd.export:   maps (domain, path) -> export flags
  *
- * Each --share becomes an NFS export rooted at /<name>.
+ * NFSv4 pseudo-root layout: fsid=0 is pinned to the first --share's ext4
+ * mountpoint (/lklmnt/anyfs_d0_p<M>). LKL's rootfs is ramfs, which has no
+ * s_export_op — kernel check_export() rejects it with -EINVAL and any
+ * PUTROOTFH would wedge with NFS4ERR_DELAY. By exporting the share's own
+ * (exportable) ext4 dentry at fsid=0 instead, the client mounts ":/" and
+ * lands on the share contents directly. Multi-share is currently limited:
+ * only the first share is reachable; later --share entries are accepted
+ * but inert until a real exportable v4root (e.g. brd+ext4) is wired up.
  *
  * Build: meson compile -C build
  * Run:   ./anyfs-nfsd [options] <image>[?<query>] [<image>...] --share
- * [name=]path ... Test:  mount -t nfs4 localhost:/<name> /mnt -o port=20049
+ * [name=]path ... Test:  mount -t nfs4 localhost:/ /mnt -o port=20049
  *
  * Examples:
- *   anyfs-nfsd disk.img --share data=disk0/p1
- *   anyfs-nfsd boot.img data.qcow2 --share esp=disk0/p1 --share home=disk1/p1
+ *   anyfs-nfsd disk.img --share root=disk0/p1
+ *   mount -t nfs4 localhost:/ /mnt -o port=20049,vers=4.0
  */
 
 #define _GNU_SOURCE
@@ -247,9 +254,14 @@ static void handle_expkey(int fd, char* query)
 				   (unsigned char)fsid_bytes[3];
 
 		const char* path = NULL;
-		if (idx == 0)
-			path = "/";
-		else if ((int)idx <= g_n_exports)
+		if (idx == 0) {
+			/* fsid=0 must point at an exportable filesystem — see
+			 * the file header. The expkey ek_path is fed back to
+			 * exp_get_by_name(), which runs check_export(); ramfs
+			 * "/" fails s_export_op there, so route fsid=0 to the
+			 * first share's ext4 mountpoint. */
+			path = g_n_exports > 0 ? g_exports[0].lkl_path : "/";
+		} else if ((int)idx <= g_n_exports)
 			path = g_exports[idx - 1].bind_path;
 
 		if (path) {
@@ -299,16 +311,20 @@ static void handle_export(int fd, char* query)
 	if (qword_get_user(&p, path, sizeof(path)) <= 0)
 		return;
 
-	/* NFSv4 pseudo-root: required so PUTROOTFH succeeds and the client
-	 * can LOOKUP share names from it. Read-only, all-squash; the kernel
-	 * walks child mounts (our /<name> bind mounts) automatically. */
-	if (strcmp(path, "/") == 0) {
-		unsigned int flags = NFSEXP_V4ROOT | NFSEXP_INSECURE |
-				     NFSEXP_NOSUBTREECHECK | NFSEXP_FSID |
-				     NFSEXP_READONLY | NFSEXP_ALLSQUASH;
+	/* fsid=0 export — pinned to the first share's ext4 mountpoint to give
+	 * NFSv4 an exportable pseudoroot (see file header). NFSEXP_V4ROOT is
+	 * deliberately *off*: the v4root pseudo-fs hides non-export children,
+	 * which would make the rootfs appear empty to the client. A regular
+	 * fsid=0 export lets nfsd use this dentry as the pseudoroot AND lets
+	 * the actual directory contents through. */
+	if (g_n_exports > 0 && strcmp(path, g_exports[0].lkl_path) == 0) {
+		unsigned int flags = NFSEXP_INSECURE | NFSEXP_NOSUBTREECHECK |
+				     NFSEXP_FSID | NFSEXP_ALLSQUASH;
+		if (g_read_only)
+			flags |= NFSEXP_READONLY;
 		snprintf(resp, sizeof(resp), "%s %s %ld %u 0 0 0\n", domain,
 			 path, (long)expiry, flags);
-		printf("[mountd] export: %s %s -> flags=%#x fsid=0 (v4root)\n",
+		printf("[mountd] export: %s %s -> flags=%#x fsid=0 (root)\n",
 		       domain, path, flags);
 		lkl_sys_write(fd, resp, strlen(resp));
 		return;
@@ -567,8 +583,10 @@ static void usage(FILE* f, const char* prog)
 	    "image\n"
 	    "                       p1              shortcut for disk0/p1 "
 	    "(single-image only)\n"
-	    "                     'name' is the NFS export name (client mounts "
-	    "/<name>).\n"
+	    "                     'name' is bookkeeping only — the NFSv4\n"
+	    "                     pseudoroot is currently pinned to the first\n"
+	    "                     share, so the client mount path is always "
+	    "':/'.\n"
 	    "  -p N               [deprecated] Equivalent to --share "
 	    "disk0/p<N> (single-image only).\n"
 	    "  -P PORT            Host port for NFS (default: %d).\n"
@@ -577,11 +595,9 @@ static void usage(FILE* f, const char* prog)
 	    "\n"
 	    "Examples:\n"
 	    "  %s disk.img --share data=disk0/p1\n"
-	    "  %s boot.img data.qcow2 --share esp=disk0/p1 --share "
-	    "home=disk1/p1\n"
 	    "  Discover paths first with: anyfs-lspart disk.img\n"
-	    "  Then: mount -t nfs4 localhost:/<name> /mnt -o port=%d,vers=4\n",
-	    prog, HOST_FWD_PORT, prog, prog, HOST_FWD_PORT);
+	    "  Then: mount -t nfs4 localhost:/ /mnt -o port=%d,vers=4.0\n",
+	    prog, HOST_FWD_PORT, prog, HOST_FWD_PORT);
 }
 
 /* ── main ────────────────────────────────────────────────────────────── */
@@ -889,14 +905,19 @@ int main(int argc, char** argv)
 
 	g_read_only = read_only;
 
-	/* ── 5.5 Bind each share to /<name> for the NFSv4 pseudo-fs ─────────
-	 * The kernel synthesizes the NFSv4 pseudo-root from real export paths.
-	 * A share landed at /lklmnt/anyfs_d0_p1 would be reachable only via
-	 * /lklmnt/anyfs_d0_p1, while clients want localhost:/<name>. Bind-mount
-	 * the share root at /<name> so the pseudo-fs places <name> in the root
-	 * directory listing and LOOKUP <name> resolves to the partition root
-	 * (not /<name> *inside* the partition).
-	 */
+	/* Only the first share is reachable: fsid=0 is pinned to it (see the
+	 * file header). The bind mounts below are vestigial — they keep the
+	 * old /<name> paths populated in ramfs so handle_expkey can return a
+	 * valid ek_path for fsid>0 — but the client never reaches them
+	 * through the v4 pseudo-root because ramfs is not exportable. */
+	if (g_n_exports > 1)
+		fprintf(stderr,
+			"warning: %d shares registered, but only the first "
+			"(%s) is reachable via the NFSv4 mount; multi-share "
+			"NFS requires an exportable pseudoroot (TODO).\n",
+			g_n_exports, g_exports[0].name);
+
+	/* ── 5.5 Bind each share to /<name> ────────────────────────────────── */
 	static const char* const reserved[] = {"proc", "sys", "lklmnt", "dev",
 					       NULL};
 	for (int i = 0; i < g_n_exports; i++) {
@@ -954,9 +975,9 @@ int main(int argc, char** argv)
 	}
 
 	printf("\n=== NFSv4 server ready ===\n");
-	for (int i = 0; i < g_n_exports; i++)
-		printf("  mount -t nfs4 localhost:/%s /mnt -o port=%d,vers=4\n",
-		       g_exports[i].name, host_port);
+	printf("  mount -t nfs4 localhost:/ /mnt -o port=%d,vers=4.0\n",
+	       host_port);
+	printf("  (Single-share mode: fsid=0 -> %s)\n", g_exports[0].lkl_path);
 	printf("Press Ctrl+C to stop.\n\n");
 
 	/* ── 8. Serve until interrupted ─────────────────────────────────────

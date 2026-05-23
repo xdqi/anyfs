@@ -127,9 +127,13 @@ KSMBD_LOG="$(mktemp)"
     > "$KSMBD_LOG" 2>&1 &
 KSMBD_PID=$!
 
-# Wait up to 30 s for SMB to listen.
+# Wait up to 30 s for ksmbd to be fully ready. The listen socket is bound
+# by host_proxy very early — before disk_open / share registration finishes
+# — so polling the port alone races: smbclient hits the socket, tree-connects
+# to "root", and gets NT_STATUS_BAD_NETWORK_NAME because the share isn't
+# registered yet. Wait for the "SMB server ready" log line instead.
 for i in $(seq 1 60); do
-    if ss -tlnp 2>/dev/null | grep -q ":$SMB_PORT\b"; then
+    if grep -q "SMB server ready" "$KSMBD_LOG" 2>/dev/null; then
         break
     fi
     if ! kill -0 "$KSMBD_PID" 2>/dev/null; then
@@ -203,7 +207,11 @@ if [[ $NFSD_READY -eq 1 ]]; then
         sleep 2
 
         MOUNT_DIR="$(mktemp -d /tmp/anyfs-nfs.XXXXXX)"
-        echo "  mount: 127.0.0.1:/root -> $MOUNT_DIR (port=$NFS_PORT)"
+        # NFSv4 export is pinned at fsid=0 to the share's ext4 mountpoint
+        # (LKL's ramfs rootfs is not exportable — no s_export_op). The
+        # client therefore mounts ":/" and lands directly on the share
+        # contents; the --share NAME no longer maps to a /<name> path.
+        echo "  mount: 127.0.0.1:/ -> $MOUNT_DIR (port=$NFS_PORT)"
         MOUNT_OUT_FILE="$(mktemp)"
         # Drop `soft` so a wedged server gives a clearer failure than a
         # silent empty listing; raise verbosity so failure modes (auth,
@@ -212,7 +220,7 @@ if [[ $NFSD_READY -eq 1 ]]; then
         # for ~50 min before CI hit its own runner timeout — we'd rather
         # fail the step in under a minute and dump the nfsd log.
         if sudo timeout --signal=KILL 45s \
-                mount -t nfs4 -v "127.0.0.1:/root" "$MOUNT_DIR" \
+                mount -t nfs4 -v "127.0.0.1:/" "$MOUNT_DIR" \
                 -o "port=$NFS_PORT,vers=4.0,timeo=50,retrans=2" \
                 > "$MOUNT_OUT_FILE" 2>&1; then
             echo "  mount stdout/stderr:"
