@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+out/
+build/
+.vite/
+*.tsbuildinfo
+
+# Generated wasm artifacts (rebuild via scripts/build_anyfs_browser_wasm.sh)
+packages/core/wasm/
+
+# Demo runtime assets copied at build time (point to ../../packages/core/wasm)
+examples/vite-demo/public/wasm/
+
+# Bulk disk fixtures (not committed; user-supplied / large)
+examples/vite-demo/public/disks/
+
+# Electron staging + packaged distributions
+examples/electron-demo/staging/
+examples/electron-demo/out/
+
+# Native addon build (also covered by package-level .gitignore)
+packages/anyfs-native/build/
+
+# Editor / OS
+.DS_Store
+*.swp
+*~
