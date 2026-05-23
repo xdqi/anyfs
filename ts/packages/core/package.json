@@ -1,0 +1,41 @@
+{
+    "name": "@anyfs/core",
+    "version": "0.0.1",
+    "type": "module",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "default": "./dist/index.js"
+        },
+        "./node": {
+            "types": "./dist/node.d.ts",
+            "default": "./dist/node.js"
+        },
+        "./wasm/anyfs.mjs": {
+            "types": "./wasm/index.d.ts",
+            "default": "./wasm/anyfs.mjs"
+        },
+        "./wasm/anyfs.wasm": "./wasm/anyfs.wasm",
+        "./wasm/anyfs.worker.js": "./wasm/anyfs.worker.js",
+        "./wasm/anyfs.node.mjs": {
+            "types": "./wasm/index.d.ts",
+            "default": "./wasm/anyfs.node.mjs"
+        },
+        "./wasm/anyfs.node.wasm": "./wasm/anyfs.node.wasm"
+    },
+    "files": [
+        "dist",
+        "wasm"
+    ],
+    "scripts": {
+        "build": "tsup",
+        "test": "node test/smoke.node.mjs single && node test/smoke.node.mjs multi && node test/smoke.node.mjs big"
+    },
+    "devDependencies": {
+        "typescript": "^5.5.4",
+        "tsup": "^8.3.0",
+        "@types/node": "^22.0.0"
+    }
+}
