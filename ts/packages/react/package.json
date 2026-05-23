@@ -1,0 +1,31 @@
+{
+    "name": "@anyfs/react",
+    "version": "0.0.1",
+    "type": "module",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "default": "./dist/index.js"
+        }
+    },
+    "files": [
+        "dist"
+    ],
+    "scripts": {
+        "build": "tsup src/index.ts --format esm --dts --clean --external react --external @anyfs/core"
+    },
+    "peerDependencies": {
+        "react": "^18 || ^19"
+    },
+    "dependencies": {
+        "@anyfs/core": "workspace:*"
+    },
+    "devDependencies": {
+        "typescript": "^5.5.4",
+        "tsup": "^8.3.0",
+        "@types/react": "^19.0.0",
+        "react": "^19.0.0"
+    }
+}
