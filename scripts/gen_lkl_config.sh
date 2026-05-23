@@ -531,6 +531,41 @@ done
 
 mkdir -p "$OUT_PARENT"
 
+# Apply the LKL rpcbind guard to net/sunrpc/svc.c. Without this, anyfs-nfsd
+# hangs at startup because svc_register() and svc_uses_rpcbind() try to talk
+# to localhost:111 (rpcbind), which has no listener inside LKL. Idempotent:
+# guarded by a "LKL_RPCBIND_GUARD" marker comment.
+patch_sunrpc_lkl_guard() {
+    local svc_c="$LINUX_DIR/net/sunrpc/svc.c"
+    [[ -f "$svc_c" ]] || return 0
+    if grep -q "LKL_RPCBIND_GUARD" "$svc_c"; then
+        return 0
+    fi
+    awk '
+        BEGIN { st = 0 }
+        /^int svc_register\(/                 { st = 1; print; next }
+        /^static int svc_uses_rpcbind\(/      { st = 2; print; next }
+        (st == 1 || st == 2) && /^\{$/ {
+            print
+            print "#ifdef CONFIG_LKL"
+            if (st == 1)
+                print "\treturn 0;  /* LKL_RPCBIND_GUARD: skip rpcbind localhost:111 */"
+            else
+                print "\treturn 0;  /* LKL_RPCBIND_GUARD: no rpcbind under LKL */"
+            print "#endif"
+            st = 0
+            next
+        }
+        { print }
+    ' "$svc_c" > "$svc_c.tmp" && mv "$svc_c.tmp" "$svc_c"
+    if ! grep -q "LKL_RPCBIND_GUARD" "$svc_c"; then
+        echo "ERROR: failed to inject LKL_RPCBIND_GUARD into $svc_c" >&2
+        exit 1
+    fi
+    echo "Patched LKL rpcbind guard into net/sunrpc/svc.c"
+}
+patch_sunrpc_lkl_guard
+
 # Stage OOT filesystems (NTFS PLUS, etc.) into $LINUX_DIR. Idempotent —
 # re-running between iterations is safe. No --wasm here; the wasm-only
 # kernel patches (e.g. XFS computed-goto fix) are applied by the wasm
