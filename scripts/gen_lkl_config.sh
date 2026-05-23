@@ -24,6 +24,12 @@ set -e
 
 LINUX_DIR="$HOME/linux"
 OUT_PARENT="$HOME/anyfs-reader"
+# Patched binutils-2.46 install (LKL weak-symbol fixes). The bundled
+# binutils under $LINUX_DIR/tools/lkl/bin is 2.25.1, below the 2.30
+# minimum kernel 6.13+ Kconfig requires. We override LD/AS/etc per-arch
+# below so the kernel sub-make uses the 2.46 install regardless of the
+# stale shadowed tools that the LKL Makefile prepends to PATH.
+BINUTILS_DIR="${BINUTILS_DIR:-$HOME/binutils-gdb/build-combined/install/bin}"
 TARGETS_REQ=""
 
 while [[ $# -gt 0 ]]; do
@@ -158,9 +164,21 @@ apply_common_config() {
     cfg -e VFAT_FS
     cfg --set-val FAT_DEFAULT_UTF8 1
     cfg -e EXFAT_FS
-    cfg -e NTFS3_FS
-    cfg -e NTFS3_LZX_XPRESS
-    cfg -e NTFS3_FS_POSIX_ACL
+    # NTFS3 (the in-tree driver) is replaced by NTFS PLUS — the out-of-tree
+    # driver at github.com/namjaejeon/linux-ntfs, staged under fs/ntfsplus/
+    # by scripts/oot_fs.sh. The two drivers cannot coexist (both register
+    # filesystem name "ntfs" via the shim), so NTFS3 is forced off here.
+    cfg -d NTFS3_FS
+    cfg -d NTFS3_LZX_XPRESS
+    cfg -d NTFS3_FS_POSIX_ACL
+    cfg -e NTFSPLUS_FS
+    cfg -e NTFSPLUS_FS_POSIX_ACL
+
+    # APFS (OOT, staged from github.com/linux-apfs/linux-apfs-rw).
+    cfg -e APFS_FS
+
+    # OpenZFS (OOT, staged from github.com/openzfs/zfs).
+    cfg -e ZFS
 
     # Filesystems: misc / legacy
     cfg -e ADFS_FS
@@ -383,15 +401,38 @@ EOF
         cat > "$CONF" <<EOF
   export CROSS_COMPILE := ${CROSS}
   export CC := ${CROSS}gcc
-  export LD := ${CROSS}ld
-  export AR := ${CROSS}ar
+  export LD := ${BINUTILS_DIR}/${CROSS}ld
+  export AR := ${BINUTILS_DIR}/${CROSS}ar
   export LKL_HOST_CONFIG_NT=y
 ${NT64_CONF}
   export LKL_HOST_CONFIG_VIRTIO_NET=y
   export LKL_HOST_CONFIG_VIRTIO_NET_SLIRP=y
+  # Override kernel-make's CROSS_COMPILE-derived tool vars with absolute
+  # paths to the patched 2.46 binutils. KOPT entries are appended as CLI
+  # args to the inner \$(MAKE) and therefore override the kernel root
+  # Makefile's LD = \$(CROSS_COMPILE)ld assignment, sidestepping the
+  # stale 2.25.1 ld that tools/lkl/Makefile prepends to PATH.
+  KOPT += "LD=${BINUTILS_DIR}/${CROSS}ld"
+  KOPT += "AS=${BINUTILS_DIR}/${CROSS}as"
+  KOPT += "AR=${BINUTILS_DIR}/${CROSS}ar"
+  KOPT += "NM=${BINUTILS_DIR}/${CROSS}nm"
+  KOPT += "OBJCOPY=${BINUTILS_DIR}/${CROSS}objcopy"
+  KOPT += "OBJDUMP=${BINUTILS_DIR}/${CROSS}objdump"
+  KOPT += "READELF=${BINUTILS_DIR}/${CROSS}readelf"
+  KOPT += "STRIP=${BINUTILS_DIR}/${CROSS}strip"
   KOPT += "KALLSYMS_EXTRA_PASS=1"
   KOPT += "HOSTCFLAGS=-Wno-char-subscripts"
   KOPT += "HOSTLDFLAGS=-s"
+  # ZFS on mingw cross: __linux__ isn't a mingw builtin (target triple is
+  # x86_64-w64-mingw32), so simd_config.h — which is command-line -include'd
+  # before any source-level header can define it — falls through to its
+  # HAVE_TOOLCHAIN_* branch. That bakes HAVE_SIMD(AVX/AES/PCLMULQDQ) as 1
+  # and lights up CAN_USE_GCM_ASM in modes.h, which then references
+  # zfs_avx_available / zfs_movbe_available / etc. — symbols only defined
+  # in the x86 .S files that LKL doesn't build. Force __linux__ globally
+  # so simd_config.h takes the HAVE_KERNEL_* branch, which our LKL carve-out
+  # at the bottom of zfs_config.h already undef's.
+  KOPT += "KCFLAGS=-D__linux__=1"
   LDLIBS += -lws2_32 -liphlpapi
   LDLIBS += -L/opt/msys2-cross/${MSYS_ARCH}/lib -lslirp
   ${LDFLAGS_EXTRA}
@@ -455,6 +496,14 @@ CONFIG_CRYPTO_ESSIV=y
 CONFIG_CRYPTO_HMAC=y
 CONFIG_CRYPTO_CBC=y
 CONFIG_CRYPTO_ECB=y
+# OOT filesystems staged by scripts/oot_fs.sh — NTFS3 replaced by NTFS PLUS.
+# CONFIG_NTFS3_FS is not set
+# CONFIG_NTFS3_LZX_XPRESS is not set
+# CONFIG_NTFS3_FS_POSIX_ACL is not set
+CONFIG_NTFSPLUS_FS=y
+CONFIG_NTFSPLUS_FS_POSIX_ACL=y
+CONFIG_APFS_FS=y
+CONFIG_ZFS=y
 EOF
 
     # Bump Makefile.conf's mtime so the autoconf rule (which would wipe
@@ -481,6 +530,22 @@ for T in "${TARGETS_ARR[@]}"; do
 done
 
 mkdir -p "$OUT_PARENT"
+
+# Stage OOT filesystems (NTFS PLUS, etc.) into $LINUX_DIR. Idempotent —
+# re-running between iterations is safe. No --wasm here; the wasm-only
+# kernel patches (e.g. XFS computed-goto fix) are applied by the wasm
+# generator. See scripts/oot_fs.sh.
+LINUX_DIR="$LINUX_DIR" "$(dirname "$0")/oot_fs.sh" stage
+
+# Clean stale lkl_autoconf.h from the source include dir. The kernel
+# build's autoconf step occasionally leaves an empty (or stale) copy
+# behind; `#include "lkl_autoconf.h"` in lkl.h then prefers the
+# source-tree neighbour over our out-of-tree one (since C resolves
+# quoted includes relative to the including file first), which silently
+# drops every LKL_HOST_CONFIG_* macro and breaks the lib/virtio_net.c
+# guards. The file is gitignored (not part of source), so removing it
+# does not violate the "don't modify ~/linux" rule.
+rm -f "$LINUX_DIR/tools/lkl/include/lkl_autoconf.h"
 
 for T in "${TARGETS_ARR[@]}"; do
     configure_target "$T" "$(cross_for "$T")"
