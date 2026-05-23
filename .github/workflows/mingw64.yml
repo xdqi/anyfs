@@ -1,0 +1,241 @@
+name: mingw64
+
+# Cross-compiles the Windows x86_64 distribution tarball
+# (anyfs-ksmbd.exe + anyfs-nfsd.exe + anyfs-lspart.exe + liblkl.dll +
+# libanyfs-qemublk.dll + the msys2-cross runtime DLL closure) and uploads
+# it as an artifact.
+#
+# Toolchain comes from msys.kosaka.moe/repo (the msys-cross pacman repo
+# mirrored from ~/msys2-cross). bootstrap.tar.xz unpacks a self-contained
+# pacman-static under /opt/msys2-cross; we then install the mingw64 GCC +
+# binutils + pkg-config packages, plus the upstream MSYS2 sysroot libraries
+# (glib2, zlib, zstd, bzip2, libslirp) that LKL/QEMU/anyfs link against.
+#
+# anyfs-winfsp.exe is intentionally skipped: WinFSP headers aren't available
+# in CI, and the server tarball doesn't need the FUSE frontend.
+#
+# LKL kernel:  github.com/xdqi/lkl   branch lkl-win64-6.18
+#               — tavip/linux@lkl-6.18 + Win64 (LLP64) port patches
+#                 (__lkl_long_t typedef, --image-base=0x10000, custom linker,
+#                  cygwin-gcc wrapper for the final link, nt-host memcpy/set,
+#                  hmac on Windows targets, mingw32 PE binutils).
+#                 The page/folio static_asserts in stock lkl-6.18 fail under
+#                 mingw without the LLP64 typedef commit, so the upstream
+#                 branch alone won't build for x86_64-w64-mingw32.
+# QEMU:        v11.0.0  (same pin as linux.yml)
+# ksmbd-tools: master  (source-only — anyfs-ksmbd compiles selected .c files
+#                       directly; the userspace binaries aren't shipped)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: mingw64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    env:
+      LKL_REPO:   https://github.com/xdqi/lkl.git
+      LKL_REF:    lkl-win64-6.18
+      QEMU_REPO:  https://gitlab.com/qemu-project/qemu.git
+      QEMU_REF:   v11.0.0
+      KSMBD_REPO: https://github.com/cifsd-team/ksmbd-tools.git
+      KSMBD_REF:  master
+      MSYS_CROSS_REPO: https://msys.kosaka.moe/repo
+      MSYS_CROSS_PREFIX: /opt/msys2-cross
+
+    steps:
+      - name: Checkout anyfs-reader
+        uses: actions/checkout@v4
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential meson ninja-build pkg-config python3 \
+            flex bison bc rsync libelf-dev libssl-dev \
+            fakeroot xz-utils ca-certificates curl
+
+      # ── msys2-cross toolchain ───────────────────────────────────────────────
+      # The bootstrap tarball ships a relocatable pacman-static + pacman.conf
+      # pointing at file:///repo. Rewrite to msys.kosaka.moe/repo, then pull
+      # in the mingw64 toolchain packages plus the upstream MSYS2 sysroot
+      # libraries (glib2/zlib/zstd/bzip2/libslirp) that build_lkl.sh and
+      # build_qemu.sh expect under /opt/msys2-cross/mingw64.
+      - name: Cache msys2-cross toolchain
+        id: cache-msys
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.MSYS_CROSS_PREFIX }}
+          key: msys-cross-mingw64-v1-${{ hashFiles('.github/workflows/mingw64.yml') }}
+
+      - name: Install msys2-cross toolchain
+        if: steps.cache-msys.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL --retry 3 -o /tmp/bootstrap.tar.xz \
+            "${MSYS_CROSS_REPO}/bootstrap.tar.xz"
+          sudo mkdir -p /opt
+          sudo tar -xJf /tmp/bootstrap.tar.xz -C /opt
+          test -x "${MSYS_CROSS_PREFIX}/bin/msys-pacman"
+
+          # Sync DB then install. mingw64-gcc pulls binutils + filesystem +
+          # ca-certificates transitively; we name them explicitly anyway.
+          # The bootstrap's pacman.conf already points [msys-cross] at
+          # msys.kosaka.moe/repo and [mingw64] at repo.msys2.org.
+          sudo "${MSYS_CROSS_PREFIX}/bin/msys-pacman" -Sy --noconfirm
+          # cygwin-gcc is required by the LKL-side x86_64-w64-mingw32-gcc
+          # wrapper (tools/lkl/bin/) on xdqi/lkl@lkl-win64-6.18: kernel-side
+          # objects compile/link through cygwin-gcc (LP64) to avoid the
+          # IMAGE_REL_AMD64_REL32 overflow that MinGW ld hits on the
+          # ~320 MiB lkl.o; user-space side stays on mingw-gcc (LLP64).
+          sudo "${MSYS_CROSS_PREFIX}/bin/msys-pacman" -S --noconfirm \
+            msys-cross-mingw64-binutils \
+            msys-cross-mingw64-gcc \
+            msys-cross-cygwin-binutils \
+            msys-cross-cygwin-gcc \
+            msys-cross-pkgconfig
+
+          # MSYS2 upstream sysroot libs under /opt/msys2-cross/mingw64.
+          # libslirp is required by gen_lkl_config.sh's mingw branch
+          # (LDLIBS += -lslirp); the rest are QEMU block layer + DLL closure
+          # deps that package_mingw64.sh pulls from bin/.
+          sudo "${MSYS_CROSS_PREFIX}/bin/msys-pacman" -S --noconfirm \
+            mingw-w64-x86_64-glib2 \
+            mingw-w64-x86_64-zlib \
+            mingw-w64-x86_64-zstd \
+            mingw-w64-x86_64-bzip2 \
+            mingw-w64-x86_64-libslirp
+
+      - name: Put msys2-cross on PATH
+        run: |
+          echo "${MSYS_CROSS_PREFIX}/bin" >> "$GITHUB_PATH"
+          # gen_lkl_config.sh defaults BINUTILS_DIR to
+          # ~/binutils-gdb/build-combined/install/bin (the historical local
+          # build path); point it at the msys-cross install instead, which
+          # ships the same patched 2.46 plus the cross prefixes the LKL
+          # kernel Makefile expects.
+          echo "BINUTILS_DIR=${MSYS_CROSS_PREFIX}/bin" >> "$GITHUB_ENV"
+          echo "=== sanity ==="
+          "${MSYS_CROSS_PREFIX}/bin/x86_64-w64-mingw32-gcc" --version | head -1
+          "${MSYS_CROSS_PREFIX}/bin/x86_64-w64-mingw32-ld" --version | head -1
+          "${MSYS_CROSS_PREFIX}/bin/x86_64-w64-mingw32-pkg-config" \
+            --modversion glib-2.0
+
+      # ── Caches ──────────────────────────────────────────────────────────────
+      - name: Cache LKL kernel tree + per-target build
+        id: cache-lkl
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/linux
+            lkl-mingw64
+          key: lkl-mingw64-${{ env.LKL_REF }}-${{ hashFiles('scripts/gen_lkl_config.sh', 'scripts/build_lkl.sh', 'scripts/oot_fs.sh', '.github/workflows/mingw64.yml') }}
+          restore-keys: |
+            lkl-mingw64-${{ env.LKL_REF }}-
+
+      - name: Cache OOT FS sources (NTFS PLUS + APFS + OpenZFS)
+        id: cache-oot
+        uses: actions/cache@v4
+        with:
+          path: ~/oot-fs
+          key: oot-fs-${{ hashFiles('scripts/oot_fs.sh') }}
+          restore-keys: |
+            oot-fs-
+
+      - name: Cache QEMU tree + build
+        id: cache-qemu
+        uses: actions/cache@v4
+        with:
+          path: ~/qemu
+          key: qemu-mingw64-${{ env.QEMU_REF }}-${{ hashFiles('scripts/build_qemu.sh') }}
+          restore-keys: |
+            qemu-mingw64-${{ env.QEMU_REF }}-
+
+      - name: Cache ksmbd-tools (source only)
+        id: cache-ksmbd
+        uses: actions/cache@v4
+        with:
+          path: ~/ksmbd-tools
+          key: ksmbd-src-${{ env.KSMBD_REF }}
+
+      # ── Clones ──────────────────────────────────────────────────────────────
+      - name: Clone LKL kernel
+        if: steps.cache-lkl.outputs.cache-hit != 'true'
+        run: |
+          rm -rf "$HOME/linux"
+          git clone --depth=1 --branch="${LKL_REF}" "${LKL_REPO}" "$HOME/linux"
+          test -d "$HOME/linux/arch/lkl" || { echo "::error::arch/lkl missing in cloned tree"; exit 1; }
+
+      - name: Clone QEMU
+        if: steps.cache-qemu.outputs.cache-hit != 'true'
+        run: |
+          rm -rf "$HOME/qemu"
+          git clone --depth=1 --branch="${QEMU_REF}" "${QEMU_REPO}" "$HOME/qemu"
+
+      # ksmbd-tools is used as source: anyfs-ksmbd compiles a handful of
+      # mountd/*.c and tools/management/*.c files directly into the .exe via
+      # meson.build. No mountd/builddir is produced.
+      - name: Clone ksmbd-tools
+        if: steps.cache-ksmbd.outputs.cache-hit != 'true'
+        run: |
+          rm -rf "$HOME/ksmbd-tools"
+          git clone --depth=1 --branch="${KSMBD_REF}" "${KSMBD_REPO}" "$HOME/ksmbd-tools"
+
+      - name: Fetch OOT FS sources
+        if: steps.cache-oot.outputs.cache-hit != 'true'
+        run: |
+          ./scripts/oot_fs.sh fetch
+          ls -la "$HOME/oot-fs" || true
+
+      # ── Build pipeline ──────────────────────────────────────────────────────
+      - name: Generate LKL kernel config (mingw64)
+        run: |
+          ./scripts/gen_lkl_config.sh \
+            --linux="$HOME/linux" \
+            --out="$GITHUB_WORKSPACE" \
+            --targets=mingw64
+
+      - name: Build LKL kernel (mingw64)
+        run: |
+          ./scripts/build_lkl.sh \
+            --linux="$HOME/linux" \
+            --out="$GITHUB_WORKSPACE" \
+            --targets=mingw64 \
+            -j"$(nproc)"
+          test -f "$GITHUB_WORKSPACE/lkl-mingw64/tools/lkl/lib/liblkl.dll" \
+            || { echo "::error::liblkl.dll missing"; exit 1; }
+
+      - name: Build QEMU block layer (mingw64)
+        run: |
+          ./scripts/build_qemu.sh \
+            --qemu-src="$HOME/qemu" \
+            --targets=mingw64 \
+            -j"$(nproc)"
+
+      - name: Build anyfs-reader (core + server)
+        run: |
+          ./scripts/build_anyfs.sh \
+            --targets=mingw64 \
+            --components=core,server \
+            --lkl-src="$HOME/linux" \
+            --qemu-root="$HOME/qemu" \
+            --ksmbd-root="$HOME/ksmbd-tools" \
+            -j"$(nproc)"
+
+      - name: Package Win64 distribution tarball
+        run: |
+          ./scripts/package_mingw64.sh
+          ls -la /tmp/anyfs-reader-*-win64.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: anyfs-reader-win64
+          path: /tmp/anyfs-reader-*-win64.tar.gz
+          if-no-files-found: error
+          retention-days: 14
