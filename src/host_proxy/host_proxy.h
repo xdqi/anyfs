@@ -21,6 +21,14 @@
 int host_proxy_start(uint16_t host_port, uint16_t lkl_port);
 
 /*
+ * Enable busy-spin mode before host_proxy_start(). Both worker threads
+ * replace their blocking poll(1s timeout) with a non-blocking poll(0) +
+ * thread yield, eliminating the wineserver IPC round-trip on every wake.
+ * Trade-off: each thread pegs a CPU. Default off (POSIX path doesn't need it).
+ */
+void host_proxy_set_busy_spin(int on);
+
+/*
  * Stop accepting new connections and tear down the listener thread.
  * In-flight connections keep running until both halves see EOF/error;
  * they are not force-killed.

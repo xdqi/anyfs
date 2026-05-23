@@ -103,9 +103,28 @@ static struct {
 	uint16_t lkl_port;
 	pthread_t host_tid, lkl_tid;
 	_Atomic int running;
+	int busy_spin; /* 0 = blocking poll; 1 = poll(0)+yield */
 	pthread_mutex_t lock;
 	struct conn* conns[MAX_CONNS];
 } G;
+
+void host_proxy_set_busy_spin(int on)
+{
+	G.busy_spin = !!on;
+}
+
+/* Cross-platform "I have nothing to do, give up the CPU briefly".
+ * Sleep(0) on Windows yields to any thread of equal priority; sched_yield
+ * is the POSIX equivalent. Both are much cheaper than poll() because they
+ * don't go through wineserver. */
+static inline void hp_yield(void)
+{
+#if HP_WIN
+	Sleep(0);
+#else
+	sched_yield();
+#endif
+}
 
 /* ── Portable socket helpers ────────────────────────────────────────── */
 
@@ -416,7 +435,7 @@ static void* lkl_thread_fn(void* arg)
 			pfds[1 + i].revents = 0;
 		}
 
-		long pr = lkl_sys_poll(pfds, 1 + cn, 1000);
+		long pr = lkl_sys_poll(pfds, 1 + cn, G.busy_spin ? 0 : 1000);
 		if (pr < 0) {
 			if (pr == -LKL_EINTR)
 				continue;
@@ -441,6 +460,8 @@ static void* lkl_thread_fn(void* arg)
 		}
 		if (notify)
 			wake_host();
+		else if (G.busy_spin)
+			hp_yield(); /* idle tick: avoid 100% spin */
 	}
 	return NULL;
 }
@@ -592,7 +613,7 @@ static void* host_thread_fn(void* arg)
 		}
 		pthread_mutex_unlock(&G.lock);
 
-		int pr = hsock_poll(pfds, n, 1000);
+		int pr = hsock_poll(pfds, n, G.busy_spin ? 0 : 1000);
 		if (pr < 0) {
 			int e = hsock_errno();
 			if (e == HSOCK_EINTR)
@@ -639,6 +660,8 @@ static void* host_thread_fn(void* arg)
 
 		if (notify)
 			wake_lkl();
+		else if (G.busy_spin)
+			hp_yield();
 	}
 	return NULL;
 }

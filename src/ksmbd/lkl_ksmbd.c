@@ -480,6 +480,13 @@ static void usage(FILE* f, const char* prog)
 	    "                     Caps the number of in-flight requests one "
 	    "client\n"
 	    "                     can have outstanding.\n"
+	    "  --busy-spin        Replace host_proxy's blocking poll() with a\n"
+	    "                     non-blocking poll(0)+yield loop. Eliminates "
+	    "the\n"
+	    "                     wineserver IPC round-trip on every wake, at "
+	    "the\n"
+	    "                     cost of pegging two CPUs. Useful only under "
+	    "wine.\n"
 	    "  -h, --help         Show this help.\n"
 	    "\n"
 	    "Examples:\n"
@@ -520,6 +527,7 @@ int main(int argc, char** argv)
 	    {"max-read", required_argument, NULL, 1002},
 	    {"max-conn", required_argument, NULL, 1003},
 	    {"max-credits", required_argument, NULL, 1004},
+	    {"busy-spin", no_argument, NULL, 1005},
 	    {"help", no_argument, NULL, 'h'},
 	    {NULL, 0, NULL, 0}};
 
@@ -578,6 +586,9 @@ int main(int argc, char** argv)
 					optarg);
 				return 1;
 			}
+			break;
+		case 1005: /* --busy-spin */
+			host_proxy_set_busy_spin(1);
 			break;
 		case 'c':
 			config_file = optarg;
