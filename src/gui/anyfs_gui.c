@@ -1996,7 +1996,8 @@ int main(int argc, char* argv[])
 	}
 
 	/* Initialize LKL kernel (needed for both dialog probe and mount) */
-	AnyfsKernelOpts opts = {.mem_mb = 64, .loglevel = 0};
+	AnyfsKernelOpts opts = {.mem_mb = 0 /* anyfs default (32M) */,
+				.loglevel = 0};
 	int ret = anyfs_kernel_init(&opts);
 	if (ret < 0) {
 		show_error_dialog("Initialization Error",

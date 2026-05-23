@@ -12,7 +12,7 @@
  * back-compat) When given, that partition is mounted at the FUSE root (Mode A).
  * Omit for synthetic partition listing (Mode B). -o prefetch pre-enter every
  * partition at startup (Mode B only) -o ro                 mount read-only -o
- * mem=N              kernel memory in MB (default: 64) -o loglevel=N kernel log
+ * mem=N              kernel memory in MB (default: 32) -o loglevel=N kernel log
  * level 0-7 (default: 0) -o opts=OPTS          extra mount options (passed
  * through to anyfs_mount)
  *
@@ -232,7 +232,7 @@ static struct anyfs_fuse_config cfg = {
     .part = NULL,
     .prefetch = 0,
     .readonly = 1,
-    .mem_mb = 64,
+    .mem_mb = 32,
     .loglevel = 0,
 };
 
@@ -275,7 +275,7 @@ static void usage(void)
 	    "FUSE root\n"
 	    "    -o prefetch           pre-enter all partitions at startup\n"
 	    "    -o ro                 mount read-only\n"
-	    "    -o mem=N              kernel memory in MB (default: 64)\n"
+	    "    -o mem=N              kernel memory in MB (default: 32)\n"
 	    "    -o loglevel=N         kernel log level 0-7 (default: 0)\n"
 	    "    -o opts=OPTS          extra mount options\n");
 }

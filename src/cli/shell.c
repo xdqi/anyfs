@@ -939,7 +939,8 @@ static void usage(const char* prog)
 
 int main(int argc, char** argv)
 {
-	AnyfsKernelOpts opts = {.mem_mb = 64, .loglevel = 0};
+	AnyfsKernelOpts opts = {.mem_mb = 0 /* anyfs default (32M) */,
+				.loglevel = 0};
 
 	int argi = 1;
 	while (argi < argc && argv[argi][0] == '-') {
