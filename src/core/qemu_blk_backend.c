@@ -4,18 +4,21 @@
  * Uses QEMU's block layer (libblock.a) to support qcow2, vmdk, vdi, etc.
  */
 
+/* qemu/osdep.h MUST be the first include in every QEMU-using .c file —
+ * qapi/util.h and friends rely on it for uint64_t / bool / Error declarations.
+ * It also defines struct iovec on Windows; LKL's lkl_host.h would clash, so
+ * all QEMU headers still come before LKL ones. */
+#include "qemu/osdep.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* QEMU headers MUST come before LKL headers to avoid struct iovec conflict.
- * QEMU's osdep.h defines struct iovec on Windows; LKL's lkl_host.h does too. */
 #include "block/block-common.h"
 #include "block/block-global-state.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
-#include "qemu/osdep.h"
 #include "system/block-backend-global-state.h"
 #include "system/block-backend-io.h"
 #include "system/block-backend.h"
