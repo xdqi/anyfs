@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Hand-authored Kconfig for the linux-apfs/linux-apfs-rw out-of-tree driver,
+# which does not ship one upstream. Dropped into fs/apfs/Kconfig by
+# scripts/oot_fs.sh stage_apfs.
+
+config APFS_FS
+	tristate "Apple APFS filesystem support (read/write)"
+	select NLS
+	select CRC32
+	help
+	  Apple File System (APFS) driver from
+	  github.com/linux-apfs/linux-apfs-rw. Provides read/write access to
+	  APFS volumes — the modern macOS/iOS filesystem.
+
+	  This is the out-of-tree driver staged into the kernel tree by
+	  anyfs-reader's scripts/oot_fs.sh.
+
+config APFS_DEBUG
+	bool "APFS debugging features"
+	depends on APFS_FS
+	help
+	  Enables expensive consistency checks and verbose log messages
+	  inside the APFS driver. Useful when reporting filesystem bugs.
