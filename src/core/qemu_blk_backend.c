@@ -116,14 +116,19 @@ int qemu_blk_open(const char* image_path, int readonly,
 	 * a worker-thread synchronous entry. */
 	emscripten_sleep(0);
 #endif
+	fprintf(stderr, "[qemu_blk] open(%s) ro=%d\n", image_path, readonly);
 	if (!qemu_initialized) {
+		fprintf(stderr, "[qemu_blk] bdrv_init…\n");
 		bdrv_init();
+		fprintf(stderr,
+			"[qemu_blk] bdrv_init done; qemu_init_main_loop…\n");
 		if (qemu_init_main_loop(&errp) < 0) {
 			fprintf(stderr, "qemu_init_main_loop failed: %s\n",
 				error_get_pretty(errp));
 			error_free(errp);
 			return -1;
 		}
+		fprintf(stderr, "[qemu_blk] main loop ready\n");
 		qemu_initialized = 1;
 	}
 
@@ -132,7 +137,9 @@ int qemu_blk_open(const char* image_path, int readonly,
 	 * exist under emscripten MEMFS, and which silently discards writes
 	 * anyway. Callers that need write-through must pass readonly=0. */
 	int flags = readonly ? 0 : BDRV_O_RDWR;
+	fprintf(stderr, "[qemu_blk] blk_new_open flags=0x%x…\n", flags);
 	BlockBackend* blk = blk_new_open(image_path, NULL, NULL, flags, &errp);
+	fprintf(stderr, "[qemu_blk] blk_new_open returned %p\n", (void*)blk);
 	if (!blk) {
 		fprintf(stderr, "blk_new_open(%s) failed: %s\n", image_path,
 			error_get_pretty(errp));

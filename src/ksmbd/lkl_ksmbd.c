@@ -710,7 +710,10 @@ int main(int argc, char** argv)
 	 */
 	if (fast_sync)
 		lkl_fastsync_install();
-	AnyfsKernelOpts kern_opts = {.mem_mb = mem_mb, .loglevel = 4};
+	AnyfsKernelOpts kern_opts = {
+	    .mem_mb = mem_mb,
+	    .loglevel = (log_level >= PR_DEBUG) ? 8 : 4,
+	};
 	int ret = anyfs_kernel_init(&kern_opts);
 	if (ret) {
 		pr_err("Failed to start kernel\n");
@@ -726,6 +729,27 @@ int main(int argc, char** argv)
 	 * documents intent.)
 	 */
 	lkl_if_up(1); /* loopback is always ifindex 1 in LKL */
+
+	if (log_level >= PR_DEBUG) {
+		long dfd = lkl_sys_open("/sys/class/ksmbd-control/debug",
+					LKL_O_WRONLY, 0);
+		pr_debug("ksmbd-control/debug open(WRONLY): %ld\n", dfd);
+		if (dfd >= 0) {
+			long w = lkl_sys_write(dfd, "all\n", 4);
+			pr_debug("ksmbd-control/debug write: %ld\n", w);
+			lkl_sys_close(dfd);
+		}
+		long rfd = lkl_sys_open("/sys/class/ksmbd-control/debug",
+					LKL_O_RDONLY, 0);
+		if (rfd >= 0) {
+			char rb[128] = {0};
+			long n = lkl_sys_read(rfd, rb, sizeof(rb) - 1);
+			pr_debug(
+			    "ksmbd-control/debug readback (%ld bytes): %s\n", n,
+			    rb);
+			lkl_sys_close(rfd);
+		}
+	}
 
 	/* ── 4. Open disk images ────────────────────────────────────────────
 	 */
