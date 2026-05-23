@@ -339,6 +339,61 @@ static void handle_export(int fd, char* query)
 	lkl_sys_write(fd, resp, strlen(resp));
 }
 
+/*
+ * nfs4.idtoname upcall: "<domain> <type> <id>\n"
+ *   type = "user"|"group", id = decimal uid/gid.
+ * Response: "<domain> <type> <id> <expiry> <name>\n".
+ *
+ * GETATTR on FATTR4_OWNER/OWNER_GROUP triggers this. Without a handler
+ * the kernel queues the request indefinitely, wedging any v4 mount that
+ * touches owner attrs. We map 0 -> "root", everything else -> "nobody".
+ */
+static void handle_idtoname(int fd, char* query)
+{
+	char domain[64], type[16], id_str[16], resp[512];
+	char* p = query;
+	time_t expiry = time(NULL) + 3600 * 24 * 365;
+
+	if (qword_get_user(&p, domain, sizeof(domain)) <= 0)
+		return;
+	if (qword_get_user(&p, type, sizeof(type)) <= 0)
+		return;
+	if (qword_get_user(&p, id_str, sizeof(id_str)) <= 0)
+		return;
+
+	const char* name = (atoi(id_str) == 0) ? "root" : "nobody";
+	snprintf(resp, sizeof(resp), "%s %s %s %ld %s\n", domain, type, id_str,
+		 (long)expiry, name);
+	printf("[mountd] idtoname: %s %s %s -> %s\n", domain, type, id_str, name);
+	lkl_sys_write(fd, resp, strlen(resp));
+}
+
+/*
+ * nfs4.nametoid upcall: "<domain> <type> <name>\n"
+ * Response: "<domain> <type> <name> <expiry> <id>\n".
+ *
+ * Inverse of idtoname. "root" -> 0, everything else -> 65534 (nobody).
+ */
+static void handle_nametoid(int fd, char* query)
+{
+	char domain[64], type[16], name[64], resp[512];
+	char* p = query;
+	time_t expiry = time(NULL) + 3600 * 24 * 365;
+
+	if (qword_get_user(&p, domain, sizeof(domain)) <= 0)
+		return;
+	if (qword_get_user(&p, type, sizeof(type)) <= 0)
+		return;
+	if (qword_get_user(&p, name, sizeof(name)) <= 0)
+		return;
+
+	unsigned int id = (strcmp(name, "root") == 0) ? 0 : 65534;
+	snprintf(resp, sizeof(resp), "%s %s %s %ld %u\n", domain, type, name,
+		 (long)expiry, id);
+	printf("[mountd] nametoid: %s %s %s -> %u\n", domain, type, name, id);
+	lkl_sys_write(fd, resp, strlen(resp));
+}
+
 struct cache_channel {
 	const char* path;
 	void (*handler)(int fd, char* query);
@@ -349,6 +404,8 @@ static struct cache_channel channels[] = {
     {"/proc/net/rpc/auth.unix.gid/channel", handle_unix_gid},
     {"/proc/net/rpc/nfsd.fh/channel", handle_expkey},
     {"/proc/net/rpc/nfsd.export/channel", handle_export},
+    {"/proc/net/rpc/nfs4.idtoname/channel", handle_idtoname},
+    {"/proc/net/rpc/nfs4.nametoid/channel", handle_nametoid},
 };
 #define NUM_CHANNELS (sizeof(channels) / sizeof(channels[0]))
 
