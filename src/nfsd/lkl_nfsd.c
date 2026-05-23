@@ -61,6 +61,15 @@
 typedef struct {
 	char name[64];	   /* NFS export name (client sees /<name>) */
 	char lkl_path[64]; /* absolute LKL path returned by anyfs_disk_enter */
+	/*
+	 * bind_path is "/<name>" — the share's filesystem bind-mounted into
+	 * LKL root so the NFSv4 pseudo-fs places it where the client expects.
+	 * Without this, the share would land at /lklmnt/anyfs_d<N>_p<M> and a
+	 * client mounting localhost:/<name> would LOOKUP "<name>" *inside* the
+	 * share's root (matching e.g. Debian's /root user dir) instead of the
+	 * partition root.
+	 */
+	char bind_path[80];
 } ExportInfo;
 
 static volatile int running = 1;
@@ -207,8 +216,12 @@ static void handle_unix_gid(int fd, char* query)
  * Handle nfsd.fh upcall: "domain fsidtype \xfsid\n" -> respond with path.
  *
  * We use FSID_NUM (type 1) with a 4-byte big-endian export index as the fsid.
- * Export 0 → fsid bytes {0,0,0,0}, export 1 → {0,0,0,1}, etc.
- * The path in the response is the LKL mount path (/lklmnt/anyfs_d<id>_p<n>).
+ * fsid 0 is reserved for the kernel's synthesized NFSv4 pseudo-root — we
+ * never claim it ourselves. Share N (0-based slot) uses fsid=N+1, so slot 0
+ * → fsid bytes {0,0,0,1}, slot 1 → {0,0,0,2}, etc.
+ *
+ * The path in the response is the bind-mount path (/<share-name>) so the
+ * pseudo-fs walks "<share-name>" to the export.
  */
 static void handle_expkey(int fd, char* query)
 {
@@ -228,20 +241,21 @@ static void handle_expkey(int fd, char* query)
 
 	/* We only handle FSID_NUM (type 1) with 4-byte fsid */
 	if (fsidtype == 1 && fsid_len == 4) {
-		/* Decode big-endian fsid index */
+		/* Decode big-endian fsid (1-indexed) */
 		unsigned int idx = ((unsigned char)fsid_bytes[0] << 24) |
 				   ((unsigned char)fsid_bytes[1] << 16) |
 				   ((unsigned char)fsid_bytes[2] << 8) |
 				   (unsigned char)fsid_bytes[3];
 
-		if ((int)idx < g_n_exports) {
+		if (idx >= 1 && (int)idx <= g_n_exports) {
+			int slot = (int)idx - 1;
 			snprintf(resp, sizeof(resp),
 				 "%s 1 \\x%02x%02x%02x%02x %ld %s\n", domain,
 				 (idx >> 24) & 0xff, (idx >> 16) & 0xff,
 				 (idx >> 8) & 0xff, idx & 0xff, (long)expiry,
-				 g_exports[idx].lkl_path);
+				 g_exports[slot].bind_path);
 			printf("[mountd] expkey: %s fsid=%u -> %s\n", domain,
-			       idx, g_exports[idx].lkl_path);
+			       idx, g_exports[slot].bind_path);
 			lkl_sys_write(fd, resp, strlen(resp));
 			return;
 		}
@@ -266,9 +280,10 @@ static void handle_expkey(int fd, char* query)
 /*
  * Handle nfsd.export upcall: "domain path\n" -> respond with export flags.
  *
- * The client-visible NFS path for export i is "/<name>" (or just "/" for
- * the first export in single-export compat mode). We match against
- * g_exports[i].lkl_path (the underlying LKL mount point).
+ * The client-visible NFS path for export i is "/<name>", which is also the
+ * server-side bind_path (a bind mount of the share's LKL fs). We match the
+ * upcall against bind_path; fsid is the 1-based slot so 0 stays reserved
+ * for the kernel's pseudo-root.
  */
 static void handle_export(int fd, char* query)
 {
@@ -281,16 +296,16 @@ static void handle_export(int fd, char* query)
 	if (qword_get_user(&p, path, sizeof(path)) <= 0)
 		return;
 
-	/* Search for a matching export by LKL path */
+	/* Search for a matching export by bind path */
 	for (int i = 0; i < g_n_exports; i++) {
-		if (strcmp(path, g_exports[i].lkl_path) == 0) {
+		if (strcmp(path, g_exports[i].bind_path) == 0) {
 			unsigned int flags = NFSEXP_INSECURE |
 					     NFSEXP_NOSUBTREECHECK |
 					     NFSEXP_FSID | NFSEXP_ALLSQUASH;
 			if (g_read_only)
 				flags |= NFSEXP_READONLY;
-			/* fsid = export index (big-endian 4 bytes) */
-			unsigned int fsid = (unsigned int)i;
+			/* fsid = slot index + 1 (big-endian 4 bytes); 0 reserved */
+			unsigned int fsid = (unsigned int)(i + 1);
 			snprintf(resp, sizeof(resp), "%s %s %ld %u 0 0 %u\n",
 				 domain, path, (long)expiry, flags, fsid);
 			printf("[mountd] export: %s %s -> flags=%#x fsid=%u\n",
@@ -793,6 +808,48 @@ int main(int argc, char** argv)
 	}
 
 	g_read_only = read_only;
+
+	/* ── 5.5 Bind each share to /<name> for the NFSv4 pseudo-fs ─────────
+	 * The kernel synthesizes the NFSv4 pseudo-root from real export paths.
+	 * A share landed at /lklmnt/anyfs_d0_p1 would be reachable only via
+	 * /lklmnt/anyfs_d0_p1, while clients want localhost:/<name>. Bind-mount
+	 * the share root at /<name> so the pseudo-fs places <name> in the root
+	 * directory listing and LOOKUP <name> resolves to the partition root
+	 * (not /<name> *inside* the partition).
+	 */
+	static const char* const reserved[] = {"proc", "sys", "lklmnt", "dev",
+					       NULL};
+	for (int i = 0; i < g_n_exports; i++) {
+		ExportInfo* ex = &g_exports[i];
+		for (int r = 0; reserved[r]; r++) {
+			if (strcmp(ex->name, reserved[r]) == 0) {
+				fprintf(stderr,
+					"error: share name '%s' collides with "
+					"a reserved LKL root path.\n",
+					ex->name);
+				goto halt;
+			}
+		}
+		/* snprintf into a local buffer first to dodge -Wrestrict — both
+		 * dest and src live inside the same ExportInfo struct. */
+		char tmp_bind[80];
+		snprintf(tmp_bind, sizeof(tmp_bind), "/%s", ex->name);
+		memcpy(ex->bind_path, tmp_bind, sizeof(ex->bind_path));
+		int mret = lkl_sys_mkdir(ex->bind_path, 0755);
+		if (mret < 0 && mret != -LKL_EEXIST) {
+			fprintf(stderr, "mkdir %s: %s\n", ex->bind_path,
+				lkl_strerror(mret));
+			goto halt;
+		}
+		mret = lkl_sys_mount(ex->lkl_path, ex->bind_path, NULL,
+				     LKL_MS_BIND, NULL);
+		if (mret < 0) {
+			fprintf(stderr, "bind %s -> %s: %s\n", ex->lkl_path,
+				ex->bind_path, lkl_strerror(mret));
+			goto halt;
+		}
+		printf("Pseudo-fs: %s -> %s\n", ex->bind_path, ex->lkl_path);
+	}
 
 	/* ── 6. Start nfsd ──────────────────────────────────────────────────
 	 */
