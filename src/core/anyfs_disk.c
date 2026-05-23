@@ -180,8 +180,13 @@ static int resolve_luks_credential(const char* query, unsigned char* out,
 				got = (int)n;
 				break;
 			} else if (strcmp(k, "keyfile") == 0) {
-				int fd = open(v, O_RDONLY | O_CLOEXEC);
-				if (fd < 0) {
+				/* Use fopen so this stays portable to mingw,
+				 * where <fcntl.h> lacks O_CLOEXEC. CLOEXEC
+				 * semantics are irrelevant here — we read the
+				 * keyfile to a buffer and close immediately,
+				 * not across a fork/exec. */
+				FILE* fp = fopen(v, "rb");
+				if (!fp) {
 					snprintf(errstr, 160,
 						 "keyfile=%s: open failed "
 						 "(errno=%d)",
@@ -189,9 +194,9 @@ static int resolve_luks_credential(const char* query, unsigned char* out,
 					free(dup);
 					return -1;
 				}
-				ssize_t n = read(fd, out, out_cap);
-				close(fd);
-				if (n <= 0) {
+				size_t n = fread(out, 1, out_cap, fp);
+				fclose(fp);
+				if (n == 0) {
 					snprintf(errstr, 160,
 						 "keyfile=%s: read failed", v);
 					free(dup);
