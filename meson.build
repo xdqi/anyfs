@@ -41,8 +41,11 @@ else
 endif
 if lkl_shared
     if host_machine.system() == 'windows'
-        # mingw build emits liblkl.dll directly in tools/lkl/
-        lkl_dll = lkl_root / 'liblkl.dll'
+        # mingw build emits liblkl.dll into tools/lkl/lib/ (alongside the .so
+        # on Linux). Link against it directly — mingw-ld synthesises the
+        # import library on the fly. Must be copied next to the exes for
+        # the runtime loader to find it; build_anyfs.sh handles staging.
+        lkl_dll = lkl_root / 'lib' / 'liblkl.dll'
         lkl_lib = declare_dependency(link_args: [lkl_dll])
     else
         lkl_lib = cc.find_library('lkl',
@@ -67,7 +70,20 @@ if host_machine.system() == 'windows'
 else
     rt_dep = cc.find_library('rt', required: false)
     slirp_for_lkl = dependency('slirp', required: false)
-    lkl_extra_deps = [rt_dep] + (slirp_for_lkl.found() ? [slirp_for_lkl] : [])
+    # liblkl.a on Linux compiles in virtio_net_slirp.o, which references
+    # libslirp symbols, which in turn reference glib (when libslirp is
+    # linked statically). Pull glib into lkl_dep so every lkl_dep consumer
+    # gets it automatically — otherwise an executable that doesn't itself
+    # use slirp (e.g. anyfs-nfsd after the host_proxy migration) still
+    # fails to link because virtio_net_slirp.o is in liblkl.a.
+    if slirp_for_lkl.found()
+        glib_for_lkl = dependency('glib-2.0', required: false)
+    else
+        glib_for_lkl = disabler()
+    endif
+    lkl_extra_deps = [rt_dep] \
+        + (slirp_for_lkl.found() ? [slirp_for_lkl] : []) \
+        + (glib_for_lkl.found() ? [glib_for_lkl] : [])
     lkl_compile_args = ['-DLKL_HOST_CONFIG_POSIX']
 endif
 # Arch headers: lkl/asm/syscalls.h. The static source headers live in
@@ -149,12 +165,15 @@ if enable_qemu
         qemu_build / 'qapi',
         qemu_build / 'trace',
     )
-    # System headers from QEMU's bundled linux-headers
-    qemu_sys_inc = include_directories(
-        qemu_root / 'linux-headers',
-        qemu_build / 'linux-headers',
-        is_system: true,
-    )
+    # System headers from QEMU's bundled linux-headers. Only present in the
+    # build dir when configure ran on Linux; mingw configure skips the
+    # symlink. Probe with the FS module so meson doesn't error out.
+    fs = import('fs')
+    _qemu_sys_dirs = [qemu_root / 'linux-headers']
+    if fs.is_dir(qemu_build / 'linux-headers')
+        _qemu_sys_dirs += [qemu_build / 'linux-headers']
+    endif
+    qemu_sys_inc = include_directories(_qemu_sys_dirs, is_system: true)
 
     if qemu_shared
         # Dynamic linking: use pre-built libanyfs-qemublk.so / libanyfs-qemublk.dll
@@ -167,10 +186,15 @@ if enable_qemu
             )
         else
             pixman_dep = dependency('pixman-1', required: true)
+            # libanyfs-qemublk.so leaves libaio / liburing symbols
+            # undefined (no DT_NEEDED), so consumers must link them.
+            aio_lib = cc.find_library('aio', required: true)
+            uring_dep = dependency('liburing', required: false)
             qemu_dep = declare_dependency(
                 include_directories: [qemu_inc, qemu_sys_inc],
                 dependencies: [anyfs_qemu_lib, glib_sys_dep, pixman_dep,
-                               thread_dep, rt_dep],
+                               thread_dep, rt_dep, aio_lib]
+                              + (uring_dep.found() ? [uring_dep] : []),
             )
         endif
     else
@@ -256,9 +280,18 @@ endif
 # QEMU sources need gnu11 due to osdep.h macros using __COUNTER__
 qemu_c_args = enable_qemu ? ['-std=gnu11'] : []
 
+# On mingw, qemu_blk_backend.c #defines __MSYS__ to dodge a struct iovec
+# collision between QEMU's osdep.h and LKL's lkl_host.h. That same #define
+# makes lkl_host.h include <sys/uio.h>, which mingw doesn't ship — supply an
+# empty shim alongside the core sources.
+_anyfs_core_inc = [anyfs_inc, include_directories('src/core')]
+if host_machine.system() == 'windows' and enable_qemu
+    _anyfs_core_inc += [include_directories('include/mingw-shims')]
+endif
+
 anyfs_core = static_library('anyfs_core',
     anyfs_core_sources,
-    include_directories: [anyfs_inc, include_directories('src/core')],
+    include_directories: _anyfs_core_inc,
     dependencies: [lkl_dep, gio_dep] + (enable_qemu ? [qemu_dep] : [])
                   + (blkid_dep.found() ? [blkid_dep] : []),
     c_args: ['-DANYFS_CORE_BUILDING', '-fvisibility=hidden']
@@ -274,10 +307,14 @@ anyfs_dep = declare_dependency(
 
 # --- Tests ---
 
+test_raw_mount_deps = [anyfs_dep]
+if host_machine.system() == 'linux'
+    test_raw_mount_deps += [dependency('glib-2.0', required: true)]
+endif
 test_raw_mount = executable('test_raw_mount',
     'tests/test_raw_mount.c',
     include_directories: anyfs_inc,
-    dependencies: [anyfs_dep],
+    dependencies: test_raw_mount_deps,
     c_args: gio_args + qemu_args,
 )
 
