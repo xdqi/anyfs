@@ -1,0 +1,21 @@
+<!doctype html>
+<html><body>
+<pre id="log">starting</pre>
+<script>
+const L = document.getElementById('log');
+(async () => {
+  try {
+    L.textContent = 'fetching small...';
+    const r = await fetch('/wasm/anyfs.worker.js');
+    L.textContent = 'wkr.size=' + (await r.text()).length;
+    L.textContent += ' | trying disks...';
+    const r2 = await fetch('/disks/single.img');
+    L.textContent += ' resp=' + r2.status;
+    const buf = await r2.arrayBuffer();
+    L.textContent += ' bytes=' + buf.byteLength;
+  } catch (e) {
+    L.textContent += ' | ERR: ' + e.message + ' | stack: ' + (e.stack||'');
+  }
+})();
+</script>
+</body></html>

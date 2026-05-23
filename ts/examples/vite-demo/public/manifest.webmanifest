@@ -1,0 +1,16 @@
+{
+    "name": "anyfs reader",
+    "short_name": "anyfs",
+    "description": "Read disk images and browse Linux filesystems in your browser. wasm LKL kernel runs client-side — no upload, no install.",
+    "start_url": "/",
+    "scope": "/",
+    "display": "standalone",
+    "orientation": "any",
+    "theme_color": "#10b981",
+    "background_color": "#18181b",
+    "icons": [
+        { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+        { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+        { "src": "/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    ]
+}

@@ -1,0 +1,16 @@
+<!doctype html>
+<html><body>
+<pre id="log">starting...</pre>
+<script>
+const L = document.getElementById('log');
+const start = performance.now();
+fetch('/disks/single.img').then(async r => {
+    L.textContent = 'response ' + r.status + ' at ' + Math.round(performance.now()-start) + 'ms';
+    const t0 = performance.now();
+    const b = await r.blob();
+    L.textContent += '\nblob ' + b.size + ' at ' + Math.round(performance.now()-t0) + 'ms (total ' + Math.round(performance.now()-start) + 'ms)';
+}).catch(e => {
+    L.textContent = 'FETCH-FAIL ' + e.message + ' at ' + Math.round(performance.now()-start) + 'ms';
+});
+</script>
+</body></html>

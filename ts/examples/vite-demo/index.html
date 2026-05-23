@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>anyfs reader — vite demo</title>
+    <meta name="description" content="Read disk images (raw / qcow2 / vmdk / vdi / vhd) and browse Linux filesystems (ext4, btrfs, xfs, ntfs, exfat, hfs+, squashfs, …) directly in your browser. wasm LKL kernel runs client-side — no upload, no install." />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="anyfs reader" />
+    <meta property="og:description" content="Read disk images and browse Linux filesystems in your browser. wasm LKL kernel runs client-side — no upload, no install." />
+    <meta property="og:image" content="/og-preview.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="anyfs reader landing page with disk-image drop zone and URL loader" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="anyfs reader" />
+    <meta name="twitter:description" content="Read disk images and browse Linux filesystems in your browser. wasm LKL kernel runs client-side." />
+    <meta name="twitter:image" content="/og-preview.png" />
+    <meta name="theme-color" content="#10b981" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="anyfs" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <!-- Set the dark class before the bundle paints to avoid a light flash
+         on reload when the saved theme is dark. Kept tiny + inline. -->
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem('anyfs.settings.v1');
+          var t = raw ? (JSON.parse(raw).theme || 'dark') : 'dark';
+          var isDark = t === 'dark'
+            || (t === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.classList.toggle('dark', isDark);
+        } catch (e) { /* keep default dark class */ }
+      })();
+    </script>
+  </head>
+  <body class="bg-zinc-100 text-zinc-900 dark:bg-zinc-900 dark:text-zinc-100">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

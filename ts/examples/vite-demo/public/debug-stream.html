@@ -1,0 +1,107 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>anyfs streaming download test</title></head>
+<body>
+<h1>anyfs streaming download test</h1>
+<pre id="log" style="background:#111;color:#0f0;padding:8px;white-space:pre-wrap;font:12px monospace"></pre>
+<script type="module">
+const logEl = document.getElementById('log');
+const out = [];
+function push(line) {
+    out.push(line);
+    logEl.textContent = out.join('\n');
+    console.log(line);
+}
+
+const which = new URLSearchParams(location.search).get('img') || 'big';
+const target = new URLSearchParams(location.search).get('target') || 'big.bin';
+const chunk = Number(new URLSearchParams(location.search).get('chunk') || (1 << 20));
+
+let w;
+let nextId = 1;
+const pending = new Map();
+function call(op, args = {}) {
+    const id = nextId++;
+    return new Promise((res, rej) => {
+        pending.set(id, { res, rej });
+        w.postMessage({ id, op, args });
+    });
+}
+
+try {
+    push(`env: crossOriginIsolated=${self.crossOriginIsolated}, hasSAB=${typeof SharedArrayBuffer !== 'undefined'}`);
+    const url = `/disks/${which}.img`;
+    push(`fetching ${url} …`);
+    const t0 = performance.now();
+    const res = await fetch(url);
+    const ab = await res.arrayBuffer();
+    push(`fetched, size=${ab.byteLength} B (${((performance.now()-t0)/1000).toFixed(2)}s)`);
+    const file = new File([ab], `${which}.img`);
+
+    push('spawning worker …');
+    w = new Worker('/wasm/anyfs.worker.js', { type: 'module' });
+    w.addEventListener('message', (e) => {
+        const m = e.data;
+        if (m.event) {
+            if (m.event !== 'stderr') push(`[${m.event}] ${m.step ?? m.message ?? m.reason ?? ''}`);
+            return;
+        }
+        if (m.id) {
+            const p = pending.get(m.id);
+            if (!p) return;
+            pending.delete(m.id);
+            if (m.ok) p.res(m.result); else p.rej(new Error(m.error + (m.stack ? `\n${m.stack}` : '')));
+        }
+    });
+    w.addEventListener('error', (e) => push(`worker.error: ${e.message} @ ${e.filename}:${e.lineno}`));
+
+    await call('mount', { file, memMb: 64, loglevel: 0 });
+    push('mount ok');
+    const mp = await call('mountWhole', { fstype: 'ext4' });
+    push(`mountWhole -> ${mp}`);
+    const path = `${mp}/${target}`;
+    const st = await call('stat', { path });
+    push(`stat: size=${st.size} bytes`);
+    const fd = await call('open', { path });
+    push(`open -> fd=${fd}`);
+
+    // Streaming read: pread chunks until EOF.
+    let received = 0;
+    let chunks = 0;
+    const tStart = performance.now();
+    let lastReport = tStart;
+    let firstChunk = null;
+    let lastBytes = null;
+    while (received < st.size) {
+        const want = Math.min(chunk, st.size - received);
+        const buf = await call('read', { fd, offset: received, length: want });
+        if (!buf || buf.byteLength === 0) {
+            push(`pread returned empty at offset ${received}`);
+            break;
+        }
+        if (received === 0) firstChunk = new Uint8Array(buf.slice(0, 16));
+        lastBytes = new Uint8Array(buf.slice(buf.byteLength - 16));
+        received += buf.byteLength;
+        chunks++;
+        const now = performance.now();
+        if (now - lastReport > 500 || received === st.size) {
+            const mb = received / (1<<20);
+            const mbs = (mb / ((now - tStart) / 1000)).toFixed(1);
+            push(`  chunks=${chunks} read=${received}/${st.size} (${(received/st.size*100).toFixed(1)}%) ${mbs} MiB/s`);
+            lastReport = now;
+        }
+    }
+    await call('close', { fd });
+    const elapsed = (performance.now() - tStart) / 1000;
+    push(`DONE: ${received} B in ${chunks} chunks, ${elapsed.toFixed(2)}s, ${(received/(1<<20)/elapsed).toFixed(1)} MiB/s`);
+    if (firstChunk) push(`head16 = ${Array.from(firstChunk).map(b=>b.toString(16).padStart(2,'0')).join('')}`);
+    if (lastBytes) push(`tail16 = ${Array.from(lastBytes).map(b=>b.toString(16).padStart(2,'0')).join('')}`);
+    push(received === st.size ? 'DONE-OK' : 'DONE-FAIL');
+} catch (e) {
+    push(`FATAL: ${e?.message ?? e}`);
+    if (e?.stack) push(`stack:\n${e.stack}`);
+    push('DONE-FAIL');
+}
+</script>
+</body>
+</html>

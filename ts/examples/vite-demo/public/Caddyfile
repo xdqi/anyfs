@@ -1,0 +1,11 @@
+:4173 {
+        root * .
+        header Cross-Origin-Opener-Policy "same-origin"
+        header Cross-Origin-Embedder-Policy "require-corp"
+        # Caddy's default file_server doesn't know about .webmanifest — declare
+        # the MIME type explicitly so Chrome treats it as a PWA manifest.
+        @manifest path *.webmanifest
+        header @manifest Content-Type "application/manifest+json"
+        encode zstd gzip
+        file_server
+}

@@ -1,0 +1,28 @@
+{
+    "name": "vite-demo",
+    "private": true,
+    "version": "0.0.0",
+    "type": "module",
+    "scripts": {
+        "dev": "vite",
+        "build": "vite build",
+        "preview": "vite preview"
+    },
+    "dependencies": {
+        "@anyfs/core": "workspace:*",
+        "@anyfs/react": "workspace:*",
+        "@anyfs/trees": "workspace:*",
+        "react": "^19.0.0",
+        "react-dom": "^19.0.0"
+    },
+    "devDependencies": {
+        "@types/react": "^19.0.0",
+        "@types/react-dom": "^19.0.0",
+        "@vitejs/plugin-react": "^4.3.0",
+        "autoprefixer": "^10.4.0",
+        "postcss": "^8.4.0",
+        "tailwindcss": "^3.4.0",
+        "typescript": "^5.5.4",
+        "vite": "^5.4.0"
+    }
+}

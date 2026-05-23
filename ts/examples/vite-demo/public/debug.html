@@ -1,0 +1,103 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>anyfs worker debug</title></head>
+<body>
+<h1>anyfs worker debug</h1>
+<pre id="log" style="background:#111;color:#0f0;padding:8px;white-space:pre-wrap;font:12px monospace"></pre>
+<script type="module">
+const logEl = document.getElementById('log');
+const out = [];
+function push(line) {
+    out.push(line);
+    logEl.textContent = out.join('\n');
+    console.log(line);
+}
+
+push(`env: crossOriginIsolated=${self.crossOriginIsolated}, hasSAB=${typeof SharedArrayBuffer !== 'undefined'}`);
+
+let w;
+let nextId = 1;
+const pending = new Map();
+function call(op, args = {}) {
+    const id = nextId++;
+    return new Promise((res, rej) => {
+        pending.set(id, { res, rej });
+        w.postMessage({ id, op, args });
+    });
+}
+
+try {
+    const which = new URLSearchParams(location.search).get('img') || 'single';
+    const url = `/disks/${which}.img`;
+    push(`fetching ${url}…`);
+    const res = await fetch(url);
+    // headless chrome 148 has a bug where Response.blob() fails on ~32 MiB+
+    // bodies — read as ArrayBuffer then wrap in a Blob/File.
+    const ab = await res.arrayBuffer();
+    push(`fetched, size=${ab.byteLength} B`);
+    const file = new File([ab], `${which}.img`);
+
+    push('spawning worker …');
+    w = new Worker('/wasm/anyfs.worker.js', { type: 'module' });
+    w.addEventListener('message', (e) => {
+        const m = e.data;
+        if (m.event) {
+            push(`[${m.event}] ${m.step ?? m.message ?? m.reason ?? ''}`);
+            return;
+        }
+        if (m.id) {
+            const p = pending.get(m.id);
+            if (!p) return;
+            pending.delete(m.id);
+            if (m.ok) p.res(m.result); else p.rej(new Error(m.error + (m.stack ? `\n${m.stack}` : '')));
+        }
+    });
+    w.addEventListener('error', (e) => {
+        push(`worker.error: ${e.message} @ ${e.filename}:${e.lineno}`);
+    });
+
+    push('worker.mount …');
+    const r = await call('mount', { file, memMb: 64, loglevel: 0 });
+    push(`mount ok, diskHandle=${r.diskHandle}`);
+
+    push('worker.listPartitions …');
+    const parts = await call('listPartitions');
+    push(`partitions: ${JSON.stringify(parts)}`);
+
+    if (parts.length === 0) {
+        push('worker.mountWhole ext4 …');
+        const mp = await call('mountWhole', { fstype: 'ext4' });
+        push(`mountWhole -> ${mp}`);
+
+        push(`worker.readdir(${mp}) …`);
+        const entries = await call('readdir', { path: mp });
+        push(`readdir: ${JSON.stringify(entries)}`);
+
+        if (entries.find(e => e.name === 'hello.txt')) {
+            const path = `${mp}/hello.txt`;
+            const st = await call('stat', { path });
+            push(`stat: ${JSON.stringify(st)}`);
+            const fd = await call('open', { path });
+            push(`open -> fd=${fd}`);
+            const bytes = await call('read', { fd, offset: 0, length: st.size });
+            await call('close', { fd });
+            push(`content: ${JSON.stringify(new TextDecoder().decode(bytes))}`);
+        }
+    } else {
+        push(`worker.enter(part=${parts[0].index}) …`);
+        const mp = await call('enter', { part: parts[0].index });
+        push(`enter -> ${mp}`);
+        push(`worker.readdir(${mp}) …`);
+        const entries = await call('readdir', { path: mp });
+        push(`readdir: ${JSON.stringify(entries.slice(0, 10))}${entries.length > 10 ? ` (+${entries.length-10} more)` : ''}`);
+    }
+
+    push('DONE-OK');
+} catch (e) {
+    push(`FATAL: ${e?.message ?? e}`);
+    if (e?.stack) push(`stack:\n${e.stack}`);
+    push('DONE-FAIL');
+}
+</script>
+</body>
+</html>
