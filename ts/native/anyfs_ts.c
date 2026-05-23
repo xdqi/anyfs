@@ -25,6 +25,7 @@
 
 #include "anyfs.h"
 #include "anyfs_disk.h"
+#include "kindprobe.h"
 
 #ifndef DT_DIR
 #define DT_DIR 4
@@ -335,9 +336,26 @@ int anyfs_ts_mount_whole(int h, const char* fstype, uint32_t flags,
 	char name[32];
 	snprintf(name, sizeof(name), "anyfs_d%d_whole", disk_id);
 
+	/* If no fstype hint was passed (NULL/empty/"auto"), libblkid-probe
+	 * the whole-disk /dev node the same way per-partition mounts do
+	 * (see anyfs_disk.c). Without this, e.g. an iso9660 image with no
+	 * partition table can't be mounted because the caller has no way
+	 * to know the fstype up front. If blkid can't identify it, we
+	 * still fall through to anyfs_mount_blkdev(NULL) which triggers
+	 * the kernel-side brute-force loop in mount_via_devpath. */
+	char probed[32] = {0};
+	const char* hint = (fstype && *fstype && strcmp(fstype, "auto") != 0)
+				   ? fstype
+				   : NULL;
+	if (!hint) {
+		char lbl[64] = {0}, uid[40] = {0};
+		(void)anyfs_kindprobe_meta(devpath, probed, lbl, uid);
+		if (probed[0])
+			hint = probed;
+	}
+
 	AnyfsMount mnt = {0};
-	int rc = anyfs_mount_blkdev(devpath, fstype && *fstype ? fstype : NULL,
-				    name, flags, &mnt);
+	int rc = anyfs_mount_blkdev(devpath, hint, name, flags, &mnt);
 	if (rc != 0)
 		return rc < 0 ? rc : -5;
 	snprintf(mount_out, mount_cap, "%s", mnt.mount_point);
