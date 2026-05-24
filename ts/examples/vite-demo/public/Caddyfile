@@ -6,6 +6,13 @@
         # the MIME type explicitly so Chrome treats it as a PWA manifest.
         @manifest path *.webmanifest
         header @manifest Content-Type "application/manifest+json"
+        # The streaming-download SW is emitted by Vite as
+        # /assets/sw-download-<hash>.js. Its URL path puts the default
+        # scope at /assets/; we want it to intercept fetches site-wide,
+        # so opt in via Service-Worker-Allowed. (Browser still requires
+        # the register() call to pass {scope:'/'} explicitly.)
+        @sw path /assets/sw-download-*.js
+        header @sw Service-Worker-Allowed "/"
         encode zstd gzip
         file_server
 }

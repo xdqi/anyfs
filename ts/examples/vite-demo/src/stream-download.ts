@@ -22,6 +22,17 @@ declare global {
     }
 }
 
+// SW source is owned by Vite via ?url — every build gives it a content-hashed
+// filename like /assets/sw-download-XXXX.js. Two upshots:
+//   1. The URL is immutable, so Cloudflare/Caddy can cache it forever, and we
+//      don't need updateViaCache:'none' + a reg.update() race to swap bytes.
+//   2. A code change means a NEW URL, which means a NEW registration. The
+//      old registration is explicitly unregistered below so we don't keep
+//      stale SWs alive forever.
+// Caddy ships Service-Worker-Allowed: / for /assets/sw-download-* so the
+// hashed file can still claim scope /.
+import swUrl from './sw-download.js?url';
+
 let swReady: Promise<ServiceWorker> | null = null;
 
 export function ensureDownloadServiceWorker(): Promise<ServiceWorker> {
@@ -30,28 +41,24 @@ export function ensureDownloadServiceWorker(): Promise<ServiceWorker> {
         return Promise.reject(new Error('Service Workers not supported'));
     }
     swReady = (async () => {
-        const reg = await navigator.serviceWorker.register('/sw-download.js', {
-            scope: '/',
-            // Don't let HTTP caching pin a returning visitor to last
-            // session's SW — Caddy/Cloudflare hand out sw-download.js
-            // with max-age, and without this the new bytes (e.g. the
-            // {kind:'ready'} ack added in a later build) never arrive.
-            updateViaCache: 'none',
-        });
-        // Force an update check on every page load. Our SW does
-        // skipWaiting() + clients.claim() so a new version takes over
-        // within a few hundred ms.
-        try { await reg.update(); } catch {}
+        const expectedPath = new URL(swUrl, location.origin).pathname;
 
-        // Wait for whatever's installing/waiting to reach activated,
-        // not just "any sw exists". Otherwise we hand the caller the
-        // OLD controller while a new SW (with a different message
-        // protocol) is still in the installing state — the register
-        // postMessage goes to a worker that doesn't know how to reply.
-        const incoming = reg.installing ?? reg.waiting;
-        if (incoming) {
+        // Clean up any previous build's SW (or the legacy /sw-download.js
+        // registration that this codebase used before hashed URLs).
+        const existing = await navigator.serviceWorker.getRegistrations();
+        for (const r of existing) {
+            const scriptURL = r.active?.scriptURL ?? r.waiting?.scriptURL ?? r.installing?.scriptURL;
+            if (!scriptURL) continue;
+            const p = new URL(scriptURL).pathname;
+            if (p !== expectedPath) {
+                try { await r.unregister(); } catch {}
+            }
+        }
+
+        const reg = await navigator.serviceWorker.register(swUrl, { scope: '/' });
+        const incoming = reg.installing ?? reg.waiting ?? reg.active!;
+        if (incoming.state !== 'activated') {
             await new Promise<void>((resolve) => {
-                if (incoming.state === 'activated') return resolve();
                 const onState = () => {
                     if (incoming.state === 'activated') {
                         incoming.removeEventListener('statechange', onState);
@@ -62,11 +69,13 @@ export function ensureDownloadServiceWorker(): Promise<ServiceWorker> {
             });
         }
 
-        // Make sure the new SW is actually controlling this page before
-        // we let the caller postMessage to it. clients.claim() drives a
-        // controllerchange; if it's already current we skip the wait.
-        const target = reg.active;
-        if (target && navigator.serviceWorker.controller !== target) {
+        // Wait (briefly) for the new SW to actually control this page —
+        // clients.claim() in the SW activate handler drives a
+        // controllerchange. Without this, the first postMessage races
+        // against the controller swap and may go to an old SW from the
+        // previous session.
+        const target = reg.active!;
+        if (navigator.serviceWorker.controller !== target) {
             await new Promise<void>((resolve) => {
                 const t = setTimeout(resolve, 3000);
                 const onChange = () => {
@@ -79,7 +88,7 @@ export function ensureDownloadServiceWorker(): Promise<ServiceWorker> {
                 navigator.serviceWorker.addEventListener('controllerchange', onChange);
             });
         }
-        return navigator.serviceWorker.controller ?? target!;
+        return navigator.serviceWorker.controller ?? target;
     })();
     return swReady;
 }
