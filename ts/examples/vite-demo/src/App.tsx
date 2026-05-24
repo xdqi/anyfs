@@ -1382,6 +1382,15 @@ function DownloadingFileTree({
     mountPath: string;
     rootLabel: string;
 }) {
+    // In-app progress + cancel UI is only meaningful under Electron, where the
+    // download is piped straight to ~/Downloads via the bridge and there's no
+    // browser-native download manager. In a real browser the SW path triggers
+    // an attachment response and the browser's own UI takes over — showing
+    // ours on top is duplicate, and worse, our onProgress reflects how fast
+    // we feed chunks to the SW, not the disk write, so the bar can sit at 0%
+    // while the browser is mid-download.
+    const inElectron =
+        typeof window !== 'undefined' && !!window.electronDownload;
     const [active, setActive] = useState<DownloadJob | null>(null);
     const { settings, resolvedTheme } = useSettings();
 
@@ -1404,21 +1413,24 @@ function DownloadingFileTree({
                 stream,
                 fileName,
                 size,
-                onProgress: (written) => {
-                    job.written = written;
-                    setActive({ ...job });
-                },
+                onProgress: inElectron
+                    ? (written) => {
+                          job.written = written;
+                          setActive({ ...job });
+                      }
+                    : undefined,
             });
             job.cancel = () => handle.cancel();
-            setActive(job);
+            if (inElectron) setActive(job);
             try {
                 await handle.promise;
-                setActive(null);
+                if (inElectron) setActive(null);
             } catch (err) {
-                setActive({ ...job, error: (err as Error).message });
+                if (inElectron) setActive({ ...job, error: (err as Error).message });
+                else console.error('[anyfs] download failed:', err);
             }
         },
-        [disk, mountPath],
+        [disk, mountPath, inElectron],
     );
 
     return (
