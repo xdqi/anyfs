@@ -30,30 +30,56 @@ export function ensureDownloadServiceWorker(): Promise<ServiceWorker> {
         return Promise.reject(new Error('Service Workers not supported'));
     }
     swReady = (async () => {
-        const reg = await navigator.serviceWorker.register('/sw-download.js', { scope: '/' });
-        const sw = reg.active ?? reg.waiting ?? reg.installing;
-        if (!sw) throw new Error('Service Worker failed to register');
-        if (sw.state !== 'activated') {
+        const reg = await navigator.serviceWorker.register('/sw-download.js', {
+            scope: '/',
+            // Don't let HTTP caching pin a returning visitor to last
+            // session's SW — Caddy/Cloudflare hand out sw-download.js
+            // with max-age, and without this the new bytes (e.g. the
+            // {kind:'ready'} ack added in a later build) never arrive.
+            updateViaCache: 'none',
+        });
+        // Force an update check on every page load. Our SW does
+        // skipWaiting() + clients.claim() so a new version takes over
+        // within a few hundred ms.
+        try { await reg.update(); } catch {}
+
+        // Wait for whatever's installing/waiting to reach activated,
+        // not just "any sw exists". Otherwise we hand the caller the
+        // OLD controller while a new SW (with a different message
+        // protocol) is still in the installing state — the register
+        // postMessage goes to a worker that doesn't know how to reply.
+        const incoming = reg.installing ?? reg.waiting;
+        if (incoming) {
             await new Promise<void>((resolve) => {
-                sw.addEventListener('statechange', function onState() {
-                    if (sw.state === 'activated') {
-                        sw.removeEventListener('statechange', onState);
+                if (incoming.state === 'activated') return resolve();
+                const onState = () => {
+                    if (incoming.state === 'activated') {
+                        incoming.removeEventListener('statechange', onState);
                         resolve();
                     }
-                });
+                };
+                incoming.addEventListener('statechange', onState);
             });
         }
-        // Don't return `sw` (the original worker may have been replaced on
-        // update). The controller is what will actually serve our fetch.
-        if (navigator.serviceWorker.controller) {
-            return navigator.serviceWorker.controller;
-        }
-        await new Promise<void>((resolve) => {
-            navigator.serviceWorker.addEventListener('controllerchange', () => resolve(), {
-                once: true,
+
+        // Make sure the new SW is actually controlling this page before
+        // we let the caller postMessage to it. clients.claim() drives a
+        // controllerchange; if it's already current we skip the wait.
+        const target = reg.active;
+        if (target && navigator.serviceWorker.controller !== target) {
+            await new Promise<void>((resolve) => {
+                const t = setTimeout(resolve, 3000);
+                const onChange = () => {
+                    if (navigator.serviceWorker.controller === target) {
+                        clearTimeout(t);
+                        navigator.serviceWorker.removeEventListener('controllerchange', onChange);
+                        resolve();
+                    }
+                };
+                navigator.serviceWorker.addEventListener('controllerchange', onChange);
             });
-        });
-        return navigator.serviceWorker.controller!;
+        }
+        return navigator.serviceWorker.controller ?? target!;
     })();
     return swReady;
 }
