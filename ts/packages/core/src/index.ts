@@ -12,8 +12,10 @@
  */
 import type { MountOpts } from './types.js';
 import { WorkerAnyfsDisk } from './worker-client.js';
+import { getUrlProxyPrefix } from './electron-proxy.js';
 
 export type { WorkerAnyfsDisk as AnyfsDisk, DiskSource } from './worker-client.js';
+export { applyUrlProxy, getUrlProxyPrefix } from './electron-proxy.js';
 export type {
     DiskHandle,
     LklFd,
@@ -59,6 +61,9 @@ export async function prewarm(opts: BrowserMountOpts): Promise<WorkerAnyfsDisk> 
             loglevel: opts.loglevel ?? 0,
             wasmBaseUrl: opts.wasmBaseUrl ?? '/wasm/',
             wasmModuleName: opts.wasmModuleName ?? 'anyfs.mjs',
+            // Forward whatever the host (preload / contextBridge) advertised
+            // to the renderer — the worker has no preload of its own.
+            urlProxyPrefix: getUrlProxyPrefix(),
         });
         return client;
     } catch (err) {

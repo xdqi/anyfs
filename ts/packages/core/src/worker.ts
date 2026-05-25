@@ -18,6 +18,7 @@
 /// <reference lib="webworker" />
 
 import { createUrlFs } from './url-fs.js';
+import { setUrlProxyPrefix } from './electron-proxy.js';
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -84,6 +85,7 @@ type BootArgs = {
     loglevel?: number;
     wasmBaseUrl?: string;
     wasmModuleName?: string;
+    urlProxyPrefix?: string;
 };
 type AttachArgs = { file: File };
 type AttachUrlArgs = { url: string; name: string };
@@ -92,6 +94,10 @@ type MountArgs = BootArgs & AttachArgs;
 const ops: Record<string, (a: any) => unknown> = {
     async boot(a: BootArgs) {
         if (M) return { alreadyBooted: true };
+        // Install the host URL-proxy hint onto the worker's own globalThis
+        // before URLFS runs — that's the same lookup applyUrlProxy() uses
+        // in the renderer (which gets it from preload's contextBridge).
+        setUrlProxyPrefix(a.urlProxyPrefix);
         const memMb = a.memMb ?? 64;
         const loglevel = a.loglevel ?? 0;
         const wasmBaseUrl = a.wasmBaseUrl ?? '/wasm/';

@@ -88,6 +88,22 @@ protocol.registerSchemesAsPrivileged([
             stream: true,
         },
     },
+    {
+        // Proxy scheme for URLFS reads. The renderer/worker rewrites
+        // `https://example.com/foo.img` to
+        // `anyfs-url://proxy/?u=<encoded>` so the actual network request
+        // happens in the main process (via net.fetch), bypassing the
+        // browser same-origin policy. Lets the demo open arbitrary disk
+        // image URLs without the upstream needing to ship CORS headers.
+        scheme: 'anyfs-url',
+        privileges: {
+            secure: true,
+            standard: true,
+            supportFetchAPI: true,
+            corsEnabled: true,
+            stream: true,
+        },
+    },
 ]);
 
 function resolveRendererPath(urlPath: string): string | null {
@@ -98,6 +114,62 @@ function resolveRendererPath(urlPath: string): string | null {
     const abs = normalize(join(RENDERER_DIR, rel));
     if (!abs.startsWith(RENDERER_DIR)) return null;
     return abs;
+}
+
+// CORS headers shared with the proxy handler. Origin is `anyfs://app` (or
+// http://localhost:5173 in dev); either way the renderer treats the proxy
+// scheme as cross-origin, so we need ACAO + ACEH so probeUrl can read
+// Content-Length / Accept-Ranges off the response.
+const PROXY_CORS_HEADERS = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Expose-Headers': '*',
+    'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+    'Access-Control-Allow-Headers': 'Range, Accept',
+    'Access-Control-Max-Age': '86400',
+};
+
+async function handleAnyfsUrlRequest(request: Request): Promise<Response> {
+    if (request.method === 'OPTIONS') {
+        return new Response(null, { status: 204, headers: PROXY_CORS_HEADERS });
+    }
+    const url = new URL(request.url);
+    const target = url.searchParams.get('u');
+    if (!target) {
+        return new Response('anyfs-url: missing ?u=', {
+            status: 400,
+            headers: PROXY_CORS_HEADERS,
+        });
+    }
+    if (!/^https?:\/\//i.test(target)) {
+        return new Response('anyfs-url: only http(s) targets are allowed', {
+            status: 400,
+            headers: PROXY_CORS_HEADERS,
+        });
+    }
+    // Forward only headers that affect the read; in particular Range. We
+    // intentionally drop Origin / Referer so the upstream sees a plain
+    // anonymous request — that's the whole point of going through main.
+    const fwd = new Headers();
+    const range = request.headers.get('range');
+    if (range) fwd.set('Range', range);
+    const accept = request.headers.get('accept');
+    if (accept) fwd.set('Accept', accept);
+    try {
+        const upstream = await net.fetch(target, {
+            method: request.method,
+            headers: fwd,
+            redirect: 'follow',
+        });
+        const headers = new Headers(upstream.headers);
+        for (const [k, v] of Object.entries(PROXY_CORS_HEADERS)) headers.set(k, v);
+        return new Response(upstream.body, { status: upstream.status, headers });
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return new Response(`anyfs-url: upstream fetch failed: ${msg}`, {
+            status: 502,
+            headers: PROXY_CORS_HEADERS,
+        });
+    }
 }
 
 async function handleAnyfsRequest(request: Request): Promise<Response> {
@@ -220,6 +292,9 @@ function installDownloadIpc() {
 
 void app.whenReady().then(() => {
     if (!isDev) protocol.handle('anyfs', handleAnyfsRequest);
+    // The url proxy must be live in dev too — the renderer's worker still
+    // rewrites URLs through it when running against the vite dev server.
+    protocol.handle('anyfs-url', handleAnyfsUrlRequest);
     installDownloadIpc();
     createWindow();
 

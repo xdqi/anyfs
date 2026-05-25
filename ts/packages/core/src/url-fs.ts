@@ -16,6 +16,8 @@
  * almost entirely in LKL's RAM rather than re-fetching.
  */
 
+import { applyUrlProxy } from './electron-proxy.js';
+
 const FILE_MODE = 33279; // S_IFREG | 0o777
 const DIR_MODE = 16895; // S_IFDIR | 0o777
 const CHUNK_SIZE = 512 * 1024;
@@ -39,8 +41,9 @@ interface UrlFsMountOpts {
 }
 
 function probeUrl(url: string): { size: number } {
+    const fetchUrl = applyUrlProxy(url);
     const xhr = new XMLHttpRequest();
-    xhr.open('HEAD', url, false);
+    xhr.open('HEAD', fetchUrl, false);
     xhr.send();
     if (xhr.status < 200 || xhr.status >= 300) {
         throw new Error(`URLFS: HEAD ${url} → HTTP ${xhr.status}`);
@@ -58,7 +61,7 @@ function probeUrl(url: string): { size: number } {
         // Verify with a probe Range request — some servers omit the header but
         // honor the request anyway (e.g. nginx with default config).
         const probe = new XMLHttpRequest();
-        probe.open('GET', url, false);
+        probe.open('GET', fetchUrl, false);
         probe.responseType = 'arraybuffer';
         probe.setRequestHeader('Range', 'bytes=0-0');
         probe.send();
@@ -75,7 +78,7 @@ function fetchChunk(backend: UrlFsBackend, idx: number): Uint8Array {
     const start = idx * CHUNK_SIZE;
     const end = Math.min(start + CHUNK_SIZE, backend.size) - 1;
     const xhr = new XMLHttpRequest();
-    xhr.open('GET', backend.url, false);
+    xhr.open('GET', applyUrlProxy(backend.url), false);
     xhr.responseType = 'arraybuffer';
     xhr.setRequestHeader('Range', `bytes=${start}-${end}`);
     xhr.send();

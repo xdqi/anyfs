@@ -3,6 +3,7 @@ import type { DragEvent as ReactDragEvent, ReactNode } from 'react';
 import { AnyfsProvider, useAnyfsDisk, useAnyfsDiskMaybe } from '@anyfs/react';
 import { AnyfsFileBrowser } from '@anyfs/trees';
 import type { AnyfsDisk, DiskMeta, DiskSource, PartInfo } from '@anyfs/core';
+import { applyUrlProxy, getUrlProxyPrefix } from '@anyfs/core';
 import { streamDownload } from './stream-download';
 import { SettingsDialog, SettingsProvider, useSettings } from './Settings';
 import {
@@ -463,19 +464,26 @@ function AboutDialog({ open, onClose }: { open: boolean; onClose: () => void }) 
 // (before handing off to the worker) so we can show a real dialog
 // instead of an attach-time crash buried in the status bar.
 async function probeUrlAhead(url: string): Promise<number> {
+    // If the host (Electron preload, etc.) advertised a URL proxy via
+    // globalThis.__anyfs.urlProxyPrefix, route through it so the request
+    // bypasses the renderer's same-origin policy. Plain browsers see the
+    // URL unchanged.
+    const fetchUrl = applyUrlProxy(url);
     let resp: Response;
     try {
-        resp = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+        resp = await fetch(fetchUrl, { method: 'HEAD', cache: 'no-store' });
     } catch (e) {
-        // Most commonly: CORS rejection or DNS/connection failure. fetch()
-        // collapses both into an opaque TypeError — we can't tell them apart
-        // from JS, but "can't reach + no CORS" is the message either way.
-        throw new Error(
-            `Couldn't reach the URL — usually CORS (the server didn't send ` +
-                `Access-Control-Allow-Origin), or the host is down. ` +
-                `Browser console has the real error.`,
-            { cause: e },
-        );
+        // In plain browsers, fetch() collapses CORS rejection and DNS failure
+        // into the same opaque TypeError. Under a host with a URL proxy
+        // (Electron etc.) main does the fetch, so CORS is off the table —
+        // only network/DNS/upstream errors reach here.
+        const msg = getUrlProxyPrefix()
+            ? `Couldn't reach the URL — DNS, TLS, or the host is down. ` +
+              `See the console for the real error.`
+            : `Couldn't reach the URL — usually CORS (the server didn't send ` +
+              `Access-Control-Allow-Origin), or the host is down. ` +
+              `Browser console has the real error.`;
+        throw new Error(msg, { cause: e });
     }
     if (!resp.ok) {
         throw new Error(`Server returned HTTP ${resp.status} ${resp.statusText}.`);
@@ -497,7 +505,7 @@ async function probeUrlAhead(url: string): Promise<number> {
         // honour Range. Probe with a 1-byte ranged GET and check for 206.
         let probe: Response;
         try {
-            probe = await fetch(url, {
+            probe = await fetch(fetchUrl, {
                 method: 'GET',
                 headers: { Range: 'bytes=0-0' },
                 cache: 'no-store',
@@ -750,7 +758,8 @@ function FilePicker({ onSource }: { onSource: (s: DiskSource) => void }) {
                 </div>
                 <p className="text-sm text-zinc-500 leading-relaxed">
                     URLs are fetched in 512&nbsp;KiB chunks via HTTP <code>Range</code> requests —
-                    the server must support range responses and CORS.
+                    the server must support range responses
+                    {getUrlProxyPrefix() ? '.' : ' and CORS.'}
                 </p>
                 <SupportedFormats />
             </div>

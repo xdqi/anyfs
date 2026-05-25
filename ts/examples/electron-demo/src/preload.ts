@@ -28,3 +28,11 @@ const api = {
 };
 
 contextBridge.exposeInMainWorld('electronDownload', api);
+
+// Tell @anyfs/core that we can fetch http(s) URLs via the main process —
+// the anyfs-url:// privileged scheme registered in main.ts is wired to
+// net.fetch and bypasses the renderer's same-origin policy. Plain
+// browsers don't set this, so URLFS keeps using direct XHR there.
+contextBridge.exposeInMainWorld('__anyfs', {
+    urlProxyPrefix: 'anyfs-url://proxy/?u=',
+});
