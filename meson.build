@@ -58,32 +58,17 @@ else
         static: true,
     )
 endif
-# LKL needs pthread, rt (Linux), ws2_32 (Windows), and slirp (Linux only)
+# LKL needs pthread, rt (Linux), ws2_32 (Windows).
 thread_dep = dependency('threads')
 if host_machine.system() == 'windows'
     ws2_dep = cc.find_library('ws2_32')
     iphlpapi_dep = cc.find_library('iphlpapi')
     rt_dep = disabler()
-    slirp_for_lkl = disabler()
     lkl_extra_deps = [ws2_dep, iphlpapi_dep]
     lkl_compile_args = []
 else
     rt_dep = cc.find_library('rt', required: false)
-    slirp_for_lkl = dependency('slirp', required: false)
-    # liblkl.a on Linux compiles in virtio_net_slirp.o, which references
-    # libslirp symbols, which in turn reference glib (when libslirp is
-    # linked statically). Pull glib into lkl_dep so every lkl_dep consumer
-    # gets it automatically — otherwise an executable that doesn't itself
-    # use slirp (e.g. anyfs-nfsd after the host_proxy migration) still
-    # fails to link because virtio_net_slirp.o is in liblkl.a.
-    if slirp_for_lkl.found()
-        glib_for_lkl = dependency('glib-2.0', required: false)
-    else
-        glib_for_lkl = disabler()
-    endif
-    lkl_extra_deps = [rt_dep] \
-        + (slirp_for_lkl.found() ? [slirp_for_lkl] : []) \
-        + (glib_for_lkl.found() ? [glib_for_lkl] : [])
+    lkl_extra_deps = [rt_dep]
     lkl_compile_args = ['-DLKL_HOST_CONFIG_POSIX']
 endif
 # Arch headers: lkl/asm/syscalls.h. The static source headers live in
@@ -326,8 +311,8 @@ anyfs_dep = declare_dependency(
 )
 
 # --- host_proxy (shared between anyfs-ksmbd, anyfs-nfsd, lkl-zerobench) ---
-# Pure userspace TCP <-> LKL TCP splice. No slirp, no virtio-net. Two
-# threads (host syscalls + lkl_sys_*), per-conn SPSC rings.
+# Pure userspace TCP <-> LKL TCP splice — no virtio-net. Two threads
+# (host syscalls + lkl_sys_*), per-conn SPSC rings.
 host_proxy_lib = static_library('host_proxy',
     'src/host_proxy/host_proxy.c',
     include_directories: [include_directories('src/host_proxy')],
@@ -422,7 +407,6 @@ if enable_ksmbd
     endif
     ksmbd_tools_inc = include_directories(ksmbd_tools_inc_dirs)
 
-    slirp_dep = dependency('slirp', required: true)
     glib_sys_dep2 = dependency('glib-2.0', required: true)
 
     # ksmbd-tools source files (no libnl dependency - we use ipc_lkl.c)
@@ -476,7 +460,7 @@ if enable_ksmbd
         fastsync_srcs,
         ksmbd_tools_sources,
         include_directories: [anyfs_inc, ksmbd_tools_inc],
-        dependencies: [lkl_dep, slirp_dep, glib_sys_dep2, thread_dep, host_proxy_dep],
+        dependencies: [lkl_dep, glib_sys_dep2, thread_dep, host_proxy_dep],
         link_with: [ksmbd_tools_lib, anyfs_core],
         link_args: fastsync_link_args,
         c_args: [
@@ -493,8 +477,8 @@ endif
 
 # --- NFSv4 server (LKL nfsd, no external tools needed) ---
 if enable_ksmbd  # reuses same LKL build with NFSD config
-    # Data path is host_proxy (host TCP <-> LKL TCP on lo); no slirp /
-    # virtio-net on the path means no libslirp link dependency either.
+    # Data path is host_proxy (host TCP <-> LKL TCP on lo); no virtio-net
+    # on the path.
     lkl_nfsd = executable('anyfs-nfsd',
         'src/nfsd/lkl_nfsd.c',
         include_directories: [anyfs_inc],

@@ -40,7 +40,7 @@ option('enable_qemu', type: 'boolean',
 
 option('enable_ksmbd', type: 'boolean',
     value: false,
-    description: 'Enable ksmbd SMB3 server (requires ksmbd_tools_root and slirp)')
+    description: 'Enable ksmbd SMB3 server (requires ksmbd_tools_root)')
 
 option('ksmbd_tools_root', type: 'string',
     value: '',
