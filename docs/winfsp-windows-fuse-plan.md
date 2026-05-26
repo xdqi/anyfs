@@ -274,7 +274,6 @@ anyfs-win32-fuse/
 │   └── anyfs-fuse.exe
 ├── lib/
 │   ├── liblkl.dll        (already built, ~16MB stripped)
-│   ├── libslirp-0.dll    (if using slirp networking)
 │   ├── libglib-2.0-0.dll (MSYS2)
 │   ├── libintl-8.dll     (MSYS2)
 │   ├── libiconv-2.dll    (MSYS2)

@@ -65,8 +65,8 @@ flow lives in [distribution.md](distribution.md).
      `ELFCLASS32` for Win32 or `ELFCLASS64` for Win64.
 
 4. **`Makefile.autoconf`: NT host wiring**
-   - Force-enable `VIRTIO_NET` + `VIRTIO_NET_SLIRP` for PE targets (otherwise the
-     autoconf would skip them).
+   - Force-enable `VIRTIO_NET` for PE targets (otherwise the autoconf would
+     skip it).
 
 5. **`.config`: `DEBUG_INFO_NONE`**
    - `olddefconfig` re-enables `DEBUG_INFO` and the DLL balloons to 100 MB+.

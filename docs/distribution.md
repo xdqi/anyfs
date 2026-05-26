@@ -42,7 +42,6 @@ anyfs-reader/
 └── lib/
     ├── liblkl.so                  (~20 MiB, 35 filesystems + nfsd + ksmbd)
     ├── libanyfs-qemublk.so        (~10 MiB, QEMU block layer)
-    ├── libslirp.so.0              (LKL networking dep; even though servers use host_proxy)
     ├── liburing.so.2
     └── libaio.so.1t64
 ```
@@ -74,8 +73,7 @@ anyfs-win{32,64}/
 ```
 
 `libslirp-*.dll` is **not** shipped: `anyfs-ksmbd` and `anyfs-nfsd` use the
-`host_proxy` TCP splice, and no other distributed binary imports slirp. If a stale
-symlink lingers from older builds, `scripts/package_mingw64.sh` filters it out.
+`host_proxy` TCP splice, and no other distributed binary imports slirp.
 
 ## Build Configuration
 
@@ -205,8 +203,7 @@ components with a warning rather than failing the whole build.
 ```
 
 Each script dereference-copies the binaries, strips them, sets `RUNPATH=$ORIGIN`
-on Linux, drops the stale `libslirp-*.dll` symlinks on Windows, and tars the
-output.
+on Linux, and tars the output.
 
 ## Runtime Dependency Matrix
 
@@ -216,8 +213,7 @@ output.
 | ----------------------- | ------------ | ------------------------------------ |
 | `liblkl.so`             | self-built   | LKL kernel + nfsd + ksmbd            |
 | `libanyfs-qemublk.so`   | self-built   | QEMU block layer                     |
-| `libslirp.so.0`         | system pkg   | LKL dep (not on the data path)       |
-| `libglib-2.0.so`        | system pkg   | GLib (used by libslirp + QEMU block) |
+| `libglib-2.0.so`        | system pkg   | GLib (used by QEMU block)            |
 | `liburing.so.2`         | system pkg   | QEMU io_uring backend                |
 | `libaio.so.1t64`        | system pkg   | QEMU linux-aio backend               |
 

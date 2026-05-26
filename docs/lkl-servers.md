@@ -61,8 +61,7 @@ and IRQ injection, and TCP retransmit timers misbehaved across the boundary.
 `src/host_proxy/` replaces that with a userspace listener on the host port that
 opens one LKL socket per accepted connection and runs a 2-thread + SPSC + epoll
 splice loop. Pure `read()`/`write()` on both halves; no NAT, no checksumming, no
-virtio-net at all. libslirp is still available for outbound paths but is not used
-on the SMB/NFS data path.
+virtio-net at all. libslirp is no longer linked into any anyfs-reader binary.
 
 ---
 
