@@ -74,7 +74,7 @@ COMMON_CONFIGURE=(
     --disable-guest-agent --disable-docs
     --disable-gtk --disable-sdl --disable-opengl --disable-vnc --disable-spice
     --disable-gnutls --disable-blkio --disable-numa
-    --disable-cap-ng --disable-seccomp --disable-libssh --disable-curl
+    --disable-cap-ng --disable-seccomp --disable-libssh --enable-curl
     --disable-rbd --disable-glusterfs --disable-vde
     --disable-nettle --disable-gcrypt --disable-smartcard
     --disable-usb-redir --disable-libudev --disable-fuse
@@ -177,16 +177,20 @@ extra_libs_for() {
     esac
 }
 
-# Pkg-config modules to resolve for the shared link.
+# Pkg-config modules to resolve for the shared link. `libcurl` is included
+# so QEMU's `block/curl.c` (built because --enable-curl is in COMMON_CONFIGURE)
+# can resolve curl_* symbols at shared-link time. Adds ~700 KB libcurl-4.dll
+# next to the deliverable on mingw64; on Linux distro libcurl is normally
+# already on the loader path.
 pkg_modules_for() {
     case "$1" in
         linux-amd64)
             # pixman is enabled on Linux, so include it.
-            printf '%s\n' "glib-2.0" "gthread-2.0" "zlib" "pixman-1" "libzstd"
+            printf '%s\n' "glib-2.0" "gthread-2.0" "zlib" "pixman-1" "libzstd" "libcurl"
             ;;
         mingw32|mingw64)
             # pixman is disabled at configure time for both mingw targets.
-            printf '%s\n' "glib-2.0" "gthread-2.0" "zlib" "libzstd"
+            printf '%s\n' "glib-2.0" "gthread-2.0" "zlib" "libzstd" "libcurl"
             ;;
     esac
 }
