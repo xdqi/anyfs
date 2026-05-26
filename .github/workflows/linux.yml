@@ -43,7 +43,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential meson ninja-build pkg-config python3 \
             flex bison bc rsync libelf-dev libssl-dev \
-            libglib2.0-dev libslirp-dev liburing-dev libaio-dev \
+            libglib2.0-dev liburing-dev libaio-dev \
             libzstd-dev libbz2-dev zlib1g-dev libpixman-1-dev \
             libfuse3-dev libnl-3-dev libnl-genl-3-dev \
             libcurl4-openssl-dev \

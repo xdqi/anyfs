@@ -9,7 +9,7 @@ name: mingw64
 # mirrored from ~/msys2-cross). bootstrap.tar.xz unpacks a self-contained
 # pacman-static under /opt/msys2-cross; we then install the mingw64 GCC +
 # binutils + pkg-config packages, plus the upstream MSYS2 sysroot libraries
-# (glib2, zlib, zstd, bzip2, libslirp) that LKL/QEMU/anyfs link against.
+# (glib2, zlib, zstd, bzip2) that LKL/QEMU/anyfs link against.
 #
 # anyfs-winfsp.exe is intentionally skipped: WinFSP headers aren't available
 # in CI, and the server tarball doesn't need the FUSE frontend.
@@ -65,7 +65,7 @@ jobs:
       # The bootstrap tarball ships a relocatable pacman-static + pacman.conf
       # pointing at file:///repo. Rewrite to msys.kosaka.moe/repo, then pull
       # in the mingw64 toolchain packages plus the upstream MSYS2 sysroot
-      # libraries (glib2/zlib/zstd/bzip2/libslirp) that build_lkl.sh and
+      # libraries (glib2/zlib/zstd/bzip2) that build_lkl.sh and
       # build_qemu.sh expect under /opt/msys2-cross/mingw64.
       - name: Cache msys2-cross toolchain
         id: cache-msys
@@ -101,15 +101,13 @@ jobs:
             msys-cross-pkgconfig
 
           # MSYS2 upstream sysroot libs under /opt/msys2-cross/mingw64.
-          # libslirp is required by gen_lkl_config.sh's mingw branch
-          # (LDLIBS += -lslirp); the rest are QEMU block layer + DLL closure
-          # deps that package_mingw64.sh pulls from bin/.
+          # QEMU block layer + DLL closure deps that package_mingw64.sh
+          # pulls from bin/.
           sudo "${MSYS_CROSS_PREFIX}/bin/msys-pacman" -S --noconfirm \
             mingw-w64-x86_64-glib2 \
             mingw-w64-x86_64-zlib \
             mingw-w64-x86_64-zstd \
             mingw-w64-x86_64-bzip2 \
-            mingw-w64-x86_64-libslirp \
             mingw-w64-x86_64-curl
 
       - name: Put msys2-cross on PATH
