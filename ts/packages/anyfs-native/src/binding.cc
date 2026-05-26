@@ -5,6 +5,32 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+// Delay-load hook: when ld.lld links us with --delayload=node.exe, the
+// PE has a Delay Import directory for `node.exe`. There's no actual
+// node.exe DLL on Electron systems (it's renamed to electron.exe /
+// anyfs-demo.exe). This hook tells the delay-load helper to resolve
+// napi_* symbols against the host EXE itself instead of LoadLibrary'ing
+// a file called "node.exe".
+// clang-format off
+//   <windows.h> must precede <delayimp.h> — delayimp's prototypes use
+//   HMODULE / FARPROC, which only become visible after windows.h. Lexical
+//   header sort breaks the build.
+#include <windows.h>
+#include <delayimp.h>
+// clang-format on
+
+static FARPROC WINAPI anyfs_dli_hook(unsigned ev, PDelayLoadInfo info)
+{
+	if (ev == dliNotePreLoadLibrary && info->szDll &&
+	    lstrcmpiA(info->szDll, "node.exe") == 0) {
+		return reinterpret_cast<FARPROC>(GetModuleHandleW(NULL));
+	}
+	return nullptr;
+}
+extern "C" PfnDliHook __pfnDliNotifyHook2 = anyfs_dli_hook;
+#endif
+
 extern "C" {
 int anyfs_ts_init(uint32_t mem_mb, uint32_t loglevel);
 int anyfs_ts_kernel_halt(void);
