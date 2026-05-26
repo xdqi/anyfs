@@ -5,9 +5,15 @@ import './styles.css';
 
 // Register the streaming-download SW early so it's active by the time the
 // user activates a file. Fire-and-forget; errors don't block the UI.
-void ensureDownloadServiceWorker().catch((err) => {
-    console.warn('[anyfs] download SW registration failed:', err);
-});
+// Skip in Electron — main-process IPC handles downloads via electronDownload,
+// and the anyfs:// custom scheme can't serve a SW with scope '/' anyway
+// (the scope-allowed header isn't honored for non-http origins).
+const hasElectronDownload = !!(window as { electronDownload?: unknown }).electronDownload;
+if (!hasElectronDownload) {
+    void ensureDownloadServiceWorker().catch((err) => {
+        console.warn('[anyfs] download SW registration failed:', err);
+    });
+}
 
 // We intentionally do NOT use <StrictMode> here. StrictMode double-invokes
 // effects in dev, which would spawn two wasm Workers per disk mount — each
