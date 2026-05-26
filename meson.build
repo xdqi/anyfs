@@ -160,6 +160,13 @@ if enable_qemu
     endif
     qemu_sys_inc = include_directories(_qemu_sys_dirs, is_system: true)
 
+    # QEMU is built --enable-curl (block/curl.c -> curl_easy_*). On shared
+    # builds libanyfs-qemublk.{so,dll} resolves these internally, but we still
+    # list libcurl as a meson dep so the toolchain sysroot path is on the
+    # link line; on static builds anyfs-* binaries must pull libcurl in
+    # directly to resolve block/curl.c's symbols out of libblock.a.
+    curl_dep = dependency('libcurl', required: true)
+
     if qemu_shared
         # Dynamic linking: use pre-built libanyfs-qemublk.so / libanyfs-qemublk.dll
         anyfs_qemu_lib = cc.find_library('anyfs-qemublk', dirs: [qemu_build])
@@ -167,7 +174,7 @@ if enable_qemu
         if host_machine.system() == 'windows'
             qemu_dep = declare_dependency(
                 include_directories: [qemu_inc, qemu_sys_inc],
-                dependencies: [anyfs_qemu_lib, glib_sys_dep, thread_dep],
+                dependencies: [anyfs_qemu_lib, glib_sys_dep, thread_dep, curl_dep],
             )
         else
             pixman_dep = dependency('pixman-1', required: true)
@@ -178,7 +185,7 @@ if enable_qemu
             qemu_dep = declare_dependency(
                 include_directories: [qemu_inc, qemu_sys_inc],
                 dependencies: [anyfs_qemu_lib, glib_sys_dep, pixman_dep,
-                               thread_dep, rt_dep, aio_lib]
+                               thread_dep, rt_dep, aio_lib, curl_dep]
                               + (uring_dep.found() ? [uring_dep] : []),
             )
         endif
@@ -211,7 +218,7 @@ if enable_qemu
             include_directories: [qemu_inc, qemu_sys_inc],
             dependencies: qemu_libs + [zstd_dep, aio_lib, pixman_dep,
                                         glib_sys_dep, gthread_dep, z_dep,
-                                        thread_dep, rt_dep] +
+                                        thread_dep, rt_dep, curl_dep] +
                           (uring_dep.found() ? [uring_dep] : []),
             link_args: qemu_block_link_args,
         )
