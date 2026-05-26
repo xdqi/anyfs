@@ -5,21 +5,27 @@
     "type": "module",
     "main": "dist/main.cjs",
     "scripts": {
-        "build:main": "tsup",
+        "build:main": "node esbuild.main.mjs",
         "build:renderer": "pnpm --filter vite-demo build",
         "build": "pnpm build:renderer && pnpm build:main",
         "dev": "concurrently -k -n vite,electron -c green,blue \"pnpm --filter vite-demo dev\" \"wait-on http://localhost:5173 && pnpm build:main && ELECTRON_DEV=1 electron .\"",
         "start": "pnpm build && electron .",
         "stage:renderer": "rm -rf staging/renderer && mkdir -p staging && cp -r ../vite-demo/dist staging/renderer && rm -rf staging/renderer/disks",
-        "package": "pnpm build && pnpm stage:renderer && mkdir -p $HOME/.cache/electron-packager-tmp && TMPDIR=$HOME/.cache/electron-packager-tmp electron-packager . anyfs-demo --platform=linux --arch=x64 --out=out --overwrite --prune=false --extra-resource=staging/renderer --ignore='^/(staging|out|node_modules|src|tsup\\.config\\.ts|tsconfig\\.json|README\\.md|\\.gitignore)($|/)'",
-        "package:mac": "pnpm build && pnpm stage:renderer && mkdir -p $HOME/.cache/electron-packager-tmp && TMPDIR=$HOME/.cache/electron-packager-tmp electron-packager . anyfs-demo --platform=darwin --arch=arm64 --out=out --overwrite --prune=false --extra-resource=staging/renderer --ignore='^/(staging|out|node_modules|src|tsup\\.config\\.ts|tsconfig\\.json|README\\.md|\\.gitignore)($|/)'"
+        "stage:native:win64": "bash scripts/stage-native-win64.sh",
+        "package": "pnpm build && pnpm stage:renderer && mkdir -p $HOME/.cache/electron-packager-tmp && TMPDIR=$HOME/.cache/electron-packager-tmp electron-packager . anyfs-demo --platform=linux --arch=x64 --out=out --overwrite --prune=false --extra-resource=staging/renderer --ignore='^/(staging|out|src|esbuild\\.main\\.mjs|tsconfig\\.json|README\\.md|\\.gitignore|scripts|node_modules)($|/)' && bash scripts/stage-native.sh out/anyfs-demo-linux-x64 strip",
+        "package:mac": "pnpm build && pnpm stage:renderer && mkdir -p $HOME/.cache/electron-packager-tmp && TMPDIR=$HOME/.cache/electron-packager-tmp electron-packager . anyfs-demo --platform=darwin --arch=arm64 --out=out --overwrite --prune=false --extra-resource=staging/renderer --ignore='^/(staging|out|src|tsup\\.config\\.ts|tsconfig\\.json|README\\.md|\\.gitignore|scripts)($|/)'",
+        "package:win": "pnpm build && pnpm stage:renderer && pnpm stage:native:win64 && mkdir -p $HOME/.cache/electron-packager-tmp && TMPDIR=$HOME/.cache/electron-packager-tmp electron-packager . anyfs-demo --platform=win32 --arch=x64 --out=out --overwrite --prune=false --extra-resource=staging/renderer --ignore='^/(staging|out|src|esbuild\\.main\\.mjs|tsconfig\\.json|README\\.md|\\.gitignore|scripts|node_modules)($|/)' && bash scripts/stage-native-win64-package.sh out/anyfs-demo-win32-x64 && bash scripts/copy-win64-dlls.sh out/anyfs-demo-win32-x64"
+    },
+    "dependencies": {
+        "drivelist": "file:../../../../drivelist-anyfs",
+        "@anyfs/native": "workspace:*"
     },
     "devDependencies": {
         "@electron/packager": "^18.3.6",
         "@types/node": "^22.0.0",
         "concurrently": "^9.0.0",
-        "electron": "^33.0.0",
-        "tsup": "^8.3.0",
+        "electron": "^42.2.0",
+        "esbuild": "^0.25.0",
         "typescript": "^5.5.4",
         "wait-on": "^8.0.0"
     }
