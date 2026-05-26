@@ -2,12 +2,13 @@ import { useCallback, useEffect, useState } from 'react';
 import type { DragEvent as ReactDragEvent, ReactNode } from 'react';
 import { AnyfsProvider, useAnyfsDisk, useAnyfsDiskMaybe } from '@anyfs/react';
 import { AnyfsFileBrowser } from '@anyfs/trees';
-import type { AnyfsDisk, DiskMeta, DiskSource, PartInfo } from '@anyfs/core';
-import { applyUrlProxy, getUrlProxyPrefix } from '@anyfs/core';
+import type { AnyfsDisk, DiskMeta, DiskSource, NativeAnyfsDisk, PartInfo } from '@anyfs/core';
+import { applyUrlProxy, getAnyfsNative, getUrlProxyPrefix } from '@anyfs/core';
 import { streamDownload } from './stream-download';
 import { SettingsDialog, SettingsProvider, useSettings } from './Settings';
 import {
     addRecentFile,
+    addRecentPath,
     addRecentUrl,
     listRecents,
     removeRecent,
@@ -39,6 +40,12 @@ function clearNavHash() {
 // the raw URL if the path is empty.
 function sourceName(s: DiskSource): string {
     if (s.kind === 'file') return s.file.name;
+    if (s.kind === 'path') {
+        if (s.name) return s.name;
+        // Best-effort basename: take the last segment after / or \.
+        const parts = s.path.split(/[\\/]/).filter(Boolean);
+        return parts[parts.length - 1] || s.path;
+    }
     try {
         const u = new URL(s.url, window.location.href);
         const last = u.pathname.split('/').filter(Boolean).pop();
@@ -524,13 +531,359 @@ async function probeUrlAhead(url: string): Promise<number> {
     return size;
 }
 
-function FilePicker({ onSource }: { onSource: (s: DiskSource) => void }) {
-    const [dragging, setDragging] = useState(false);
+// Subset of drivelist-anyfs's Drive/Partition that we actually consume.
+// The renderer doesn't import drivelist (Node-only); the Electron preload
+// hands us already-serialized JSON via window.electronDrives.list().
+type SysMountpoint = { path: string; label: string | null };
+type SysPartition = {
+    device: string;
+    size: number | null;
+    number: number | null;
+    fstype: string | null;
+    label: string | null;
+    uuid: string | null;
+    partlabel: string | null;
+    parttype: string | null;
+    mountpoints: SysMountpoint[];
+    isReadOnly: boolean;
+};
+type SysDrive = {
+    device: string;
+    description: string;
+    size: number | null;
+    busType: string;
+    isRemovable: boolean;
+    isSystem: boolean;
+    isVirtual: boolean | null;
+    partitionTableType: 'mbr' | 'gpt' | null;
+    partitions: SysPartition[] | null;
+};
+
+type ElectronDrives = { list: () => Promise<SysDrive[] | null> };
+function getElectronDrives(): ElectronDrives | null {
+    const w = window as unknown as { electronDrives?: ElectronDrives };
+    return w.electronDrives ?? null;
+}
+
+type ElectronDialog = { openImage: () => Promise<string | null> };
+function getElectronDialog(): ElectronDialog | null {
+    const w = window as unknown as { electronDialog?: ElectronDialog };
+    return w.electronDialog ?? null;
+}
+
+// Modal SystemDrives picker. Triggered from the landing "Open system drive…"
+// link. Lists physical disks + partitions; clicking a row emits a path
+// DiskSource the native bridge will hand to the in-process LKL kernel.
+//
+// Whole-disk rows are clickable too — useful for partitionless block devices
+// (loopback, optical, removable) and for letting the user lean on the
+// kernel's own partition table parsing.
+function SystemDrivesDialog({
+    onPick,
+    onClose,
+}: {
+    onPick: (path: string, name: string) => void | Promise<void>;
+    onClose: () => void;
+}) {
+    const bridge = getElectronDrives();
+    const [drives, setDrives] = useState<SysDrive[] | null>(null);
+    const [loading, setLoading] = useState(false);
+    const [err, setErr] = useState<string | null>(null);
+
+    const refresh = useCallback(async () => {
+        if (!bridge) return;
+        setLoading(true);
+        setErr(null);
+        try {
+            const list = await bridge.list();
+            setDrives(list ?? []);
+        } catch (e) {
+            setErr((e as Error).message);
+        } finally {
+            setLoading(false);
+        }
+    }, [bridge]);
+
+    useEffect(() => {
+        void refresh();
+    }, [refresh]);
+
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') onClose();
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [onClose]);
+
+    return (
+        <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+            onClick={onClose}
+        >
+            <div
+                className="bg-white border border-zinc-300 dark:bg-zinc-900 dark:border-zinc-700 rounded-lg w-full max-w-2xl mx-4 shadow-xl max-h-[80vh] flex flex-col"
+                onClick={(e) => e.stopPropagation()}
+                role="dialog"
+                aria-modal="true"
+                aria-label="System drives"
+            >
+                <header className="px-5 py-4 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between gap-3">
+                    <h2 className="text-zinc-900 dark:text-zinc-100 text-lg font-semibold">
+                        Open system drive
+                    </h2>
+                    <div className="flex items-center gap-3">
+                        <button
+                            type="button"
+                            onClick={() => void refresh()}
+                            disabled={loading}
+                            className="text-xs uppercase tracking-wider text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 disabled:opacity-50"
+                        >
+                            {loading ? 'Scanning…' : 'Refresh'}
+                        </button>
+                        <button
+                            className="text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 text-xl leading-none"
+                            onClick={onClose}
+                            aria-label="Close"
+                        >
+                            ×
+                        </button>
+                    </div>
+                </header>
+                <div className="overflow-y-auto p-4 space-y-3 flex-1">
+                    {err && <div className="text-sm text-rose-500">{err}</div>}
+                    {drives && drives.length === 0 && !loading && (
+                        <div className="text-sm text-zinc-500">No drives detected.</div>
+                    )}
+                    {drives && drives.length > 0 && (
+                        <ul className="rounded-xl border border-zinc-200 dark:border-zinc-800 overflow-hidden divide-y divide-zinc-200 dark:divide-zinc-800">
+                            {drives.map((d) => (
+                                <li key={d.device} className="p-3 space-y-1.5">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            void onPick(
+                                                d.device,
+                                                `${d.device} (${formatSize(d.size ?? undefined)})`,
+                                            );
+                                        }}
+                                        className="w-full flex items-baseline gap-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded p-1 -m-1 text-left"
+                                    >
+                                        <code className="text-zinc-900 dark:text-zinc-100 font-mono">
+                                            {d.device}
+                                        </code>
+                                        <span className="text-zinc-500">
+                                            {formatSize(d.size ?? undefined)}
+                                        </span>
+                                        <span className="text-zinc-500 truncate flex-1">
+                                            {d.description}
+                                        </span>
+                                        {d.partitionTableType && (
+                                            <span className="text-[10px] uppercase text-zinc-500">
+                                                {d.partitionTableType}
+                                            </span>
+                                        )}
+                                    </button>
+                                    {d.partitions === null ? (
+                                        <div className="text-xs text-zinc-500 pl-3">
+                                            partitions unknown (platform binding not yet populated)
+                                        </div>
+                                    ) : d.partitions.length === 0 ? (
+                                        <div className="text-xs text-zinc-500 pl-3">
+                                            no partitions
+                                        </div>
+                                    ) : (
+                                        <ul className="space-y-0.5 pl-3">
+                                            {d.partitions.map((p) => {
+                                                const known = p.fstype !== null;
+                                                return (
+                                                    <li key={p.device}>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                void onPick(
+                                                                    p.device,
+                                                                    `${p.device}${
+                                                                        p.label
+                                                                            ? ` “${p.label}”`
+                                                                            : ''
+                                                                    }`,
+                                                                );
+                                                            }}
+                                                            className="w-full flex items-baseline gap-2 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded p-1 -m-1 text-left"
+                                                        >
+                                                            <code
+                                                                className={
+                                                                    known
+                                                                        ? 'text-zinc-700 dark:text-zinc-300 font-mono'
+                                                                        : 'text-zinc-500 font-mono italic'
+                                                                }
+                                                            >
+                                                                {p.device}
+                                                            </code>
+                                                            <span className="text-zinc-500">
+                                                                {formatSize(p.size ?? undefined)}
+                                                            </span>
+                                                            <span
+                                                                className={
+                                                                    known
+                                                                        ? 'text-emerald-600 dark:text-emerald-400'
+                                                                        : 'text-amber-500'
+                                                                }
+                                                            >
+                                                                {p.fstype ?? 'unknown'}
+                                                            </span>
+                                                            {p.label && (
+                                                                <span className="text-zinc-700 dark:text-zinc-300 truncate">
+                                                                    “{p.label}”
+                                                                </span>
+                                                            )}
+                                                            {p.mountpoints.length > 0 && (
+                                                                <span className="text-zinc-500 truncate">
+                                                                    @{' '}
+                                                                    {p.mountpoints
+                                                                        .map((m) => m.path)
+                                                                        .join(', ')}
+                                                                </span>
+                                                            )}
+                                                        </button>
+                                                    </li>
+                                                );
+                                            })}
+                                        </ul>
+                                    )}
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                    <p className="text-xs text-zinc-500 leading-relaxed">
+                        Opening a system disk needs read access to the raw device node (admin on
+                        Windows, root or a group like <code>disk</code> on Linux). You may need to
+                        run the demo with the right capabilities — or use a loopback image instead.
+                    </p>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// Modal prompt for an http(s)/ftp URL. Triggered from the "Open URL…" link
+// on the landing page. Resolves with the entered URL or null on cancel.
+// Probes the URL in browser mode (HEAD via probeUrlAhead so CORS/404 errors
+// surface here rather than as a worker crash); in native mode QEMU's curl
+// driver handles probing itself, so we accept any non-empty string.
+function UrlPromptDialog({
+    onSubmit,
+    onClose,
+    mode,
+}: {
+    onSubmit: (url: string) => void;
+    onClose: () => void;
+    mode: 'native' | 'wasm';
+}) {
     const [url, setUrl] = useState('');
     const [probing, setProbing] = useState(false);
+    const [err, setErr] = useState<string | null>(null);
+
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') onClose();
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [onClose]);
+
+    const submit = async () => {
+        const trimmed = url.trim();
+        if (!trimmed) return;
+        if (mode === 'wasm') {
+            setProbing(true);
+            setErr(null);
+            try {
+                await probeUrlAhead(trimmed);
+            } catch (e) {
+                setErr((e as Error).message);
+                setProbing(false);
+                return;
+            }
+            setProbing(false);
+        }
+        onSubmit(trimmed);
+    };
+
+    return (
+        <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+            onClick={onClose}
+        >
+            <div
+                className="bg-white border border-zinc-300 dark:bg-zinc-900 dark:border-zinc-700 rounded-lg w-full max-w-lg mx-4 shadow-xl"
+                onClick={(e) => e.stopPropagation()}
+                role="dialog"
+                aria-modal="true"
+            >
+                <header className="px-5 py-4 border-b border-zinc-200 dark:border-zinc-800">
+                    <h2 className="text-zinc-900 dark:text-zinc-100 text-lg font-semibold">
+                        Open URL
+                    </h2>
+                </header>
+                <div className="px-5 py-4 space-y-3">
+                    <input
+                        type="url"
+                        value={url}
+                        onChange={(e) => setUrl(e.target.value)}
+                        onKeyDown={(e) => {
+                            if (e.key === 'Enter') void submit();
+                        }}
+                        placeholder="https://example.com/image.qcow2"
+                        disabled={probing}
+                        autoFocus
+                        className="w-full rounded-lg bg-zinc-100 border border-zinc-300 text-zinc-900 placeholder:text-zinc-400 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100 dark:placeholder:text-zinc-500 px-3 py-2 text-base focus:outline-none focus:border-emerald-500 disabled:opacity-60"
+                        aria-label="Disk image URL"
+                    />
+                    {err && <div className="text-sm text-rose-500">{err}</div>}
+                    <p className="text-sm text-zinc-500 leading-relaxed">
+                        {mode === 'native'
+                            ? 'Fetched by the native QEMU curl block driver — http(s), ftp, sftp; range requests preferred.'
+                            : `Fetched in 512 KiB chunks via HTTP Range requests — the server must support range responses${
+                                  getUrlProxyPrefix() ? '.' : ' and CORS.'
+                              }`}
+                    </p>
+                </div>
+                <div className="px-5 py-4 border-t border-zinc-200 dark:border-zinc-800 flex justify-end gap-2">
+                    <button
+                        className="rounded-lg border border-zinc-300 dark:border-zinc-700 px-4 py-2 text-sm font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                        onClick={onClose}
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        className="rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-300 disabled:text-zinc-500 dark:disabled:bg-zinc-700 dark:disabled:text-zinc-500 px-4 py-2 text-sm font-medium text-white"
+                        onClick={() => void submit()}
+                        disabled={url.trim().length === 0 || probing}
+                    >
+                        {probing ? 'Probing…' : 'Open'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function FilePicker({ onSource }: { onSource: (s: DiskSource) => void }) {
+    const [dragging, setDragging] = useState(false);
     const [errorDialog, setErrorDialog] = useState<{ title: string; message: string } | null>(null);
     const [recents, setRecents] = useState<Recent[]>([]);
+    // null = no overlay; else which action dialog is open.
+    const [openDialog, setOpenDialog] = useState<'url' | 'drives' | null>(null);
     const fsa = fsaSupported();
+    // Decide at render time. Native (Electron) trades the in-browser File
+    // path for absolute host paths handed straight to the LKL kernel — that
+    // lets us mount things the browser sandbox can't see (system drives,
+    // big disk images on disk) and unlocks the QEMU curl URL path.
+    const nativeMode = !!getAnyfsNative();
+    const electronDialog = nativeMode ? getElectronDialog() : null;
+    const electronDrives = nativeMode ? getElectronDrives() : null;
 
     const refreshRecents = useCallback(async () => {
         setRecents(await listRecents());
@@ -556,34 +909,22 @@ function FilePicker({ onSource }: { onSource: (s: DiskSource) => void }) {
         [onSource, refreshRecents],
     );
 
-    const submitUrl = async () => {
-        const trimmed = url.trim();
-        if (!trimmed) return;
-        setProbing(true);
-        try {
-            const size = await probeUrlAhead(trimmed);
-            const name = sourceName({ kind: 'url', url: trimmed });
-            try {
-                await addRecentUrl(trimmed, name, size);
-            } catch {}
-            void refreshRecents();
-            onSource({ kind: 'url', url: trimmed });
-        } catch (e) {
-            setErrorDialog({
-                title: 'Can’t load this URL',
-                message: (e as Error).message,
-            });
-        } finally {
-            setProbing(false);
-        }
-    };
-
     // Try to lift a FileSystemFileHandle out of a drop event so dropped files
     // also become recents on Chrome/Edge. Falls back to dataTransfer.files
     // (still mounts, just doesn't persist).
     const onDrop = async (e: ReactDragEvent) => {
         e.preventDefault();
         setDragging(false);
+        if (nativeMode) {
+            // Native side has no File→path bridge; ask the user to use the
+            // dialog instead so we get an absolute host path.
+            setErrorDialog({
+                title: 'Drag-and-drop not supported in native mode',
+                message:
+                    'Use “Open file…” to pick a disk image — the native bridge needs an absolute host path, not an in-browser File object.',
+            });
+            return;
+        }
         if (fsa && e.dataTransfer.items && e.dataTransfer.items.length > 0) {
             for (const item of Array.from(e.dataTransfer.items)) {
                 if (item.kind !== 'file') continue;
@@ -610,10 +951,23 @@ function FilePicker({ onSource }: { onSource: (s: DiskSource) => void }) {
         if (f) await acceptFile(f);
     };
 
-    // Native picker. With FSA we get a handle; without it we trigger a hidden
-    // <input id="anyfs-legacy-file"> rendered inside the drop zone.
-    const onBrowseClick = async () => {
+    // Native picker. In Electron we always go through dialog:openImage so we
+    // get an absolute host path the LKL kernel can attach. In browsers we
+    // prefer FSA (gives a persistable handle for Recents) and fall back to
+    // the hidden <input id="anyfs-legacy-file">.
+    const onOpenFile = async () => {
         try {
+            if (electronDialog) {
+                const p = await electronDialog.openImage();
+                if (!p) return;
+                const name = sourceName({ kind: 'path', path: p });
+                try {
+                    await addRecentPath(p, name);
+                } catch {}
+                void refreshRecents();
+                onSource({ kind: 'path', path: p, name });
+                return;
+            }
             if (fsa) {
                 const picked = await pickFile();
                 if (!picked) return;
@@ -628,25 +982,91 @@ function FilePicker({ onSource }: { onSource: (s: DiskSource) => void }) {
         }
     };
 
+    // URL dialog submit. In native mode the QEMU curl driver opens URLs
+    // directly via attachPath; in wasm mode we route through URLFS attachUrl
+    // (and have already probed in the dialog).
+    const onSubmitUrl = async (trimmed: string) => {
+        setOpenDialog(null);
+        if (nativeMode) {
+            // Native curl driver handles the URL; persist as a 'path' recent
+            // so reopen routes back through attachPath instead of URLFS XHR.
+            const name = sourceName({ kind: 'url', url: trimmed });
+            try {
+                await addRecentPath(trimmed, name);
+            } catch {}
+            void refreshRecents();
+            onSource({ kind: 'path', path: trimmed, name });
+            return;
+        }
+        try {
+            const size = await probeUrlAhead(trimmed);
+            const name = sourceName({ kind: 'url', url: trimmed });
+            try {
+                await addRecentUrl(trimmed, name, size);
+            } catch {}
+            void refreshRecents();
+            onSource({ kind: 'url', url: trimmed });
+        } catch (e) {
+            setErrorDialog({
+                title: 'Can’t load this URL',
+                message: (e as Error).message,
+            });
+        }
+    };
+
+    // System-drives picker. Only available in native mode.
+    const onPickDrive = async (path: string, name: string) => {
+        setOpenDialog(null);
+        try {
+            await addRecentPath(path, name);
+        } catch {}
+        void refreshRecents();
+        onSource({ kind: 'path', path, name });
+    };
+
     const onReopen = async (r: Recent) => {
         try {
             const res = await tryReopen(r);
             if (res.kind === 'ok') {
-                if (res.source.kind === 'url') {
-                    // Re-probe so we can surface CORS / 404 failures here
-                    // rather than as a worker crash. Skip for files.
-                    try {
-                        await probeUrlAhead(res.source.url);
-                    } catch (e) {
-                        setErrorDialog({
-                            title: 'Can’t reopen URL',
-                            message: (e as Error).message,
-                        });
-                        return;
+                let src = res.source;
+                if (src.kind === 'url') {
+                    if (nativeMode) {
+                        // Native QEMU curl driver opens http(s)/ftp/sftp via
+                        // attachPath — convert before dispatch so the worker
+                        // doesn't try URLFS + sync XHR (which can't see
+                        // cross-origin servers).
+                        src = {
+                            kind: 'path',
+                            path: src.url,
+                            ...(src.name !== undefined ? { name: src.name } : {}),
+                        };
+                    } else {
+                        // Wasm/URLFS path: re-probe so CORS/404 surfaces here
+                        // rather than as a worker crash.
+                        try {
+                            await probeUrlAhead(src.url);
+                        } catch (e) {
+                            setErrorDialog({
+                                title: 'Can’t reopen URL',
+                                message: (e as Error).message,
+                            });
+                            return;
+                        }
                     }
+                } else if (src.kind === 'file' && nativeMode) {
+                    // We're in native mode but the recent is a browser File
+                    // (saved before the user switched to Electron, or by a
+                    // mixed build). Force-fail rather than letting the worker
+                    // path try to attach a File the native bridge rejects.
+                    setErrorDialog({
+                        title: 'Can’t reopen this file in native mode',
+                        message:
+                            'This recent was saved as an in-browser File handle. Use “Open file…” to pick it again by path.',
+                    });
+                    return;
                 }
                 await refreshRecents();
-                onSource(res.source);
+                onSource(src);
                 return;
             }
             if (res.kind === 'missing') {
@@ -674,95 +1094,126 @@ function FilePicker({ onSource }: { onSource: (s: DiskSource) => void }) {
         await refreshRecents();
     };
 
-    const urlValid = url.trim().length > 0 && !probing;
     return (
-        <div className="flex-1 flex items-center justify-center p-6">
-            <div className="w-full max-w-xl rounded-2xl bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-800 p-6 space-y-4 shadow-xl">
+        <div
+            className="flex-1 flex items-center justify-center p-6"
+            onDragEnter={(e) => {
+                if (nativeMode) return;
+                e.preventDefault();
+                setDragging(true);
+            }}
+            onDragOver={(e) => {
+                if (nativeMode) return;
+                e.preventDefault();
+                setDragging(true);
+            }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={(e) => {
+                void onDrop(e);
+            }}
+        >
+            <div
+                className={[
+                    'w-full max-w-xl rounded-2xl bg-white border dark:bg-zinc-900 p-6 space-y-5 shadow-xl transition-colors',
+                    dragging
+                        ? 'border-emerald-500 ring-2 ring-emerald-500/40'
+                        : 'border-zinc-200 dark:border-zinc-800',
+                ].join(' ')}
+            >
+                {!fsa && (
+                    <input
+                        id="anyfs-legacy-file"
+                        type="file"
+                        className="hidden"
+                        onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) void acceptFile(f);
+                        }}
+                    />
+                )}
+                <div className="space-y-1">
+                    <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
+                        anyfs reader
+                    </h1>
+                    <p className="text-sm text-zinc-500">
+                        {nativeMode
+                            ? 'Native bridge active — host paths and URLs go through QEMU + LKL in the main process.'
+                            : 'Browser bundle — files, URL Range fetches, and Origin Private FS only.'}
+                    </p>
+                </div>
+
                 {recents.length > 0 && (
                     <RecentsList recents={recents} onReopen={onReopen} onRemove={onRemove} />
                 )}
-                <div
-                    onDragEnter={(e) => {
-                        e.preventDefault();
-                        setDragging(true);
-                    }}
-                    onDragOver={(e) => {
-                        e.preventDefault();
-                        setDragging(true);
-                    }}
-                    onDragLeave={() => setDragging(false)}
-                    onDrop={(e) => {
-                        void onDrop(e);
-                    }}
-                    onClick={() => {
-                        void onBrowseClick();
-                    }}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            void onBrowseClick();
-                        }
-                    }}
-                    className={[
-                        'block rounded-xl border-2 border-dashed cursor-pointer',
-                        'py-12 px-6 text-center transition-colors',
-                        dragging
-                            ? 'border-emerald-500 bg-emerald-500/10'
-                            : 'border-zinc-300 hover:border-zinc-400 dark:border-zinc-700 dark:hover:border-zinc-500',
-                    ].join(' ')}
-                >
-                    {!fsa && (
-                        <input
-                            id="anyfs-legacy-file"
-                            type="file"
-                            className="hidden"
-                            onChange={(e) => {
-                                const f = e.target.files?.[0];
-                                if (f) void acceptFile(f);
-                            }}
-                        />
-                    )}
-                    <p className="text-xl text-zinc-800 dark:text-zinc-200">
-                        Drop a disk image here
+
+                <div className="space-y-2">
+                    <div className="text-xs uppercase tracking-wider text-zinc-500">Start</div>
+                    <ul className="space-y-1">
+                        <li>
+                            <button
+                                type="button"
+                                onClick={() => void onOpenFile()}
+                                className="text-emerald-700 dark:text-emerald-400 hover:underline text-base"
+                            >
+                                Open file…
+                            </button>
+                            <span className="text-sm text-zinc-500 ml-2">
+                                {nativeMode
+                                    ? 'pick a disk image by absolute path'
+                                    : 'pick a local disk image'}
+                            </span>
+                        </li>
+                        <li>
+                            <button
+                                type="button"
+                                onClick={() => setOpenDialog('url')}
+                                className="text-emerald-700 dark:text-emerald-400 hover:underline text-base"
+                            >
+                                Open URL…
+                            </button>
+                            <span className="text-sm text-zinc-500 ml-2">
+                                {nativeMode
+                                    ? 'http(s) / ftp / sftp via QEMU curl'
+                                    : 'http(s) with Range requests'}
+                            </span>
+                        </li>
+                        {electronDrives && (
+                            <li>
+                                <button
+                                    type="button"
+                                    onClick={() => setOpenDialog('drives')}
+                                    className="text-emerald-700 dark:text-emerald-400 hover:underline text-base"
+                                >
+                                    Open system drive…
+                                </button>
+                                <span className="text-sm text-zinc-500 ml-2">
+                                    physical disks and partitions
+                                </span>
+                            </li>
+                        )}
+                    </ul>
+                </div>
+
+                {!nativeMode && (
+                    <p className="text-xs text-zinc-500 leading-relaxed">
+                        Tip — drop a disk image anywhere on this card to open it.
                     </p>
-                    <p className="text-base text-zinc-500 mt-1">or click to browse</p>
-                </div>
-                <div className="flex items-center gap-3 text-xs text-zinc-500 uppercase tracking-wider">
-                    <div className="flex-1 h-px bg-zinc-200 dark:bg-zinc-800"></div>
-                    <span>OR</span>
-                    <div className="flex-1 h-px bg-zinc-200 dark:bg-zinc-800"></div>
-                </div>
-                <div className="flex gap-2">
-                    <input
-                        type="url"
-                        value={url}
-                        onChange={(e) => setUrl(e.target.value)}
-                        onKeyDown={(e) => {
-                            if (e.key === 'Enter') void submitUrl();
-                        }}
-                        placeholder="Paste image URL (https://…)"
-                        disabled={probing}
-                        className="flex-1 min-w-0 rounded-lg bg-zinc-100 border border-zinc-300 text-zinc-900 placeholder:text-zinc-400 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100 dark:placeholder:text-zinc-500 px-3 py-2 text-base focus:outline-none focus:border-emerald-500 disabled:opacity-60"
-                        aria-label="Disk image URL"
-                    />
-                    <button
-                        type="button"
-                        onClick={() => void submitUrl()}
-                        disabled={!urlValid}
-                        className="rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-300 disabled:text-zinc-500 dark:disabled:bg-zinc-700 dark:disabled:text-zinc-500 px-4 py-2 text-base font-medium text-white transition-colors min-w-20"
-                    >
-                        {probing ? 'Probing…' : 'Load'}
-                    </button>
-                </div>
-                <p className="text-sm text-zinc-500 leading-relaxed">
-                    URLs are fetched in 512&nbsp;KiB chunks via HTTP <code>Range</code> requests —
-                    the server must support range responses
-                    {getUrlProxyPrefix() ? '.' : ' and CORS.'}
-                </p>
+                )}
+
                 <SupportedFormats />
             </div>
+            {openDialog === 'url' && (
+                <UrlPromptDialog
+                    mode={nativeMode ? 'native' : 'wasm'}
+                    onSubmit={(u) => {
+                        void onSubmitUrl(u);
+                    }}
+                    onClose={() => setOpenDialog(null)}
+                />
+            )}
+            {openDialog === 'drives' && (
+                <SystemDrivesDialog onPick={onPickDrive} onClose={() => setOpenDialog(null)} />
+            )}
             {errorDialog && (
                 <UrlErrorDialog
                     title={errorDialog.title}
@@ -882,12 +1333,14 @@ function RecentsList({
                             title={
                                 r.kind === 'url'
                                     ? r.url
-                                    : `${r.name} (local file — browsers don’t expose paths)`
+                                    : r.kind === 'path'
+                                      ? r.path
+                                      : `${r.name} (local file — browsers don’t expose paths)`
                             }
                             className="flex-1 min-w-0 flex items-center gap-2 text-left"
                         >
                             <span className="shrink-0 text-base">
-                                {r.kind === 'url' ? '🌐' : '💾'}
+                                {r.kind === 'url' ? '🌐' : r.kind === 'path' ? '📁' : '💾'}
                             </span>
                             <span className="flex-1 min-w-0">
                                 <span className="block truncate text-sm text-zinc-800 dark:text-zinc-200">
@@ -899,6 +1352,13 @@ function RecentsList({
                                         dir="ltr"
                                     >
                                         {r.url}
+                                    </span>
+                                ) : r.kind === 'path' ? (
+                                    <span
+                                        className="block truncate text-[11px] font-mono text-zinc-500 dark:text-zinc-400"
+                                        dir="ltr"
+                                    >
+                                        {r.path}
                                     </span>
                                 ) : (
                                     <span className="block truncate text-[11px] italic text-zinc-400 dark:text-zinc-500">
@@ -1239,12 +1699,16 @@ function DiskView({
     const [meta, setMeta] = useState<DiskMeta | null>(null);
     const [onDiskSize, setOnDiskSize] = useState<number | null>(null);
     const [manualMount, setManualMount] = useState<string | null>(null);
+    const [mountError, setMountError] = useState<string | null>(null);
 
     // When App steps us back out of a partition (selectedPart → null) we
     // need to drop the cached mount path too, otherwise re-picking the same
     // partition shows the previous mount instead of remounting fresh.
     useEffect(() => {
-        if (selectedPart === null) setManualMount(null);
+        if (selectedPart === null) {
+            setManualMount(null);
+            setMountError(null);
+        }
     }, [selectedPart]);
 
     useEffect(() => {
@@ -1259,9 +1723,15 @@ function DiskView({
 
     // Resolve "on-disk" (raw container) size: File.size for local, a HEAD's
     // Content-Length for URL. Differs from logical_size for qcow2/etc.
+    // For native host paths we'd need an IPC stat — not wired yet; the
+    // disk's logical_size is shown alone in that case.
     useEffect(() => {
         if (source.kind === 'file') {
             setOnDiskSize(source.file.size);
+            return;
+        }
+        if (source.kind === 'path') {
+            // No stat IPC for native paths yet; fall back to logical_size.
             return;
         }
         let cancelled = false;
@@ -1282,9 +1752,17 @@ function DiskView({
     useEffect(() => {
         if (!disk || selectedPart === null) return;
         let cancelled = false;
-        disk.enter(selectedPart).then((mp) => {
-            if (!cancelled) setManualMount(mp);
-        });
+        setMountError(null);
+        disk.enter(selectedPart).then(
+            (mp) => {
+                if (!cancelled) setManualMount(mp);
+            },
+            (err: unknown) => {
+                if (cancelled) return;
+                const msg = err instanceof Error ? err.message : String(err);
+                setMountError(msg);
+            },
+        );
         return () => {
             cancelled = true;
         };
@@ -1373,6 +1851,26 @@ function DiskView({
         <section className="flex-1 flex flex-col min-h-0 p-3">
             {manualMount && disk ? (
                 <DownloadingFileTree disk={disk} mountPath={manualMount} rootLabel="" />
+            ) : mountError ? (
+                <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
+                    <div className="text-base text-red-600 dark:text-red-400">
+                        Can&rsquo;t mount partition #{selectedPart}
+                    </div>
+                    <div className="text-sm text-zinc-600 dark:text-zinc-400 font-mono max-w-lg break-words">
+                        {mountError}
+                    </div>
+                    <div className="text-xs text-zinc-500 max-w-lg">
+                        The filesystem on this partition isn&rsquo;t recognised by the bundled
+                        kernel, or its on-disk format isn&rsquo;t supported. Pick a different
+                        partition from the list above.
+                    </div>
+                    <button
+                        className="mt-2 text-sm px-3 py-1.5 rounded bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600"
+                        onClick={() => setSelectedPart(null)}
+                    >
+                        Back to partitions
+                    </button>
+                </div>
             ) : (
                 <div className="flex-1 flex items-center justify-center text-base text-zinc-500">
                     mounting partition #{selectedPart}…
@@ -1387,7 +1885,7 @@ function DownloadingFileTree({
     mountPath,
     rootLabel,
 }: {
-    disk: AnyfsDisk;
+    disk: AnyfsDisk | NativeAnyfsDisk;
     mountPath: string;
     rootLabel: string;
 }) {
@@ -1398,8 +1896,7 @@ function DownloadingFileTree({
     // ours on top is duplicate, and worse, our onProgress reflects how fast
     // we feed chunks to the SW, not the disk write, so the bar can sit at 0%
     // while the browser is mid-download.
-    const inElectron =
-        typeof window !== 'undefined' && !!window.electronDownload;
+    const inElectron = typeof window !== 'undefined' && !!window.electronDownload;
     const [active, setActive] = useState<DownloadJob | null>(null);
     const { settings, resolvedTheme } = useSettings();
 
@@ -1445,7 +1942,7 @@ function DownloadingFileTree({
     return (
         <>
             <AnyfsFileBrowser
-                disk={disk}
+                disk={disk as AnyfsDisk}
                 mountPath={mountPath}
                 rootLabel={rootLabel}
                 followSymlinks={settings.followSymlinks}
