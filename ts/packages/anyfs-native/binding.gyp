@@ -3,8 +3,7 @@
     "repo_root":      "<(module_root_dir)/../../..",
     "qemu_bld_linux": "<!(echo ${QEMU_BLD_LINUX:-${HOME}/qemu/build-anyfs-linux-amd64})",
     "qemu_src":       "<!(echo ${QEMU_SRC:-${HOME}/qemu})",
-    "linux_src":      "<!(echo ${LINUX_SRC:-${HOME}/linux})",
-    "libslirp_src":   "<!(echo ${LIBSLIRP_SRC:-${HOME}/libslirp})"
+    "linux_src":      "<!(echo ${LINUX_SRC:-${HOME}/linux})"
   },
   "targets": [
     {
@@ -43,7 +42,6 @@
             "-Wl,--start-group",
               "<(repo_root)/build-anyfs-linux-amd64/libanyfs_core.a",
               "<(repo_root)/lkl-linux-amd64/tools/lkl/liblkl.a",
-              "<(libslirp_src)/build-linux-static/libslirp.a",
               "-Wl,--whole-archive",
                 "<(qemu_bld_linux)/libblock.a",
               "-Wl,--no-whole-archive",

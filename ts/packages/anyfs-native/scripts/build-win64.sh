@@ -3,12 +3,11 @@
 # mingw-w64 toolchain. binding.gyp can't easily cross-compile, so we drive
 # the build by hand.
 #
-# Statically links libanyfs_core.a, then dynamically links against three
+# Statically links libanyfs_core.a, then dynamically links against two
 # pre-built DLLs that anyfs-ksmbd.exe already uses:
 #   - liblkl.dll                 (LKL kernel; 353 MB static .a overflows
 #                                 PE32+ 32-bit relocs)
 #   - libanyfs-qemublk.dll       (QEMU block layer + format drivers)
-#   - libslirp.dll               (TCP/IP host glue)
 # Plus glib-2.0.dll.a from msys2-cross.
 #
 # napi symbols come from node.lib (electron's import lib). We link with
@@ -26,7 +25,6 @@
 #   <electron-app>/anyfs_native.node
 #   <electron-app>/liblkl.dll                (copy from lkl-mingw64/tools/lkl/lib/)
 #   <electron-app>/libanyfs-qemublk.dll      (copy from qemu/build-anyfs-mingw64/)
-#   <electron-app>/libslirp-0.dll            (copy from msys2-cross/mingw64/bin/)
 #   <electron-app>/libglib-2.0-0.dll         (copy from msys2-cross/mingw64/bin/)
 #   <electron-app>/libwinpthread-1.dll       (copy from msys2-cross/mingw64/bin/)
 #   <electron-app>/libgcc_s_seh-1.dll, libstdc++-6.dll, libintl-8.dll, libiconv-2.dll
@@ -44,13 +42,11 @@ MINGW_SYSROOT=${MINGW_SYSROOT:-/opt/msys2-cross/mingw64}
 # Repo-relative inputs (same anchors as binding.gyp uses)
 REPO_ROOT=${REPO_ROOT:-$SRC/../../..}
 LINUX_SRC=${LINUX_SRC:-$HOME/linux}
-LIBSLIRP_SRC=${LIBSLIRP_SRC:-$HOME/libslirp}
 QEMU_SRC=${QEMU_SRC:-$HOME/qemu}
 QEMU_BLD_MINGW64=${QEMU_BLD_MINGW64:-$HOME/qemu/build-anyfs-mingw64}
 
 LKL_MINGW64=${LKL_MINGW64:-$REPO_ROOT/lkl-mingw64}
 ANYFS_CORE_MINGW64=${ANYFS_CORE_MINGW64:-$REPO_ROOT/build-anyfs-mingw64/libanyfs_core.a}
-LIBSLIRP_MINGW=${LIBSLIRP_MINGW:-$LIBSLIRP_SRC/build-mingw32-static/libslirp.a}
 LIBBLKID_MINGW64=${LIBBLKID_MINGW64:-$REPO_ROOT/build-blkid-mingw64/lib/libblkid.a}
 
 OUT=$SRC/build-win64
@@ -75,7 +71,6 @@ for f in \
     "$ANYFS_CORE_MINGW64" \
     "$LKL_MINGW64/tools/lkl/lib/liblkl.dll" \
     "$QEMU_BLD_MINGW64/libanyfs-qemublk.dll" \
-    "$MINGW_SYSROOT/lib/libslirp.dll.a" \
     "$MINGW_SYSROOT/lib/libglib-2.0.dll.a" \
     "$LIBBLKID_MINGW64"; do
   [[ -f "$f" ]] || { echo "missing input: $f" >&2; exit 1; }
@@ -130,7 +125,7 @@ echo ">>> Compiling anyfs_ts.c"
 $CC  -c "$SRC/../../native/anyfs_ts.c"   "${INCS[@]}" "${DEFINES[@]}" "${CFLAGS[@]}"  -o "$OUT/anyfs_ts.o"
 
 # 5. Link as .node (PE32+ DLL). Pattern mirrors anyfs-ksmbd.exe's link line:
-#    libanyfs_core.a statically; LKL / QEMU-block / slirp / glib all as DLLs.
+#    libanyfs_core.a statically; LKL / QEMU-block / glib all as DLLs.
 #    --export-all-symbols keeps napi_register_module_v1 visible by name.
 #    Linker is ld.lld so we can use --delayload=node.exe; binding.cc
 #    redirects the helper to GetModuleHandle(NULL).
@@ -151,7 +146,6 @@ $CXX -shared -o "$OUT/anyfs_native.node" \
     "$LIBBLKID_MINGW64" \
     "$LKL_MINGW64/tools/lkl/lib/liblkl.dll" \
     "$QEMU_BLD_MINGW64/libanyfs-qemublk.dll" \
-    "$MINGW_SYSROOT/lib/libslirp.dll.a" \
     "$MINGW_SYSROOT/lib/libglib-2.0.dll.a" \
     "$MINGW_SYSROOT/lib/libintl.dll.a" \
   -Wl,--end-group \
