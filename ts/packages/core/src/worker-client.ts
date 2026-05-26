@@ -3,12 +3,18 @@ import type { DirEntry, DiskHandle, DiskMeta, EnterOpts, LklFd, PartInfo, Stat }
 type Pending = { res: (v: unknown) => void; rej: (e: Error) => void };
 
 /**
- * What the AnyfsProvider can attach to. `file` mounts a local `File`/`Blob`
- * via emscripten's WORKERFS; `url` mounts a remote HTTP image via URLFS
- * (sync XHR + LRU range cache). Either resolves to the same readdir/stat
- * surface downstream.
+ * What the AnyfsProvider can attach to.
+ *  - `file`: a local `File`/`Blob` mounted via emscripten's WORKERFS. Only
+ *    the wasm worker path supports it — native rejects File.
+ *  - `url`:  a remote HTTP image; wasm uses URLFS (sync XHR + LRU range
+ *    cache), native uses QEMU's curl block driver via `attachPath(url)`.
+ *  - `path`: an absolute host filesystem path or block device. Native only
+ *    (Electron showOpenDialog / system-drive picker). Browser rejects.
  */
-export type DiskSource = { kind: 'file'; file: File } | { kind: 'url'; url: string; name?: string };
+export type DiskSource =
+    | { kind: 'file'; file: File }
+    | { kind: 'url'; url: string; name?: string }
+    | { kind: 'path'; path: string; name?: string };
 
 /** Wraps a Worker hosting the wasm anyfs runtime; mirrors the public surface
  *  of the direct-mode AnyfsDisk. Implementation detail: every method posts a
