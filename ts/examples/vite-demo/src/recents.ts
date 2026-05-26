@@ -53,7 +53,14 @@ export interface RecentUrl extends RecentBase {
     kind: 'url';
     url: string;
 }
-export type Recent = RecentFile | RecentUrl;
+/** Native (Electron) mode: an absolute host filesystem path or device node.
+ *  We trust the path string verbatim — there's no FSA handle to dedupe
+ *  against, so dedupe is by string equality. */
+export interface RecentPath extends RecentBase {
+    kind: 'path';
+    path: string;
+}
+export type Recent = RecentFile | RecentUrl | RecentPath;
 
 export function fsaSupported(): boolean {
     return (
@@ -62,12 +69,21 @@ export function fsaSupported(): boolean {
     );
 }
 
-// The whole feature is gated on FSA. URL entries work without FSA in
-// principle, but the product decision is to hide the entire Recents UI on
-// browsers that can't persist local files — having a list that only ever
-// remembers URLs is more confusing than valuable.
+// Native (Electron) mode persists paths/URLs by string and doesn't need FSA.
+// In the browser we still gate on FSA so a URL-only Recents list — which
+// would be more confusing than useful, since users can't reopen the file
+// they just dropped — never appears.
+function isNativeMode(): boolean {
+    try {
+        return !!(globalThis as { anyfsNative?: unknown }).anyfsNative;
+    } catch {
+        return false;
+    }
+}
+
 export function recentsSupported(): boolean {
-    return typeof indexedDB !== 'undefined' && fsaSupported();
+    if (typeof indexedDB === 'undefined') return false;
+    return fsaSupported() || isNativeMode();
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -197,6 +213,27 @@ export async function addRecentUrl(url: string, name: string, size?: number): Pr
     if (!match) await trim(db);
 }
 
+/** Native-mode recent: a host filesystem path (or block device node) we hand
+ *  straight to the LKL kernel. Deduped by path string. */
+export async function addRecentPath(path: string, name: string, size?: number): Promise<void> {
+    if (!recentsSupported()) return;
+    const db = await openDb();
+    const all = await readAll(db);
+    const match = all.find((r): r is RecentPath => r.kind === 'path' && r.path === path) ?? null;
+    const rec: RecentPath = match
+        ? { ...match, name, ts: Date.now(), ...(size !== undefined ? { size } : {}) }
+        : {
+              id: newId(),
+              kind: 'path',
+              path,
+              name,
+              ts: Date.now(),
+              ...(size !== undefined ? { size } : {}),
+          };
+    await putOne(db, rec);
+    if (!match) await trim(db);
+}
+
 export async function removeRecent(id: string): Promise<void> {
     if (!recentsSupported()) return;
     const db = await openDb();
@@ -218,6 +255,12 @@ export type ReopenResult =
 export async function tryReopen(r: Recent): Promise<ReopenResult> {
     if (r.kind === 'url') {
         return { kind: 'ok', source: { kind: 'url', url: r.url, name: r.name } };
+    }
+    if (r.kind === 'path') {
+        // Path recents are native-only — the renderer will reject them in
+        // wasm mode upstream. Round-trip the name so the breadcrumb stays
+        // stable across reopens.
+        return { kind: 'ok', source: { kind: 'path', path: r.path, name: r.name } };
     }
     try {
         // queryPermission returns 'granted' if the user already allowed this
