@@ -82,7 +82,6 @@ fi
 # Bundle less-common system dependencies
 # These may not be installed on target systems
 BUNDLE_LIBS=(
-    libslirp.so.0
     liburing.so.2
     "libaio.so.1t64"
 )

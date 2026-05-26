@@ -4,7 +4,7 @@
 #
 # The build's bin/ subdir is already a symlink farm covering the full
 # runtime dependency closure (liblkl, libglib, libwinpthread, libpcre2,
-# libintl, libiconv, libanyfs-qemublk, libbz2, libzstd, zlib, libslirp).
+# libintl, libiconv, libanyfs-qemublk, libbz2, libzstd, zlib).
 # We just dereference-copy from there, strip everything, and tar it up.
 set -euo pipefail
 
@@ -28,16 +28,11 @@ mkdir -p "$OUTDIR"
 #
 # Excluded:
 #   test_*.exe       — dev-only, not user-facing
-#   libslirp-*.dll   — both ksmbd and nfsd link only through the host_proxy
-#                      TCP splice; nothing in the package imports slirp.
-#                      Stale symlinks may still sit in bin/ from older
-#                      builds — drop them here.
 for f in "$BUILDDIR"/bin/*.exe "$BUILDDIR"/bin/*.dll; do
     [[ -e "$f" ]] || continue
     name="$(basename "$f")"
     case "$name" in
         test_*) continue ;;
-        libslirp-*.dll) continue ;;
     esac
     cp -L "$f" "$OUTDIR/$name"
 done

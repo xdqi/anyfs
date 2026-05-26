@@ -27,7 +27,6 @@ done
 # DLLs
 cp "$LKL_LIB/liblkl.dll" "$OUTDIR/"
 cp "$QEMU_BUILD/libanyfs-qemublk.dll" "$OUTDIR/"
-cp "$HOME/libslirp/build-mingw32/libslirp-0.dll" "$OUTDIR/"
 
 # MSYS2 runtime DLLs (base only; no GTK3/readline now that GUI/CLI are gone)
 for dll in \
@@ -50,4 +49,4 @@ echo ""
 echo "Contents:"
 echo "  anyfs-ksmbd.exe  — SMB3 file server"
 echo "  anyfs-nfsd.exe   — NFSv4 file server"
-echo "  *.dll            — Runtime libraries (LKL + QEMU + slirp)"
+echo "  *.dll            — Runtime libraries (LKL + QEMU)"
