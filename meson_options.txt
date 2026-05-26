@@ -61,3 +61,10 @@ option('enable_winfsp', type: 'boolean',
 option('winfsp_root', type: 'string',
     value: '',
     description: 'Path to WinFSP source tree (contains inc/ and opt/fsext/lib/)')
+
+option('blkid_root', type: 'string',
+    value: '',
+    description: 'Path to a hand-built libblkid (contains lib/libblkid.a + '
+        + 'include/blkid/blkid.h). Used for cross-builds where pkg-config '
+        + 'cannot find libblkid (e.g. mingw32/mingw64). When empty, meson '
+        + 'falls back to pkg-config lookup.')

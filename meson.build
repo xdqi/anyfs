@@ -252,12 +252,32 @@ anyfs_core_sources = files(
     'src/core/share_spec.c',
 )
 
-# libblkid (optional, v2 enrichment of KIND_FS rows with FSTYPE/LABEL/UUID)
-blkid_dep = dependency('blkid', required: false)
-if blkid_dep.found()
+# libblkid (optional, v2 enrichment of KIND_FS rows with FSTYPE/LABEL/UUID).
+# Prefer a hand-built archive when blkid_root is set (mingw cross-builds);
+# fall back to pkg-config lookup on Linux.
+blkid_root = get_option('blkid_root')
+if blkid_root != ''
+    _blkid_lib = blkid_root / 'lib/libblkid.a'
+    _blkid_inc = blkid_root / 'include'
+    if not import('fs').is_file(_blkid_lib)
+        error('blkid_root set but @0@ is missing'.format(_blkid_lib))
+    endif
+    # blkid_root may legitimately live inside the source tree (e.g.
+    # build-blkid-mingw64/). meson's include_directories() rejects absolute
+    # paths into the source tree, so route the -I flag and -l<archive>
+    # through c_args/link_args instead.
+    blkid_dep = declare_dependency(
+        compile_args: ['-I' + _blkid_inc],
+        link_args: [_blkid_lib],
+    )
     blkid_args = ['-DANYFS_HAS_BLKID=1']
 else
-    blkid_args = []
+    blkid_dep = dependency('blkid', required: false)
+    if blkid_dep.found()
+        blkid_args = ['-DANYFS_HAS_BLKID=1']
+    else
+        blkid_args = []
+    endif
 endif
 
 if enable_gio
