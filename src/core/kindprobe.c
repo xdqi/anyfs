@@ -144,12 +144,29 @@ static int spool_to_host_tmpfile(const char* lkl_blkdev_path,
 #ifdef O_TMPFILE
 	hfd = open("/tmp", O_TMPFILE | O_RDWR | O_CLOEXEC, 0600);
 #endif
+#if defined(_WIN32) || defined(__CYGWIN__)
+	/* Windows has no /tmp and no mkstemp in msvcrt. Build a template
+	 * under %TEMP%/%TMP%/CWD using GetTempPath-style env lookups. */
+	if (hfd < 0) {
+		const char* tdir = getenv("TEMP");
+		if (!tdir || !*tdir)
+			tdir = getenv("TMP");
+		if (!tdir || !*tdir)
+			tdir = ".";
+		char tmpl[260];
+		snprintf(tmpl, sizeof(tmpl), "%s\\anyfs-probe-XXXXXX", tdir);
+		hfd = mkstemp(tmpl);
+		if (hfd >= 0)
+			(void)unlink(tmpl);
+	}
+#else
 	if (hfd < 0) {
 		char tmpl[] = "/tmp/anyfs-probe-XXXXXX";
 		hfd = mkstemp(tmpl);
 		if (hfd >= 0)
 			(void)unlink(tmpl);
 	}
+#endif
 	if (hfd < 0) {
 		lkl_sys_close(lfd);
 		return -1;
@@ -386,8 +403,14 @@ int anyfs_kindprobe_meta(const char* lkl_blkdev_path, char fstype[32],
 	 * a fd-backed file). Emscripten's MEMFS doesn't expose /proc, so
 	 * under wasm we use blkid_probe_set_device which takes the fd
 	 * directly. */
+	/* Three host shapes to hand the spool fd to libblkid:
+	 *   - Linux: /proc/self/fd/<n> is the canonical filename and the
+	 *     fastest path (libblkid will mmap the underlying file).
+	 *   - emscripten (no /proc) and Windows (no /proc, no
+	 *     blkid_new_probe_from_filename on a fd-backed path): use
+	 *     blkid_probe_set_device which takes the fd directly. */
 	blkid_probe pr;
-#ifdef __EMSCRIPTEN__
+#if defined(__EMSCRIPTEN__) || defined(_WIN32) || defined(__CYGWIN__)
 	pr = blkid_new_probe();
 	if (!pr) {
 		close(hfd);
