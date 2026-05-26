@@ -5,8 +5,7 @@
 # is not on the search path by default.
 #
 # Mirrors the ship list under $HOME/anyfs-reader/build-anyfs-mingw64/bin/
-# (anyfs-ksmbd.exe). Plus libslirp-0.dll (needed if/when LKL's network
-# stack is exercised — anyfs-ksmbd ships it for the same reason).
+# (anyfs-ksmbd.exe).
 set -euo pipefail
 
 DEST=${1:?usage: copy-win64-dlls.sh <packaged-app-dir>}
@@ -30,7 +29,6 @@ dlls=(
     "$MINGW/bin/libpcre2-8-0.dll"
     "$MINGW/bin/libintl-8.dll"
     "$MINGW/bin/libiconv-2.dll"
-    "$MINGW/bin/libslirp-0.dll"
     "$MINGW/bin/libgcc_s_seh-1.dll"
     "$MINGW/bin/libstdc++-6.dll"
     # libcurl-winssl + its transitive deps. SChannel for TLS so we avoid
