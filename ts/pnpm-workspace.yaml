@@ -1,14 +1,18 @@
 packages:
   - 'packages/*'
   - 'examples/*'
+strictDepBuilds: false
+confirmModulesPurge: false
 onlyBuiltDependencies:
   - esbuild
 overrides:
   '@types/react': ^19.0.0
   '@types/react-dom': ^19.0.0
 allowBuilds:
+  '@anyfs/native': true
   '@fortawesome/fontawesome-common-types': false
   '@fortawesome/fontawesome-svg-core': false
   '@fortawesome/free-solid-svg-icons': false
+  drivelist: true
   electron: true
   esbuild: true
