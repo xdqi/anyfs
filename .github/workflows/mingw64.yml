@@ -46,6 +46,8 @@ jobs:
       QEMU_REF:   v11.0.0
       KSMBD_REPO: https://github.com/cifsd-team/ksmbd-tools.git
       KSMBD_REF:  master
+      UTIL_LINUX_REPO: https://github.com/util-linux/util-linux.git
+      UTIL_LINUX_REF:  stable/v2.40
       MSYS_CROSS_REPO: https://msys.kosaka.moe/repo
       MSYS_CROSS_PREFIX: /opt/msys2-cross
 
@@ -162,6 +164,20 @@ jobs:
           path: ~/ksmbd-tools
           key: ksmbd-src-${{ env.KSMBD_REF }}
 
+      # util-linux is fetched purely for libblkid sources;
+      # build_libblkid_mingw.sh compiles a hand-picked TU set under mingw with
+      # shim headers from patches/libblkid/shim/. The hash on
+      # build_libblkid_mingw.sh + the workflow file invalidates the cache when
+      # either the TU list or the upstream ref move.
+      - name: Cache util-linux source
+        id: cache-util-linux
+        uses: actions/cache@v4
+        with:
+          path: ~/util-linux
+          key: util-linux-${{ env.UTIL_LINUX_REF }}-${{ hashFiles('scripts/build_libblkid_mingw.sh', '.github/workflows/mingw64.yml') }}
+          restore-keys: |
+            util-linux-${{ env.UTIL_LINUX_REF }}-
+
       # ── Clones ──────────────────────────────────────────────────────────────
       - name: Clone LKL kernel
         if: steps.cache-lkl.outputs.cache-hit != 'true'
@@ -184,6 +200,26 @@ jobs:
         run: |
           rm -rf "$HOME/ksmbd-tools"
           git clone --depth=1 --branch="${KSMBD_REF}" "${KSMBD_REPO}" "$HOME/ksmbd-tools"
+
+      # util-linux is consumed source-only by build_libblkid_mingw.sh.
+      # The build expects libblkid/src/blkid.h (post-autoconf), but a fresh
+      # clone only has blkid.h.in — substitute the two version macros from
+      # patches/libblkid/shim/config.h to skip running ./configure entirely.
+      - name: Clone util-linux + stage blkid.h
+        if: steps.cache-util-linux.outputs.cache-hit != 'true'
+        run: |
+          rm -rf "$HOME/util-linux"
+          git clone --depth=1 --branch="${UTIL_LINUX_REF}" \
+            "${UTIL_LINUX_REPO}" "$HOME/util-linux"
+          ver=$(grep -E '^#define LIBBLKID_VERSION' \
+            patches/libblkid/shim/config.h | awk -F'"' '{print $2}')
+          date=$(grep -E '^#define LIBBLKID_DATE' \
+            patches/libblkid/shim/config.h | awk -F'"' '{print $2}')
+          test -n "$ver" && test -n "$date" \
+            || { echo "::error::LIBBLKID_VERSION/DATE missing in shim/config.h"; exit 1; }
+          sed -e "s/@LIBBLKID_VERSION@/$ver/g" -e "s/@LIBBLKID_DATE@/$date/g" \
+            "$HOME/util-linux/libblkid/src/blkid.h.in" \
+            > "$HOME/util-linux/libblkid/src/blkid.h"
 
       - name: Fetch OOT FS sources
         if: steps.cache-oot.outputs.cache-hit != 'true'
