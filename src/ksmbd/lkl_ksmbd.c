@@ -184,8 +184,9 @@ static void add_share_group(const char* name, const char* lkl_path)
 	char crossmnt_opt[] = "crossmnt = yes";
 	/*
 	 * Override ksmbd-tools defaults that don't fit a read-only disk-reader:
-	 *   - oplocks: we can't take lease-break callbacks back through slirp
-	 * NAT and the RO image never changes, so oplocks just add state.
+	 *   - oplocks: we can't take lease-break callbacks back through the
+	 * host_proxy splice and the RO image never changes, so oplocks just
+	 * add state.
 	 *   - store dos attributes: would chase user.DOSATTRIB xattr on every
 	 *     stat; the on-disk FSes we mount don't have it, every lookup pays
 	 *     a getxattr -> -ENODATA round trip.
