@@ -12,9 +12,12 @@
  */
 import type { MountOpts } from './types.js';
 import { WorkerAnyfsDisk } from './worker-client.js';
+import { NativeAnyfsDisk, getAnyfsNative } from './native-client.js';
 import { getUrlProxyPrefix } from './electron-proxy.js';
 
 export type { WorkerAnyfsDisk as AnyfsDisk, DiskSource } from './worker-client.js';
+export { NativeAnyfsDisk, getAnyfsNative } from './native-client.js';
+export type { AnyfsNativeBridge } from './native-client.js';
 export { applyUrlProxy, getUrlProxyPrefix } from './electron-proxy.js';
 export type {
     DiskHandle,
@@ -81,6 +84,35 @@ export async function mountFile(file: File, opts: BrowserMountOpts): Promise<Wor
         return client;
     } catch (err) {
         await client.dispose();
+        throw err;
+    }
+}
+
+/** Native entry — boot the host-side LKL kernel via the preload-injected
+ *  `window.anyfsNative` IPC bridge. Returns `null` when the bridge isn't
+ *  installed (plain browser / non-Electron Node) so callers can fall back
+ *  to `prewarm()` transparently.
+ *
+ *  Unlike the wasm path this does NOT auto-attach a disk — File / URL
+ *  sources have no in-kernel WORKERFS / URLFS analogue on the native side.
+ *  Use `disk.attachPath(hostFsPath)` for a real host filesystem path
+ *  (typically obtained from the renderer's dialog/main-process picker).
+ *
+ *  The host kernel is process-global and idempotently booted; calling
+ *  `prewarmNative()` from multiple renderers / components is safe. */
+export async function prewarmNative(
+    opts: Pick<MountOpts, 'memMb' | 'loglevel'> = {},
+): Promise<NativeAnyfsDisk | null> {
+    const bridge = getAnyfsNative();
+    if (!bridge) return null;
+    const ok = await bridge.available();
+    if (!ok) return null;
+    const disk = new NativeAnyfsDisk(bridge);
+    try {
+        await disk.boot(opts.memMb ?? 256, opts.loglevel ?? 0);
+        return disk;
+    } catch (err) {
+        await disk.dispose();
         throw err;
     }
 }
