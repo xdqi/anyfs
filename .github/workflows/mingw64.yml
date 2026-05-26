@@ -109,7 +109,8 @@ jobs:
             mingw-w64-x86_64-zlib \
             mingw-w64-x86_64-zstd \
             mingw-w64-x86_64-bzip2 \
-            mingw-w64-x86_64-libslirp
+            mingw-w64-x86_64-libslirp \
+            mingw-w64-x86_64-curl
 
       - name: Put msys2-cross on PATH
         run: |
@@ -216,6 +217,12 @@ jobs:
             --qemu-src="$HOME/qemu" \
             --targets=mingw64 \
             -j"$(nproc)"
+
+      - name: Build libblkid (mingw64)
+        run: |
+          ./scripts/build_libblkid_mingw.sh mingw64
+          test -f "$GITHUB_WORKSPACE/build-blkid-mingw64/lib/libblkid.a" \
+            || { echo "::error::libblkid.a missing"; exit 1; }
 
       - name: Build anyfs-reader (core + server)
         run: |

@@ -46,6 +46,7 @@ jobs:
             libglib2.0-dev libslirp-dev liburing-dev libaio-dev \
             libzstd-dev libbz2-dev zlib1g-dev libpixman-1-dev \
             libfuse3-dev libnl-3-dev libnl-genl-3-dev \
+            libcurl4-openssl-dev \
             patchelf ca-certificates \
             smbclient nfs-common curl
 
