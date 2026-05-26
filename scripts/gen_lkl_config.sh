@@ -358,7 +358,7 @@ configure_target() {
 
     # tools/lkl/Makefile.conf — hand-rolled for mingw (autoconf can't probe a
     # PE/Wine target) and for linux-arm64 (autoconf would still see the host's
-    # /usr/include and enable slirp/fuse/macvtap whose aarch64 libs aren't
+    # /usr/include and enable fuse/macvtap whose aarch64 libs aren't
     # installed → link failures). Native linux-amd64 still uses autoconf.
     local CONF="$LKL_OUT/Makefile.conf"
     if [[ "$NAME" == "linux-arm64" ]]; then
@@ -406,7 +406,6 @@ EOF
   export LKL_HOST_CONFIG_NT=y
 ${NT64_CONF}
   export LKL_HOST_CONFIG_VIRTIO_NET=y
-  export LKL_HOST_CONFIG_VIRTIO_NET_SLIRP=y
   # Override kernel-make's CROSS_COMPILE-derived tool vars with absolute
   # paths to the patched 2.46 binutils. KOPT entries are appended as CLI
   # args to the inner \$(MAKE) and therefore override the kernel root
@@ -434,12 +433,10 @@ ${NT64_CONF}
   # at the bottom of zfs_config.h already undef's.
   KOPT += "KCFLAGS=-D__linux__=1"
   LDLIBS += -lws2_32 -liphlpapi
-  LDLIBS += -L/opt/msys2-cross/${MSYS_ARCH}/lib -lslirp
   ${LDFLAGS_EXTRA}
   EXESUF := .exe
   SOSUF := .dll
   CFLAGS += -Iinclude/mingw32
-  CFLAGS += -I/opt/msys2-cross/${MSYS_ARCH}/include/slirp
 EOF
         # mk_elfconfig cannot parse PE objects — pre-seed elfconfig.h.
         echo "#define KERNEL_ELFCLASS ${ELFCLASS}" > "$OUT/scripts/mod/elfconfig.h"
@@ -447,7 +444,6 @@ EOF
 #define LKL_HOST_CONFIG_NT y
 ${NT64_AUTOCONF}
 #define LKL_HOST_CONFIG_VIRTIO_NET y
-#define LKL_HOST_CONFIG_VIRTIO_NET_SLIRP y
 EOF
     else
         # Native POSIX — let autoconf regenerate Makefile.conf/lkl_autoconf.h
