@@ -8,8 +8,8 @@ pkg-config = 'i686-w64-mingw32-pkg-config'
 exe_wrapper = 'wine'
 
 [built-in options]
-c_args = ['-I/opt/msys2/mingw32/include', '-I/opt/msys2/mingw32/include/glib-2.0', '-I/opt/msys2/mingw32/lib/glib-2.0/include', '-I${LINUX_SRC}/tools/lkl/include/mingw32', '-I${LIBSLIRP_SRC}/build-mingw32']
-c_link_args = ['-L/opt/msys2/mingw32/lib', '-L${LIBSLIRP_SRC}/build-mingw32']
+c_args = ['-I/opt/msys2/mingw32/include', '-I/opt/msys2/mingw32/include/glib-2.0', '-I/opt/msys2/mingw32/lib/glib-2.0/include', '-I${LINUX_SRC}/tools/lkl/include/mingw32']
+c_link_args = ['-L/opt/msys2/mingw32/lib']
 
 [properties]
 sys_root = '/opt/msys2/mingw32'
