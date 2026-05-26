@@ -50,7 +50,9 @@ self.addEventListener('message', (event) => {
         // respondWith, and the iframe navigation falls through to
         // the network. (Chrome happens to order message-before-fetch
         // consistently for this pattern; Firefox doesn't.)
-        try { port.postMessage({ kind: 'ready' }); } catch {}
+        try {
+            port.postMessage({ kind: 'ready' });
+        } catch {}
     }
 });
 
@@ -93,8 +95,12 @@ self.addEventListener('fetch', (event) => {
             else if (entry.done) controller.close();
         },
         cancel(reason) {
-            try { entry.port.postMessage({ kind: 'cancel', reason: String(reason ?? '') }); } catch {}
-            try { entry.port.close(); } catch {}
+            try {
+                entry.port.postMessage({ kind: 'cancel', reason: String(reason ?? '') });
+            } catch {}
+            try {
+                entry.port.close();
+            } catch {}
         },
     });
 

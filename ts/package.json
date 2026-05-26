@@ -5,9 +5,12 @@
     "type": "module",
     "scripts": {
         "build": "pnpm -r --filter './packages/*' build",
-        "test": "pnpm -r --filter './packages/*' test"
+        "test": "pnpm -r --filter './packages/*' test",
+        "format": "prettier --write '{packages,examples}/**/*.{ts,tsx,mjs,js,json}'",
+        "format:check": "prettier --check '{packages,examples}/**/*.{ts,tsx,mjs,js,json}'"
     },
     "devDependencies": {
+        "prettier": "^3.4.2",
         "typescript": "^5.5.4",
         "tsup": "^8.3.0"
     }

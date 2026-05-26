@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# pre-commit: format staged sources in place, then re-add them.
+#
+# Routing:
+#   - *.c *.h *.cc *.cpp *.hpp                     -> clang-format
+#       (skips patches/ — those mirror upstream style)
+#   - ts/**/*.{ts,tsx,mjs,js,json}                 -> prettier (via ts/)
+#       (skips ts/pnpm-lock.yaml + anything in ignored dirs)
+#
+# Partial staging safety: if a file has BOTH staged and unstaged changes,
+# formatting it in the working tree would either (a) silently sweep the
+# unstaged hunk into the commit or (b) drop the user's unstaged work
+# after the format rewrites it. We refuse to touch those files and warn
+# instead — the user can stash, format, restage, or commit, then unstash.
+#
+# Install:
+#   ./scripts/git-hooks/install.sh
+# (sets core.hooksPath to scripts/git-hooks/ so this script runs.)
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# Allow opt-out for emergency commits.
+if [[ "${SKIP_FORMAT_HOOK:-}" == "1" ]]; then
+    echo "[pre-commit] SKIP_FORMAT_HOOK=1 — skipping format pass" >&2
+    exit 0
+fi
+
+# clang-format binary — prefer the version we've validated against
+# (.clang-format is written for clang-format 19's style options).
+CLANG_FORMAT=""
+for c in clang-format-19 clang-format; do
+    if command -v "$c" >/dev/null 2>&1; then
+        CLANG_FORMAT="$c"
+        break
+    fi
+done
+
+mapfile -t STAGED < <(git diff --cached --name-only --diff-filter=ACMR)
+if [[ ${#STAGED[@]} -eq 0 ]]; then
+    exit 0
+fi
+
+# Build the list of files with unstaged modifications too. Re-formatting
+# any of these would entangle staged and unstaged hunks — skip them.
+mapfile -t UNSTAGED < <(git diff --name-only --diff-filter=ACMR)
+declare -A UNSTAGED_SET=()
+for f in "${UNSTAGED[@]}"; do
+    UNSTAGED_SET["$f"]=1
+done
+
+partial=()
+c_files=()
+ts_files=()
+
+for f in "${STAGED[@]}"; do
+    [[ -f "$f" ]] || continue
+
+    if [[ -n "${UNSTAGED_SET[$f]:-}" ]]; then
+        partial+=("$f")
+        continue
+    fi
+
+    case "$f" in
+        patches/*)
+            # Upstream-style ports; leave alone.
+            continue ;;
+        *.c|*.h|*.cc|*.cpp|*.hpp)
+            c_files+=("$f") ;;
+        ts/pnpm-lock.yaml|ts/*/pnpm-lock.yaml)
+            continue ;;
+        ts/*.ts|ts/*.tsx|ts/*.mjs|ts/*.js|ts/*.json|\
+        ts/**/*.ts|ts/**/*.tsx|ts/**/*.mjs|ts/**/*.js|ts/**/*.json)
+            # Bash globstar may not match arbitrary depth without shopt — do
+            # a manual prefix check as well.
+            ts_files+=("$f") ;;
+        *)
+            if [[ "$f" == ts/* ]]; then
+                case "$f" in
+                    *.ts|*.tsx|*.mjs|*.js|*.json) ts_files+=("$f") ;;
+                esac
+            fi
+            ;;
+    esac
+done
+
+reformatted=()
+
+if [[ ${#c_files[@]} -gt 0 ]]; then
+    if [[ -z "$CLANG_FORMAT" ]]; then
+        echo "[pre-commit] WARNING: clang-format not found — skipping C/C++ files:" >&2
+        printf '  %s\n' "${c_files[@]}" >&2
+    else
+        echo "[pre-commit] clang-format: ${#c_files[@]} file(s)" >&2
+        "$CLANG_FORMAT" -i "${c_files[@]}"
+        for f in "${c_files[@]}"; do
+            if ! git diff --quiet -- "$f"; then
+                reformatted+=("$f")
+            fi
+        done
+    fi
+fi
+
+if [[ ${#ts_files[@]} -gt 0 ]]; then
+    if [[ ! -d "ts/node_modules/prettier" ]]; then
+        echo "[pre-commit] WARNING: ts/node_modules/prettier missing — run \`pnpm -C ts install\`" >&2
+        echo "             skipping ts files:" >&2
+        printf '  %s\n' "${ts_files[@]}" >&2
+    else
+        echo "[pre-commit] prettier: ${#ts_files[@]} file(s)" >&2
+        # Pass paths relative to ts/ to keep prettier's ignore + config
+        # resolution working as if invoked from there.
+        rel=()
+        for f in "${ts_files[@]}"; do
+            rel+=("${f#ts/}")
+        done
+        ( cd ts && node_modules/.bin/prettier --write --log-level warn "${rel[@]}" )
+        for f in "${ts_files[@]}"; do
+            if ! git diff --quiet -- "$f"; then
+                reformatted+=("$f")
+            fi
+        done
+    fi
+fi
+
+if [[ ${#reformatted[@]} -gt 0 ]]; then
+    echo "[pre-commit] re-staging ${#reformatted[@]} reformatted file(s)" >&2
+    git add -- "${reformatted[@]}"
+fi
+
+if [[ ${#partial[@]} -gt 0 ]]; then
+    echo "[pre-commit] NOTE: ${#partial[@]} file(s) had both staged + unstaged changes; left unformatted:" >&2
+    printf '  %s\n' "${partial[@]}" >&2
+    echo "             stash + restage + commit if you want them auto-formatted, or" >&2
+    echo "             SKIP_FORMAT_HOOK=1 git commit ... to bypass this hook." >&2
+fi
+
+exit 0

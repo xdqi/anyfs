@@ -12,6 +12,9 @@ importers:
 
   .:
     devDependencies:
+      prettier:
+        specifier: ^3.4.2
+        version: 3.8.3
       tsup:
         specifier: ^8.3.0
         version: 8.5.1(jiti@1.21.7)(postcss@8.5.15)(typescript@5.9.3)

@@ -47,11 +47,14 @@ export function ensureDownloadServiceWorker(): Promise<ServiceWorker> {
         // registration that this codebase used before hashed URLs).
         const existing = await navigator.serviceWorker.getRegistrations();
         for (const r of existing) {
-            const scriptURL = r.active?.scriptURL ?? r.waiting?.scriptURL ?? r.installing?.scriptURL;
+            const scriptURL =
+                r.active?.scriptURL ?? r.waiting?.scriptURL ?? r.installing?.scriptURL;
             if (!scriptURL) continue;
             const p = new URL(scriptURL).pathname;
             if (p !== expectedPath) {
-                try { await r.unregister(); } catch {}
+                try {
+                    await r.unregister();
+                } catch {}
             }
         }
 

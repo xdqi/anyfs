@@ -1,0 +1,11 @@
+node_modules
+dist
+build
+build-*
+.turbo
+*.min.js
+pnpm-lock.yaml
+packages/anyfs-native/build
+examples/electron-demo/dist
+examples/vite-demo/dist
+examples/vite-demo/public
