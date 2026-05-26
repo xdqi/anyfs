@@ -13,6 +13,8 @@ import { createWriteStream, existsSync, mkdirSync, unlink, type WriteStream } fr
 import { homedir } from 'node:os';
 import { join, extname, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { Drive } from 'drivelist';
+import { loadAnyfsNativeAddon, loadDrivelistModule } from './native-loader';
 
 // Opt-in dev mode (set by `pnpm dev`). Packaged builds are always prod.
 // Bare `electron .` defaults to prod so we don't accidentally try to load
@@ -290,12 +292,240 @@ function installDownloadIpc() {
     });
 }
 
-void app.whenReady().then(() => {
+// Native "Open Image…" file picker. Renderer calls this instead of the FSA
+// <input type=file> when the native bridge is in effect — we want an
+// absolute host path string (which the native addon can attachPath), not a
+// File blob (which the addon can't consume). Returns the picked path or
+// null if the user cancelled.
+function installDialogIpc() {
+    ipcMain.handle('dialog:openImage', async (event) => {
+        const owner = BrowserWindow.fromWebContents(event.sender);
+        const result = await (owner
+            ? dialog.showOpenDialog(owner, {
+                  title: 'Open disk image',
+                  properties: ['openFile'],
+                  filters: [
+                      {
+                          name: 'Disk images',
+                          extensions: [
+                              'img',
+                              'iso',
+                              'raw',
+                              'bin',
+                              'qcow2',
+                              'qcow',
+                              'vmdk',
+                              'vdi',
+                              'vhd',
+                              'vhdx',
+                              'dmg',
+                              'vpc',
+                          ],
+                      },
+                      { name: 'All files', extensions: ['*'] },
+                  ],
+              })
+            : dialog.showOpenDialog({
+                  title: 'Open disk image',
+                  properties: ['openFile'],
+              }));
+        if (result.canceled || result.filePaths.length === 0) return null;
+        return result.filePaths[0];
+    });
+}
+
+// System-drive enumeration via drivelist-anyfs. Returns the full Drive[] —
+// renderer decides what to show. Errors come back as null so the UI can
+// fall back to "no drives" rather than blowing up the picker. This is
+// strictly read-only at this stage: the renderer can SEE devices and
+// partitions but cannot yet OPEN them through Electron (that needs raw
+// device access + an IPC reader stream, future work).
+function installDrivesIpc() {
+    ipcMain.handle('drives:list', async () => {
+        try {
+            const drivelist = loadDrivelistModule();
+            const drives: Drive[] = await drivelist.list();
+            return drives;
+        } catch (e) {
+            console.error('[drives:list] failed:', e);
+            return null;
+        }
+    });
+}
+
+// Native @anyfs/native bridge. The addon is one process-global LKL kernel —
+// `init(mem_mb, loglevel)` brings it up exactly once, and every subsequent
+// handle/path op runs against the same kernel. We lazy-require the addon so
+// the demo still launches if the .node is missing for the current platform
+// (e.g. dev on a host without it built) — renderer feature-detects via
+// `window.anyfsNative` and falls back to the wasm path.
+type AnyfsNativeModule = {
+    init(memMb: number, loglevel: number): number;
+    kernelHalt(): number;
+    diskOpen(imagePath: string, flags: number): number;
+    diskClose(h: number): number;
+    diskListJson(h: number): string;
+    diskMetaJson(h: number): string;
+    diskEnter(h: number, part: number, flags: number): string;
+    mountWhole(h: number, fstype: string, flags: number): string;
+    readdirJson(path: string): string;
+    lstatJson(path: string): string;
+    statJson(path: string): string;
+    realpath(path: string): string;
+    readlink(path: string): string;
+    fileOpen(path: string, flags: number): number;
+    pread(fd: number, buf: Uint8Array, n: number, off: number): number;
+    fileClose(fd: number): number;
+};
+
+let nativeMod: AnyfsNativeModule | null = null;
+let nativeInitDone = false;
+
+function loadNativeAddon(): AnyfsNativeModule | null {
+    if (nativeMod) return nativeMod;
+    try {
+        const m = loadAnyfsNativeAddon() as AnyfsNativeModule | null;
+        if (!m) throw new Error('anyfs_native.node not found at any staged path');
+        nativeMod = m;
+        return m;
+    } catch (e) {
+        console.warn('[anyfs-native] addon not loadable:', (e as Error).message);
+        return null;
+    }
+}
+
+function installAnyfsNativeIpc() {
+    // Probe at startup so the renderer's feature-detect (`anyfs-native:available`)
+    // is cheap and synchronous from its POV.
+    const probe = loadNativeAddon();
+    if (!probe) {
+        console.log('[anyfs-native] addon unavailable — renderer will use wasm path');
+    } else {
+        console.log('[anyfs-native] addon loaded; awaiting init from renderer');
+    }
+
+    ipcMain.handle('anyfs-native:available', () => loadNativeAddon() !== null);
+
+    ipcMain.handle('anyfs-native:init', (_event, memMb: number, loglevel: number) => {
+        const m = loadNativeAddon();
+        if (!m) throw new Error('anyfs-native addon not loadable');
+        if (nativeInitDone) return 0; // idempotent — kernel is global
+        const rc = m.init(memMb >>> 0, loglevel >>> 0);
+        if (rc === 0) nativeInitDone = true;
+        return rc;
+    });
+
+    ipcMain.handle('anyfs-native:diskOpen', (_event, path: string, flags: number) => {
+        const m = loadNativeAddon()!;
+        return m.diskOpen(path, flags >>> 0);
+    });
+    ipcMain.handle('anyfs-native:diskClose', (_event, h: number) =>
+        loadNativeAddon()!.diskClose(h),
+    );
+    ipcMain.handle('anyfs-native:diskListJson', (_event, h: number) =>
+        loadNativeAddon()!.diskListJson(h),
+    );
+    ipcMain.handle('anyfs-native:diskMetaJson', (_event, h: number) =>
+        loadNativeAddon()!.diskMetaJson(h),
+    );
+    ipcMain.handle('anyfs-native:diskEnter', (_event, h: number, part: number, flags: number) =>
+        loadNativeAddon()!.diskEnter(h, part >>> 0, flags >>> 0),
+    );
+    ipcMain.handle('anyfs-native:mountWhole', (_event, h: number, fstype: string, flags: number) =>
+        loadNativeAddon()!.mountWhole(h, fstype, flags >>> 0),
+    );
+
+    ipcMain.handle('anyfs-native:readdirJson', (_event, path: string) =>
+        loadNativeAddon()!.readdirJson(path),
+    );
+    ipcMain.handle('anyfs-native:lstatJson', (_event, path: string) =>
+        loadNativeAddon()!.lstatJson(path),
+    );
+    ipcMain.handle('anyfs-native:statJson', (_event, path: string) =>
+        loadNativeAddon()!.statJson(path),
+    );
+    ipcMain.handle('anyfs-native:realpath', (_event, path: string) =>
+        loadNativeAddon()!.realpath(path),
+    );
+    ipcMain.handle('anyfs-native:readlink', (_event, path: string) =>
+        loadNativeAddon()!.readlink(path),
+    );
+
+    ipcMain.handle('anyfs-native:fileOpen', (_event, path: string, flags: number) =>
+        loadNativeAddon()!.fileOpen(path, flags | 0),
+    );
+    // pread returns the populated Uint8Array slice — IPC structured-cloning a
+    // Uint8Array is fine, and avoids the renderer having to send a buffer of
+    // its own for the kernel to fill. `got` may be < n on short reads or EOF.
+    ipcMain.handle('anyfs-native:pread', (_event, fd: number, n: number, off: number) => {
+        const m = loadNativeAddon()!;
+        const buf = new Uint8Array(n >>> 0);
+        const got = m.pread(fd, buf, n >>> 0, off);
+        if (got < 0) return { rc: got, data: new Uint8Array(0) };
+        return { rc: got, data: got === buf.length ? buf : buf.subarray(0, got) };
+    });
+    ipcMain.handle('anyfs-native:fileClose', (_event, fd: number) =>
+        loadNativeAddon()!.fileClose(fd),
+    );
+}
+
+void app.whenReady().then(async () => {
+    // Headless smoke path: dump drives to a file and exit. Lets CI/devs
+    // confirm the drivelist binding is callable from this electron build
+    // without the GUI/wasm prewarm path.
+    if (process.env.ANYFS_DRIVES_SMOKE === '1') {
+        try {
+            const drives = await loadDrivelistModule().list();
+            const out = process.env.ANYFS_DRIVES_OUT || '/tmp/anyfs-drives-smoke.json';
+            const fs = await import('node:fs/promises');
+            await fs.writeFile(out, JSON.stringify(drives, null, 2));
+            console.log(`[drives:smoke] wrote ${drives.length} drives to ${out}`);
+        } catch (e) {
+            console.error('[drives:smoke] failed:', e);
+        }
+        app.exit(0);
+        return;
+    }
+
+    // Same headless pattern for the native addon: init kernel, open the image
+    // passed in $ANYFS_NATIVE_IMAGE, dump diskListJson, exit. Lets us confirm
+    // the addon loads under Electron's vendored Node ABI before the renderer
+    // ever touches it.
+    if (process.env.ANYFS_NATIVE_SMOKE === '1') {
+        try {
+            const m = loadNativeAddon();
+            if (!m) throw new Error('addon not loadable');
+            const rc = m.init(512, 4);
+            if (rc !== 0) throw new Error(`init rc=${rc}`);
+            nativeInitDone = true;
+            const img =
+                process.env.ANYFS_NATIVE_IMAGE ||
+                resolve(__dirname, '../../vite-demo/public/disks/multi.img');
+            const h = m.diskOpen(img, 0);
+            if (h < 0) throw new Error(`diskOpen rc=${h}`);
+            const list = m.diskListJson(h);
+            const out = process.env.ANYFS_NATIVE_OUT || '/tmp/anyfs-native-smoke.json';
+            const fs = await import('node:fs/promises');
+            await fs.writeFile(out, list);
+            console.log(`[native:smoke] wrote disk list for ${img} to ${out}`);
+            m.diskClose(h);
+        } catch (e) {
+            console.error('[native:smoke] failed:', e);
+            app.exit(1);
+            return;
+        }
+        app.exit(0);
+        return;
+    }
+
     if (!isDev) protocol.handle('anyfs', handleAnyfsRequest);
     // The url proxy must be live in dev too — the renderer's worker still
     // rewrites URLs through it when running against the vite dev server.
     protocol.handle('anyfs-url', handleAnyfsUrlRequest);
     installDownloadIpc();
+    installDialogIpc();
+    installDrivesIpc();
+    installAnyfsNativeIpc();
     createWindow();
 
     app.on('activate', () => {
