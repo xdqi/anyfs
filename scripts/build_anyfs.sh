@@ -133,6 +133,20 @@ cross_file_for() {
     esac
 }
 
+# Pre-built libblkid archive layout produced by build_libblkid_mingw.sh.
+# Returns the directory containing lib/libblkid.a + include/blkid/blkid.h
+# when one exists for the target, else empty (meson will fall back to its
+# pkg-config probe — which works on linux-amd64 but not on mingw).
+blkid_root_for() {
+    case "$1" in
+        mingw32|mingw64)
+            local d="$SRC_DIR/build-blkid-$1"
+            [[ -f "$d/lib/libblkid.a" ]] && echo "$d"
+            ;;
+        linux-amd64|*) echo "" ;;
+    esac
+}
+
 # Logical component → meson target *names* (as they appear in
 # `meson introspect --targets`). We resolve each name to its output
 # *filename* below before passing to ninja (ninja wants the file path,
@@ -224,6 +238,23 @@ build_one() {
         if has_comp core; then
             echo "  qemu backend: SKIPPED ($([[ -z $qbuild ]] && echo 'no QEMU build configured for target' || echo "missing $qartifact"))"
         fi
+    fi
+
+    # ── core: hand-built libblkid (mingw cross-builds only) ──────
+    # On linux-amd64 we rely on the system pkg-config (meson.build will
+    # auto-detect via dependency('blkid')). On mingw we ship our own static
+    # archive built from util-linux via scripts/build_libblkid_mingw.sh.
+    local blkid_root
+    blkid_root="$(blkid_root_for "$target")"
+    if has_comp core && [[ -n "$blkid_root" ]]; then
+        meson_opts+=("-Dblkid_root=$blkid_root")
+        echo "  blkid:        ENABLED ($(basename "$blkid_root"))"
+    elif has_comp core; then
+        case "$target" in
+            mingw32|mingw64)
+                echo "  blkid:        SKIPPED (run scripts/build_libblkid_mingw.sh $target first)"
+                ;;
+        esac
     fi
 
     # ── server: ksmbd-tools must be on disk ───────────────────────
