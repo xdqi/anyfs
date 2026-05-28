@@ -19,6 +19,7 @@
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
+#include "qobject/qdict.h"
 #include "system/block-backend-global-state.h"
 #include "system/block-backend-io.h"
 #include "system/block-backend.h"
@@ -44,6 +45,7 @@
 #ifdef _WIN32
 #undef __MSYS__
 #endif
+#include "anyfs.h"
 #include "qemu_blk_backend.h"
 
 struct qemu_blk_ctx {
@@ -123,8 +125,6 @@ int qemu_blk_open(const char* image_path, int readonly,
 	if (!qemu_initialized) {
 		fprintf(stderr, "[qemu_blk] bdrv_init…\n");
 		bdrv_init();
-		fprintf(stderr,
-			"[qemu_blk] bdrv_init done; qemu_init_main_loop…\n");
 		if (qemu_init_main_loop(&errp) < 0) {
 			fprintf(stderr, "qemu_init_main_loop failed: %s\n",
 				error_get_pretty(errp));
@@ -136,14 +136,28 @@ int qemu_blk_open(const char* image_path, int readonly,
 	}
 
 	/* readonly=1 maps to plain BDRV_O_RDONLY (=0), not SNAPSHOT, so QEMU
-	 * doesn't try to create a writable overlay in /var/tmp — which doesn't
+	 * doesn't try to create a writable overlay in /var/tmp - which doesn't
 	 * exist under emscripten MEMFS, and which silently discards writes
 	 * anyway. Callers that need write-through must pass readonly=0. */
 	int flags = readonly ? 0 : BDRV_O_RDWR;
-	fprintf(stderr, "[qemu_blk] blk_new_open flags=0x%x…\n", flags);
-	BlockBackend* blk = blk_new_open(image_path, NULL, NULL, flags, &errp);
+
+	/* QEMU's curl block driver defaults to CURLOPT_TIMEOUT=5s. Bump it for
+	 * URL images (local files use the raw driver, which ignores "timeout").
+	 */
+	QDict* options = NULL;
+	const int is_url = image_path && strstr(image_path, "://") != NULL;
+	if (is_url) {
+		options = qdict_new();
+		qdict_put_int(options, "file.timeout", 20);
+	}
+
+	fprintf(stderr, "[qemu_blk] blk_new_open flags=0x%x timeout=%d\n",
+		flags, is_url ? 20 : 0);
+	BlockBackend* blk =
+	    blk_new_open(image_path, NULL, options, flags, &errp);
 	fprintf(stderr, "[qemu_blk] blk_new_open returned %p\n", (void*)blk);
 	if (!blk) {
+		anyfs_set_last_error("%s", error_get_pretty(errp));
 		fprintf(stderr, "blk_new_open(%s) failed: %s\n", image_path,
 			error_get_pretty(errp));
 		error_free(errp);
@@ -153,6 +167,7 @@ int qemu_blk_open(const char* image_path, int readonly,
 	struct qemu_blk_ctx* ctx = calloc(1, sizeof(*ctx));
 	ctx->blk = blk;
 	ctx->capacity = blk_getlength(blk);
+	fprintf(stderr, "[qemu_blk] capacity=%lld\n", (long long)ctx->capacity);
 	if (ctx->capacity < 0) {
 		fprintf(stderr, "blk_getlength failed\n");
 		blk_unref(blk);
