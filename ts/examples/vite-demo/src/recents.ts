@@ -257,6 +257,12 @@ export async function tryReopen(r: Recent): Promise<ReopenResult> {
         return { kind: 'ok', source: { kind: 'url', url: r.url, name: r.name } };
     }
     if (r.kind === 'path') {
+        // Old code stored URLs as kind:'path' with the raw URL in .path.
+        // Re-detect those so they route through the native HTTP proxy
+        // instead of hitting QEMU's curl driver directly (which lacks TLS).
+        if (/^[a-z][a-z0-9+.-]*:\/\//i.test(r.path)) {
+            return { kind: 'ok', source: { kind: 'url', url: r.path, name: r.name } };
+        }
         // Path recents are native-only — the renderer will reject them in
         // wasm mode upstream. Round-trip the name so the breadcrumb stays
         // stable across reopens.
