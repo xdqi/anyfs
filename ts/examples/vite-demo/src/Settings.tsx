@@ -7,12 +7,17 @@ export interface Settings {
     followSymlinks: boolean;
     cacheChunks: boolean;
     theme: Theme;
+    /** When true, force the WASM worker path even when the Electron native
+     *  addon is available. Useful for comparing backends or working around
+     *  native-specific issues. Has no effect in a pure browser environment. */
+    disableNative: boolean;
 }
 
 const DEFAULT_SETTINGS: Settings = {
     followSymlinks: true,
     cacheChunks: true,
     theme: 'system',
+    disableNative: false,
 };
 
 const STORAGE_KEY = 'anyfs.settings.v1';
@@ -97,9 +102,12 @@ export function useSettings(): Ctx {
 interface SettingsDialogProps {
     open: boolean;
     onClose: () => void;
+    /** Whether the native addon bridge is available. When true, a toggle
+     *  appears so the user can force the WASM worker path instead. */
+    nativeAvailable?: boolean;
 }
 
-export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
+export function SettingsDialog({ open, onClose, nativeAvailable }: SettingsDialogProps) {
     const { settings, update } = useSettings();
 
     useEffect(() => {
@@ -148,6 +156,14 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
                         checked={settings.cacheChunks}
                         onChange={(v) => update('cacheChunks', v)}
                     />
+                    {nativeAvailable && (
+                        <Toggle
+                            label="Disable native module"
+                            description="Force the WASM worker path even though the native Electron addon is loaded. Changing this requires a page reload to take effect."
+                            checked={settings.disableNative}
+                            onChange={(v) => update('disableNative', v)}
+                        />
+                    )}
                 </div>
             </div>
         </div>

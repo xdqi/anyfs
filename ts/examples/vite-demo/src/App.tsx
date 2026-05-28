@@ -109,6 +109,19 @@ export function App() {
     const onHomeClick = source ? askCloseDisk : undefined;
     const onImageClick = source && selectedPart !== null ? askBackToParts : undefined;
 
+    // Read disableNative from localStorage so we can feed it as forceMode to
+    // AnyfsProvider before SettingsProvider mounts (useSettings isn't available
+    // until SettingsProvider is in the tree).
+    const settingsDisableNative = (() => {
+        try {
+            if (typeof localStorage !== 'undefined') {
+                const raw = localStorage.getItem('anyfs.settings.v1');
+                if (raw) return !!(JSON.parse(raw) as Record<string, unknown>).disableNative;
+            }
+        } catch {}
+        return false;
+    })();
+
     return (
         <SettingsProvider>
             <AnyfsProvider
@@ -119,6 +132,7 @@ export function App() {
                 autoMountFstype="auto"
                 mountOpts={{ loglevel: 7 }}
                 prewarm
+                {...(settingsDisableNative ? { forceMode: 'wasm' as const } : {})}
             >
                 <div className="h-screen flex flex-col">
                     <TopBar
@@ -143,7 +157,11 @@ export function App() {
                         )}
                     </main>
                     <KernelStatusBar />
-                    <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+                    <SettingsDialog
+                        open={settingsOpen}
+                        onClose={() => setSettingsOpen(false)}
+                        nativeAvailable={!!getAnyfsNative()}
+                    />
                     <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
                     {confirm && (
                         <ConfirmDialog
@@ -471,19 +489,15 @@ function AboutDialog({ open, onClose }: { open: boolean; onClose: () => void }) 
 // (before handing off to the worker) so we can show a real dialog
 // instead of an attach-time crash buried in the status bar.
 async function probeUrlAhead(url: string): Promise<number> {
-    // If the host (Electron preload, etc.) advertised a URL proxy via
-    // globalThis.__anyfs.urlProxyPrefix, route through it so the request
-    // bypasses the renderer's same-origin policy. Plain browsers see the
-    // URL unchanged.
+    // Route through applyUrlProxy: when an Electron preload has set up the
+    // anyfs-url:// proxy prefix, the fetch goes through the privileged scheme
+    // handler (net.fetch in main), bypassing renderer CORS. In plain browsers
+    // with no proxy prefix, applyUrlProxy returns the URL unchanged.
     const fetchUrl = applyUrlProxy(url);
     let resp: Response;
     try {
         resp = await fetch(fetchUrl, { method: 'HEAD', cache: 'no-store' });
     } catch (e) {
-        // In plain browsers, fetch() collapses CORS rejection and DNS failure
-        // into the same opaque TypeError. Under a host with a URL proxy
-        // (Electron etc.) main does the fetch, so CORS is off the table —
-        // only network/DNS/upstream errors reach here.
         const msg = getUrlProxyPrefix()
             ? `Couldn't reach the URL — DNS, TLS, or the host is down. ` +
               `See the console for the real error.`
@@ -508,8 +522,6 @@ async function probeUrlAhead(url: string): Promise<number> {
     }
     const ar = (resp.headers.get('Accept-Ranges') ?? '').toLowerCase();
     if (!ar.includes('bytes')) {
-        // Mirror URLFS's fallback: some servers omit the header but still
-        // honour Range. Probe with a 1-byte ranged GET and check for 206.
         let probe: Response;
         try {
             probe = await fetch(fetchUrl, {
@@ -881,7 +893,8 @@ function FilePicker({ onSource }: { onSource: (s: DiskSource) => void }) {
     // path for absolute host paths handed straight to the LKL kernel — that
     // lets us mount things the browser sandbox can't see (system drives,
     // big disk images on disk) and unlocks the QEMU curl URL path.
-    const nativeMode = !!getAnyfsNative();
+    const { settings } = useSettings();
+    const nativeMode = !!getAnyfsNative() && !settings.disableNative;
     const electronDialog = nativeMode ? getElectronDialog() : null;
     const electronDrives = nativeMode ? getElectronDrives() : null;
 
@@ -1726,7 +1739,7 @@ function DiskView({
             return;
         }
         let cancelled = false;
-        fetch(source.url, { method: 'HEAD', cache: 'no-store' })
+        fetch(applyUrlProxy(source.url), { method: 'HEAD', cache: 'no-store' })
             .then((r) => {
                 const cl = r.headers.get('Content-Length');
                 const n = cl ? Number.parseInt(cl, 10) : NaN;
