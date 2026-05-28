@@ -14,6 +14,7 @@ import { homedir } from 'node:os';
 import { join, extname, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Drive } from 'drivelist';
+import { Worker } from 'node:worker_threads';
 import { loadAnyfsNativeAddon, loadDrivelistModule } from './native-loader';
 
 // Opt-in dev mode (set by `pnpm dev`). Packaged builds are always prod.
@@ -381,6 +382,13 @@ type AnyfsNativeModule = {
 let nativeMod: AnyfsNativeModule | null = null;
 let nativeInitDone = false;
 
+// Per-disk HTTP proxy workers. Each disk gets its own Worker thread running
+// an HTTP server on a random port. The addon calls block the calling thread's
+// event loop, so the proxy server MUST live in a separate thread.
+// This also anticipates the privileged-process model: later that Worker can
+// be replaced by a child process exposing \\.\PhysicalDriveN.
+const diskProxies = new Map<string, { worker: Worker; port: number }>();
+
 function loadNativeAddon(): AnyfsNativeModule | null {
     if (nativeMod) return nativeMod;
     try {
@@ -418,6 +426,54 @@ function installAnyfsNativeIpc() {
     ipcMain.handle('anyfs-native:diskOpen', (_event, path: string, flags: number) => {
         const m = loadNativeAddon()!;
         return m.diskOpen(path, flags >>> 0);
+    });
+
+    // URL proxy: each disk gets its own Worker thread running an HTTP server
+    // on a random port. The addon calls block the main thread's event loop
+    // (synchronous C → QEMU → libcurl), so the proxy MUST be on a separate
+    // thread with its own libuv loop.
+    ipcMain.handle('anyfs-native:registerUrl', async (_event, url: string) => {
+        const workerPath = join(__dirname, 'http-proxy-worker.cjs');
+        console.log(`[anyfs-native] spawning proxy worker for ${url}`);
+        const worker = new Worker(workerPath, {
+            workerData: { upstreamUrl: url },
+        });
+        worker.on('exit', (code) => {
+            console.log(`[anyfs-native] proxy worker exited with code=${code}`);
+        });
+        worker.on('error', (err) => {
+            console.error(`[anyfs-native] proxy worker error: ${err.message}`);
+        });
+        const result = await new Promise<{ port: number } | { error: string }>(
+            (resolve, reject) => {
+                const timer = setTimeout(() => {
+                    reject(new Error('proxy worker startup timed out after 20s'));
+                }, 20000);
+                worker.once('message', (msg) => {
+                    clearTimeout(timer);
+                    resolve(msg);
+                });
+                worker.once('error', (err) => {
+                    clearTimeout(timer);
+                    reject(err);
+                });
+            },
+        );
+        if ('error' in result) {
+            throw new Error(`proxy worker failed: ${result.error}`);
+        }
+        const { port } = result;
+        console.log(`[anyfs-native] proxy worker listening on 127.0.0.1:${port}`);
+        const id = `proxy-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        diskProxies.set(id, { worker, port });
+        return { proxyUrl: `http://127.0.0.1:${port}/`, id };
+    });
+    ipcMain.handle('anyfs-native:unregisterUrl', async (_event, id: string) => {
+        const entry = diskProxies.get(id);
+        if (entry) {
+            entry.worker.postMessage('stop');
+            diskProxies.delete(id);
+        }
     });
     ipcMain.handle('anyfs-native:diskClose', (_event, h: number) =>
         loadNativeAddon()!.diskClose(h),

@@ -65,6 +65,13 @@ const anyfsNative = {
         ipcRenderer.invoke('anyfs-native:init', memMb, loglevel) as Promise<number>,
     diskOpen: (path: string, flags: number) =>
         ipcRenderer.invoke('anyfs-native:diskOpen', path, flags) as Promise<number>,
+    registerUrl: (url: string) =>
+        ipcRenderer.invoke('anyfs-native:registerUrl', url) as Promise<{
+            proxyUrl: string;
+            id: string;
+        }>,
+    unregisterUrl: (id: string) =>
+        ipcRenderer.invoke('anyfs-native:unregisterUrl', id) as Promise<void>,
     diskClose: (h: number) => ipcRenderer.invoke('anyfs-native:diskClose', h) as Promise<number>,
     diskListJson: (h: number) =>
         ipcRenderer.invoke('anyfs-native:diskListJson', h) as Promise<string>,

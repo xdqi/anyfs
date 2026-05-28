@@ -36,4 +36,9 @@ const common = {
 await Promise.all([
     build({ ...common, entryPoints: ['src/main.ts'], outfile: 'dist/main.cjs' }),
     build({ ...common, entryPoints: ['src/preload.ts'], outfile: 'dist/preload.cjs' }),
+    build({
+        ...common,
+        entryPoints: ['src/http-proxy-worker.ts'],
+        outfile: 'dist/http-proxy-worker.cjs',
+    }),
 ]);

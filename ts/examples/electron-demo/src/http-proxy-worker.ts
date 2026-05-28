@@ -1,0 +1,146 @@
+/*
+ * Worker-thread HTTP proxy for remote disk images.
+ *
+ * Each Worker runs a tiny HTTP server on 127.0.0.1:<random> that proxies
+ * Range requests to a single upstream URL via Node's fetch() (which
+ * follows redirects and handles TLS natively).
+ *
+ * QEMU's curl driver connects via plain HTTP to this server. Because the
+ * addon calls are synchronous and block the calling thread's event loop,
+ * the server MUST live in a separate thread with its own libuv loop.
+ *
+ * parentPort protocol:
+ *   worker receives { upstreamUrl } via workerData
+ *   worker sends    { port }          once listening
+ *   worker receives 'stop'            to shut down
+ */
+
+import { parentPort, workerData } from 'node:worker_threads';
+import { createServer } from 'node:http';
+import { Readable } from 'node:stream';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+
+const { upstreamUrl } = workerData as { upstreamUrl: string };
+
+let contentLength = 0;
+let acceptRanges = true;
+
+function log(msg: string) {
+    const ts = new Date().toISOString();
+    console.error(`[http-proxy-worker ${ts}] ${msg}`);
+}
+
+async function main() {
+    log(`starting for ${upstreamUrl}`);
+
+    // ── HEAD probe (fetch follows redirects by default) ──────────────────
+    let headResp: Response;
+    try {
+        headResp = await fetch(upstreamUrl, {
+            method: 'HEAD',
+            redirect: 'follow',
+            signal: AbortSignal.timeout(15000),
+        });
+    } catch (err) {
+        log(`HEAD probe failed: ${(err as Error).message}`);
+        parentPort!.postMessage({ error: `HEAD probe failed: ${(err as Error).message}` });
+        process.exit(1);
+        return;
+    }
+    contentLength = parseInt(headResp.headers.get('content-length') ?? '0', 10);
+    acceptRanges = headResp.headers.get('accept-ranges') === 'bytes';
+    log(`HEAD probe OK: content-length=${contentLength}, accept-ranges=${acceptRanges}`);
+
+    // ── HTTP server ──────────────────────────────────────────────────────
+    const server = createServer((req, res) => {
+        log(`${req.method} ${req.url} headers=${JSON.stringify(req.headers)}`);
+        if (req.method === 'HEAD') {
+            res.writeHead(200, {
+                'Content-Length': String(contentLength),
+                'Accept-Ranges': acceptRanges ? 'bytes' : 'none',
+                Connection: 'keep-alive',
+            });
+            res.end();
+            return;
+        }
+        if (req.method === 'GET') {
+            proxyGet(req, res);
+            return;
+        }
+        res.writeHead(405, { 'Content-Type': 'text/plain' });
+        res.end('method not allowed');
+    });
+
+    server.on('error', (err) => {
+        log(`server error: ${err.message}`);
+    });
+
+    server.listen(0, '127.0.0.1', () => {
+        const port = (server.address() as { port: number }).port;
+        log(`listening on 127.0.0.1:${port}`);
+        parentPort!.postMessage({ port });
+    });
+
+    parentPort!.on('message', (msg) => {
+        if (msg === 'stop') {
+            log('received stop, closing server');
+            server.close();
+        }
+    });
+}
+
+async function proxyGet(req: IncomingMessage, res: ServerResponse) {
+    const range = req.headers['range'];
+    const headers: Record<string, string> = {};
+    if (range) headers['Range'] = range;
+
+    let upResp: Response;
+    try {
+        upResp = await fetch(upstreamUrl, {
+            method: 'GET',
+            headers,
+            redirect: 'follow',
+            signal: AbortSignal.timeout(60000),
+        });
+    } catch (err) {
+        log(`upstream fetch error: ${(err as Error).message}`);
+        if (!res.headersSent) {
+            res.writeHead(502, { 'Content-Type': 'text/plain' });
+            res.end(`upstream fetch error: ${(err as Error).message}`);
+        }
+        return;
+    }
+
+    log(
+        `upstream responded: status=${upResp.status}, content-length=${upResp.headers.get('content-length')}`,
+    );
+
+    const respHeaders: Record<string, string> = {};
+    upResp.headers.forEach((v, k) => {
+        respHeaders[k] = v;
+    });
+    res.writeHead(upResp.status, respHeaders);
+
+    if (upResp.body) {
+        const nodeStream = Readable.fromWeb(upResp.body as any);
+        let bytesSent = 0;
+        nodeStream.on('data', (chunk: Buffer) => {
+            bytesSent += chunk.length;
+        });
+        nodeStream.on('end', () => {
+            log(`stream complete: ${bytesSent} bytes sent to client`);
+        });
+        nodeStream.on('error', (err: Error) => {
+            log(`stream error: ${err.message}`);
+        });
+        res.on('close', () => {
+            log(`client closed after ${bytesSent} bytes`);
+            nodeStream.destroy();
+        });
+        nodeStream.pipe(res);
+    } else {
+        res.end();
+    }
+}
+
+main();
