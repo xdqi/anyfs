@@ -82,6 +82,12 @@ int anyfs_remount_ro(const char* name);
  * Returns partition count (0 = no partition table, use whole disk). */
 int anyfs_disk_partitions(int disk_id);
 
+/* Error reporting. Backends call anyfs_set_last_error() before returning
+ * failure; callers can retrieve the descriptive message. */
+void anyfs_set_last_error(const char* fmt, ...)
+    __attribute__((format(printf, 1, 2)));
+const char* anyfs_get_last_error(void);
+
 #ifdef __cplusplus
 }
 #endif

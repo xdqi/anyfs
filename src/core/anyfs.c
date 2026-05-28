@@ -12,6 +12,7 @@
 #include "qemu_blk_backend.h"
 #endif
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +27,22 @@ void anyfs_register_backend(const struct anyfs_backend_ops* ops)
 {
 	if (anyfs_backend_count < ANYFS_MAX_BACKENDS)
 		anyfs_backends[anyfs_backend_count++] = ops;
+}
+
+/* Thread-local last-error buffer, so backends can report details. */
+static __thread char g_last_error[512];
+
+void anyfs_set_last_error(const char* fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(g_last_error, sizeof(g_last_error), fmt, ap);
+	va_end(ap);
+}
+
+const char* anyfs_get_last_error(void)
+{
+	return g_last_error[0] ? g_last_error : NULL;
 }
 
 const struct anyfs_backend_ops* anyfs_find_backend(const char* name)
