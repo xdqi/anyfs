@@ -279,6 +279,30 @@ const ops: Record<string, (a: any) => unknown> = {
         }
     },
 
+    // Read a small text file from the in-kernel namespace (e.g.
+    // /proc/filesystems). One wasm call instead of open+pwrite×N+close.
+    async readKernelFile({ path }: { path: string }) {
+        if (!M) throw new Error('not mounted');
+        let cap = 4096;
+        for (let i = 0; i < 5; i++) {
+            const buf = M._malloc(cap);
+            try {
+                const n = await callP(
+                    'anyfs_ts_read_kernel_file_p',
+                    ['string', 'number', 'number'],
+                    [path, buf, cap],
+                );
+                if (n >= 0) return M.UTF8ToString(buf, n);
+                const need = -n;
+                if (need <= cap) throw new Error(`readKernelFile rc=${n}`);
+                cap = Math.max(need + 256, cap * 2);
+            } finally {
+                M._free(buf);
+            }
+        }
+        throw new Error('readKernelFile: buffer too large');
+    },
+
     open({ path }: { path: string }) {
         return callP('anyfs_ts_open_p', ['string', 'number'], [path, 0]);
     },

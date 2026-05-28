@@ -52,6 +52,8 @@ int anyfs_ts_stat_json(const char* path, char* buf, size_t cap);
 int anyfs_ts_realpath(const char* path, char* buf, size_t cap);
 int anyfs_ts_readlink(const char* path, char* buf, size_t cap);
 
+int anyfs_ts_read_kernel_file(const char* path, char* buf, size_t cap);
+
 int anyfs_ts_open(const char* path, int flags);
 int64_t anyfs_ts_pread(int fd, void* buf, uint32_t n, int64_t off);
 int anyfs_ts_close(int fd);
@@ -232,6 +234,17 @@ static Napi::Value Readlink_(const Napi::CallbackInfo& info)
 	return Napi::String::New(info.Env(), buf.data(), (size_t)n);
 }
 
+// ── kernel file ────────────────────────────────────────────────────────────
+
+static Napi::Value ReadKernelFile(const Napi::CallbackInfo& info)
+{
+	std::string p = info[0].As<Napi::String>();
+	return CallOverflowing(
+	    info.Env(), "readKernelFile", [&p](char* b, size_t c) {
+		    return anyfs_ts_read_kernel_file(p.c_str(), b, c);
+	    });
+}
+
 // ── file ops ─────────────────────────────────────────────────────────────
 
 static Napi::Value FileOpen(const Napi::CallbackInfo& info)
@@ -276,6 +289,7 @@ static Napi::Object InitModule(Napi::Env env, Napi::Object exports)
 	exports.Set("diskEnter", Napi::Function::New(env, DiskEnter));
 	exports.Set("mountWhole", Napi::Function::New(env, MountWhole));
 
+	exports.Set("readKernelFile", Napi::Function::New(env, ReadKernelFile));
 	exports.Set("readdirJson", Napi::Function::New(env, ReaddirJson));
 	exports.Set("lstatJson", Napi::Function::New(env, LstatJson));
 	exports.Set("statJson", Napi::Function::New(env, StatJson));

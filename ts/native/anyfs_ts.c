@@ -344,9 +344,8 @@ int anyfs_ts_mount_whole(int h, const char* fstype, uint32_t flags,
 	 * still fall through to anyfs_mount_blkdev(NULL) which triggers
 	 * the kernel-side brute-force loop in mount_via_devpath. */
 	char probed[32] = {0};
-	const char* hint = (fstype && *fstype && strcmp(fstype, "auto") != 0)
-				   ? fstype
-				   : NULL;
+	const char* hint =
+	    (fstype && *fstype && strcmp(fstype, "auto") != 0) ? fstype : NULL;
 	if (!hint) {
 		char lbl[64] = {0}, uid[40] = {0};
 		(void)anyfs_kindprobe_meta(devpath, probed, lbl, uid);
@@ -495,6 +494,22 @@ int anyfs_ts_readlink(const char* path, char* buf, size_t cap)
 	return (int)n;
 }
 
+/* Read a small text file from the LKL kernel namespace (e.g.
+ * /proc/filesystems, /proc/mounts). Returns bytes written (no NUL)
+ * or negative errno. */
+int anyfs_ts_read_kernel_file(const char* path, char* buf, size_t cap)
+{
+	long fd = lkl_sys_open(path, LKL_O_RDONLY, 0);
+	if (fd < 0)
+		return (int)fd;
+	long n = lkl_sys_read(fd, buf, cap - 1);
+	lkl_sys_close(fd);
+	if (n < 0)
+		return (int)n;
+	buf[n] = '\0';
+	return (int)n;
+}
+
 int anyfs_ts_open(const char* path, int flags)
 {
 	long fd = lkl_sys_open(path, flags, 0);
@@ -573,6 +588,12 @@ void anyfs_ts_realpath_p(const char* path, char* buf, size_t cap, int32_t* out)
 void anyfs_ts_readlink_p(const char* path, char* buf, size_t cap, int32_t* out)
 {
 	*out = anyfs_ts_readlink(path, buf, cap);
+}
+
+void anyfs_ts_read_kernel_file_p(const char* path, char* buf, size_t cap,
+				 int32_t* out)
+{
+	*out = anyfs_ts_read_kernel_file(path, buf, cap);
 }
 
 void anyfs_ts_open_p(const char* path, int flags, int32_t* out)

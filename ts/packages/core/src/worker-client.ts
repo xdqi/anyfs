@@ -222,42 +222,10 @@ export class WorkerAnyfsDisk {
 
     /**
      * Read a small text file from the in-kernel namespace (e.g. `/proc/filesystems`,
-     * `/proc/modules`). Does not require an attached disk — only that the kernel
-     * has been booted via `prewarm()`. Reads sequentially until EOF or maxBytes,
-     * decodes as UTF-8.
-     *
-     * For procfs files where `stat()` returns size 0, sequential `pread` still
-     * works because seq_file's read handler honors the offset.
-     */
-    async readKernelFile(path: string, maxBytes = 64 * 1024): Promise<string> {
-        const fd = await this.open(path);
-        try {
-            const chunks: Uint8Array[] = [];
-            let offset = 0;
-            // Bound the loop so a misbehaving procfs file can't spin forever.
-            for (let i = 0; i < 64 && offset < maxBytes; i++) {
-                const want = Math.min(8192, maxBytes - offset);
-                const chunk = await this.read(fd, offset, want);
-                if (chunk.length === 0) break;
-                chunks.push(chunk);
-                offset += chunk.length;
-            }
-            let total = 0;
-            for (const c of chunks) total += c.length;
-            const buf = new Uint8Array(total);
-            let p = 0;
-            for (const c of chunks) {
-                buf.set(c, p);
-                p += c.length;
-            }
-            return new TextDecoder('utf-8').decode(buf);
-        } finally {
-            try {
-                await this.close(fd);
-            } catch {
-                /* best effort */
-            }
-        }
+     * `/proc/mounts`). Does not require an attached disk — only that the kernel
+     * has been booted. Delegates to a single native call (open+read+close in C). */
+    async readKernelFile(path: string, _maxBytes?: number): Promise<string> {
+        return this.call<string>('readKernelFile', { path });
     }
 
     /**
