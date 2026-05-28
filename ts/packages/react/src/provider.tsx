@@ -255,8 +255,7 @@ export function AnyfsProvider({
                 await disk.attach(source.file);
             } else if (source.kind === 'url') {
                 if (disk instanceof NativeAnyfsDisk) {
-                    // Native QEMU curl driver handles http(s)/ftp URLs natively.
-                    await disk.attachPath(source.url);
+                    await disk.attachUrl(source.url, source.name);
                 } else {
                     await disk.attachUrl(source.url, source.name);
                 }

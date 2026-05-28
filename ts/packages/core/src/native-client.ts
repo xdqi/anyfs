@@ -42,6 +42,8 @@ export interface AnyfsNativeBridge {
     statJson(path: string): Promise<string>;
     realpath(path: string): Promise<string>;
     readlink(path: string): Promise<string>;
+    registerUrl(url: string): Promise<{ proxyUrl: string; id: string }>;
+    unregisterUrl(id: string): Promise<void>;
     fileOpen(path: string, flags: number): Promise<number>;
     pread(fd: number, n: number, off: number): Promise<{ rc: number; data: Uint8Array }>;
     fileClose(fd: number): Promise<number>;
@@ -62,6 +64,7 @@ export class NativeAnyfsDisk {
     private readonly bridge: AnyfsNativeBridge;
     private handle: DiskHandle = -1;
     private disposed = false;
+    private proxyId: string | null = null;
     private readonly fds = new Set<LklFd>();
     // Serialize ops so a slow readdir doesn't interleave with a pread on
     // the same kernel — matches the worker's `opChain` discipline. The
@@ -112,16 +115,22 @@ export class NativeAnyfsDisk {
         );
     }
 
-    /** Compatibility shim. The native addon could in principle implement
-     *  this via curl/net.fetch on the main side, but no caller wires it up
-     *  today; reject so the worker path handles URLs. */
-    attachUrl(_url: string, _name?: string): Promise<void> {
-        return Promise.reject(
-            new Error(
-                'NativeAnyfsDisk: attachUrl() not supported in native mode; ' +
-                    'fall back to the wasm worker.',
-            ),
-        );
+    /** Open a remote disk image URL. The main process starts an HTTP proxy
+     *  server that translates QEMU Range requests into upstream HTTPS
+     *  fetches — no TLS/OpenSSL in QEMU, no aio-win32 event loop issues. */
+    async attachUrl(url: string, _name?: string): Promise<void> {
+        if (this.handle >= 0) throw new Error('attachUrl: already attached');
+        const { proxyUrl, id } = await this.bridge.registerUrl(url);
+        this.proxyId = id;
+        try {
+            const h = await this.chain(() => this.bridge.diskOpen(proxyUrl, 1));
+            if (h < 0) throw new Error(`diskOpen(${proxyUrl}) failed: rc=${h}`);
+            this.handle = h;
+        } catch (err) {
+            await this.bridge.unregisterUrl(id);
+            this.proxyId = null;
+            throw err;
+        }
     }
 
     /** No-op — native ops don't emit progress. Returns the no-op
@@ -315,6 +324,14 @@ export class NativeAnyfsDisk {
                 /* best effort — the addon's kernel stays up either way */
             }
             this.handle = -1;
+        }
+        if (this.proxyId) {
+            try {
+                await this.bridge.unregisterUrl(this.proxyId);
+            } catch {
+                /* best effort */
+            }
+            this.proxyId = null;
         }
         // We deliberately do NOT call kernelHalt — the addon's kernel is
         // process-global and shared with any other mounts the renderer may

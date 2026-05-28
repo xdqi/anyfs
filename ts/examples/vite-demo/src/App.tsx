@@ -982,20 +982,18 @@ function FilePicker({ onSource }: { onSource: (s: DiskSource) => void }) {
         }
     };
 
-    // URL dialog submit. In native mode the QEMU curl driver opens URLs
-    // directly via attachPath; in wasm mode we route through URLFS attachUrl
-    // (and have already probed in the dialog).
+    // URL dialog submit. In native mode the HTTP proxy server translates
+    // QEMU Range requests into upstream HTTPS fetches; the source stays
+    // `kind:'url'` so the provider routes through attachUrl.
     const onSubmitUrl = async (trimmed: string) => {
         setOpenDialog(null);
         if (nativeMode) {
-            // Native curl driver handles the URL; persist as a 'path' recent
-            // so reopen routes back through attachPath instead of URLFS XHR.
             const name = sourceName({ kind: 'url', url: trimmed });
             try {
-                await addRecentPath(trimmed, name);
+                await addRecentUrl(trimmed, name);
             } catch {}
             void refreshRecents();
-            onSource({ kind: 'path', path: trimmed, name });
+            onSource({ kind: 'url', url: trimmed, name });
             return;
         }
         try {
@@ -1031,15 +1029,8 @@ function FilePicker({ onSource }: { onSource: (s: DiskSource) => void }) {
                 let src = res.source;
                 if (src.kind === 'url') {
                     if (nativeMode) {
-                        // Native QEMU curl driver opens http(s)/ftp/sftp via
-                        // attachPath — convert before dispatch so the worker
-                        // doesn't try URLFS + sync XHR (which can't see
-                        // cross-origin servers).
-                        src = {
-                            kind: 'path',
-                            path: src.url,
-                            ...(src.name !== undefined ? { name: src.name } : {}),
-                        };
+                        // Native HTTP proxy server handles the URL — keep as
+                        // kind:'url' so the provider routes to attachUrl.
                     } else {
                         // Wasm/URLFS path: re-probe so CORS/404 surfaces here
                         // rather than as a worker crash.
