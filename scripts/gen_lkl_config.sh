@@ -459,55 +459,27 @@ EOF
 
     # ── kernel.config overlay ────────────────────────────────────────────
     # tools/lkl/Makefile rebuilds .config on demand via:
-    #     make defconfig          (wipes .config to arch/lkl/configs/defconfig)
+    #     make defconfig          (wipes .config)
     #     cat kernel.config >> .config
     #     make olddefconfig
-    # Any settings we applied to .config above survive only while that rule
-    # doesn't fire. To make our overrides robust to `make clean` (and to
-    # avoid editing anything under $LINUX_DIR), seed kernel.config with the
-    # critical feature flags that defconfig disables. olddefconfig then
-    # re-derives the same .config we built here.
-    cat > "$LKL_OUT/kernel.config" <<'EOF'
-# Anyfs-reader overlay — re-applied on every .config rebuild.
-# Must match the corresponding cfg lines in apply_common_config so a clean
-# rebuild produces the same .config we hand-rolled.
-CONFIG_FILE_LOCKING=y
-CONFIG_FANOTIFY=y
-CONFIG_NFSD=y
-CONFIG_NFSD_V4=y
-CONFIG_SMB_SERVER=y
-# CONFIG_SMB_SERVER_CHECK_CAP_NET_ADMIN is not set
-# Device Mapper / LUKS — needed by anyfs container recursion (v2).
-CONFIG_MD=y
-CONFIG_BLK_DEV_DM=y
-CONFIG_DM_CRYPT=y
-# Crypto primitives consumed by dm-crypt for LUKS.
-CONFIG_CRYPTO=y
-CONFIG_CRYPTO_AES=y
-CONFIG_CRYPTO_XTS=y
-CONFIG_CRYPTO_SHA1=y
-CONFIG_CRYPTO_SHA256=y
-CONFIG_CRYPTO_SHA512=y
-CONFIG_CRYPTO_ESSIV=y
-CONFIG_CRYPTO_HMAC=y
-CONFIG_CRYPTO_CBC=y
-CONFIG_CRYPTO_ECB=y
-# Optical / archive filesystems — enabled in apply_common_config but
-# defconfig turns them off, so they must be repeated here.
-CONFIG_ISO9660_FS=y
-CONFIG_JOLIET=y
-CONFIG_ZISOFS=y
-CONFIG_UDF_FS=y
-# OOT filesystems staged by scripts/oot_fs.sh — NTFS3 replaced by NTFS PLUS.
-# CONFIG_NTFS3_FS is not set
-# CONFIG_NTFS3_LZX_XPRESS is not set
-# CONFIG_NTFS3_FS_POSIX_ACL is not set
-CONFIG_NTFSPLUS_FS=y
-CONFIG_NTFSPLUS_FS_POSIX_ACL=y
-CONFIG_APFS_FS=y
-CONFIG_ZFS=y
-EOF
-
+    # Instead of hand-maintaining a list of overrides (which inevitably
+    # drifts from apply_common_config), auto-generate kernel.config as
+    # the diff between our customized .config and a clean defconfig.
+    # This guarantees kernel.config is always complete and in sync.
+    echo "  Generating kernel.config (diff vs defconfig)..."
+    cp "$DOTCONFIG" "$OUT/.config.our"
+    make -C "$LINUX_DIR" ARCH=lkl O="$OUT" $CROSS_KCONFIG defconfig 2>/dev/null
+    # Capture lines present in our config but absent from the fresh
+    # defconfig: newly-enabled features, disabled features that defconfig
+    # left unset, and string/int overrides.  Sorted comparison so
+    # olddefconfig line reordering doesn't create spurious diffs.
+    comm -13 \
+      <(sort "$DOTCONFIG") \
+      <(sort "$OUT/.config.our") \
+      > "$LKL_OUT/kernel.config"
+    # Restore our full config for the actual build.
+    mv "$OUT/.config.our" "$DOTCONFIG"
+    echo "  kernel.config: $(wc -l < "$LKL_OUT/kernel.config") lines"
     # Bump Makefile.conf's mtime so the autoconf rule (which would wipe
     # kernel.config back to empty) does not re-fire on subsequent builds.
     touch "$LKL_OUT/Makefile.conf"
