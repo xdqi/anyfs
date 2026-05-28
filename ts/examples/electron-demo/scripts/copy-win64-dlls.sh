@@ -35,12 +35,18 @@ dlls=(
     # the OpenSSL stack; idn2/psl for international hostnames; brotli for
     # Content-Encoding; libssh2 for sftp:// (curl pulls it unconditionally).
     "$MINGW/bin/libcurl-4.dll"
+    "$MINGW/bin/libssl-3-x64.dll"
+    "$MINGW/bin/libcrypto-3-x64.dll"
     "$MINGW/bin/libbrotlidec.dll"
     "$MINGW/bin/libbrotlicommon.dll"
     "$MINGW/bin/libidn2-0.dll"
     "$MINGW/bin/libpsl-5.dll"
     "$MINGW/bin/libssh2-1.dll"
     "$MINGW/bin/libunistring-5.dll"
+    "$MINGW/bin/libnghttp2-14.dll"
+    "$MINGW/bin/libnghttp3-9.dll"
+    "$MINGW/bin/libngtcp2-16.dll"
+    "$MINGW/bin/libngtcp2_crypto_ossl-0.dll"
 )
 
 for d in "${dlls[@]}"; do
@@ -49,4 +55,14 @@ done
 
 echo ">>> Copying ${#dlls[@]} runtime DLLs into $DEST"
 cp -v "${dlls[@]}" "$DEST/"
+
+# CA certificate bundle for HTTPS (libcurl OpenSSL backend).
+CACERT="$MINGW/share/pki/ca-trust-source/ca-bundle.trust.crt"
+if [[ -f "$CACERT" ]]; then
+    echo ">>> Copying CA bundle: $CACERT -> $DEST/cacert.pem"
+    cp -v "$CACERT" "$DEST/cacert.pem"
+else
+    echo "WARNING: CA bundle not found at $CACERT" >&2
+fi
+
 echo "OK — DLLs staged next to anyfs-demo.exe"
