@@ -492,6 +492,12 @@ CONFIG_CRYPTO_ESSIV=y
 CONFIG_CRYPTO_HMAC=y
 CONFIG_CRYPTO_CBC=y
 CONFIG_CRYPTO_ECB=y
+# Optical / archive filesystems — enabled in apply_common_config but
+# defconfig turns them off, so they must be repeated here.
+CONFIG_ISO9660_FS=y
+CONFIG_JOLIET=y
+CONFIG_ZISOFS=y
+CONFIG_UDF_FS=y
 # OOT filesystems staged by scripts/oot_fs.sh — NTFS3 replaced by NTFS PLUS.
 # CONFIG_NTFS3_FS is not set
 # CONFIG_NTFS3_LZX_XPRESS is not set
