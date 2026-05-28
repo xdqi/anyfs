@@ -35,6 +35,8 @@ extern "C" {
 int anyfs_ts_init(uint32_t mem_mb, uint32_t loglevel);
 int anyfs_ts_kernel_halt(void);
 
+const char* anyfs_get_last_error(void);
+
 int anyfs_ts_disk_open(const char* image_path, uint32_t flags);
 int anyfs_ts_disk_close(int h);
 int anyfs_ts_disk_list_json(int h, char* buf, size_t cap);
@@ -104,7 +106,18 @@ static Napi::Value DiskOpen(const Napi::CallbackInfo& info)
 {
 	std::string p = info[0].As<Napi::String>();
 	uint32_t fl = info[1].As<Napi::Number>().Uint32Value();
-	return Napi::Number::New(info.Env(), anyfs_ts_disk_open(p.c_str(), fl));
+	int rc = anyfs_ts_disk_open(p.c_str(), fl);
+	if (rc < 0) {
+		const char* err = anyfs_get_last_error();
+		if (err && *err)
+			Napi::Error::New(info.Env(), err)
+			    .ThrowAsJavaScriptException();
+		else
+			Napi::Error::New(info.Env(), "diskOpen failed")
+			    .ThrowAsJavaScriptException();
+		return info.Env().Undefined();
+	}
+	return Napi::Number::New(info.Env(), rc);
 }
 
 static Napi::Value DiskClose(const Napi::CallbackInfo& info)
