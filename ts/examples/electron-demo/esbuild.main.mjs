@@ -35,6 +35,8 @@ const common = {
 
 await Promise.all([
     build({ ...common, entryPoints: ['src/main.ts'], outfile: 'dist/main.cjs' }),
+    // Preload: keep CJS — Electron loads preloads via `require()` from the
+    // renderer process sandbox where the electron module is always available.
     build({ ...common, entryPoints: ['src/preload.ts'], outfile: 'dist/preload.cjs' }),
     build({
         ...common,

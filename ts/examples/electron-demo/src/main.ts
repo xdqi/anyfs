@@ -12,7 +12,6 @@ import { app, BrowserWindow, protocol, net, ipcMain, dialog } from 'electron';
 import { createWriteStream, existsSync, mkdirSync, unlink, type WriteStream } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, extname, normalize, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { Drive } from 'drivelist';
 import { Worker } from 'node:worker_threads';
 import { loadAnyfsNativeAddon, loadDrivelistModule } from './native-loader';

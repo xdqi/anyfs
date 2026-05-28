@@ -12,9 +12,6 @@
  */
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { createRequire } from 'node:module';
-
-const req = createRequire(__filename);
 
 function pickFirstExisting(candidates: string[]): string | null {
     for (const c of candidates) if (existsSync(c)) return c;
@@ -55,7 +52,7 @@ export function resolveDrivelistNode(): string | null {
 export function loadAnyfsNativeAddon(): unknown | null {
     const p = resolveAnyfsNativeAddon();
     if (!p) return null;
-    return req(p);
+    return require(p);
 }
 
 // Load `drivelist`'s JS entry. esbuild bundles drivelist's JS into main.cjs
