@@ -589,6 +589,13 @@ static int enter_container_slot(AnyfsDisk* d, int slot_id, const char* query,
 	 * inner partition. The kernel won't auto-scan a dm device's PT
 	 * (GENHD_FL_NO_PART is set on dm), so doing it ourselves is the
 	 * supported recipe and works at any nesting depth. */
+	/* DM v2 plumbing is not ready; refuse nested partition tables entirely
+	 * until dm-linear creation + kindprobe recursion is validated. */
+	if (kind == ANYFS_PART_KIND_NESTED_PARTITION_TABLE) {
+		rc = -LKL_ENOSYS;
+		goto fail_locked;
+	}
+
 	AnyfsInnerPart inners[MAX_PARTS];
 	int n_inner = 0;
 	if (kind == ANYFS_PART_KIND_NESTED_PARTITION_TABLE) {
@@ -606,6 +613,7 @@ static int enter_container_slot(AnyfsDisk* d, int slot_id, const char* query,
 		rc = -LKL_EINVAL;
 	}
 
+fail_locked:
 	pthread_mutex_lock(&d->lock);
 	if (rc < 0) {
 		char buf[200];
