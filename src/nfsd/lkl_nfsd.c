@@ -52,8 +52,8 @@
 #include <lkl.h>
 
 /* ── Compile-time limits ─────────────────────────────────────────────── */
-#define MAX_DISKS 16
-#define MAX_SHARES 32
+/* (ANYFS_MAX_DISKS / ANYFS_MAX_SHARES / ANYFS_LKL_PATH_MAX are in anyfs_disk.h)
+ */
 
 /* ── Network defaults ─────────────────────────────────────────────────── */
 /*
@@ -66,8 +66,9 @@
 
 /* ── Export descriptor ─────────────────────────────────────────────────── */
 typedef struct {
-	char name[64];	   /* NFS export name (client sees /<name>) */
-	char lkl_path[64]; /* absolute LKL path returned by anyfs_disk_enter */
+	char name[64]; /* NFS export name (client sees /<name>) */
+	char lkl_path[ANYFS_LKL_PATH_MAX]; /* absolute LKL path returned by
+					      anyfs_disk_enter */
 	/*
 	 * bind_path is "/<name>" — the share's filesystem bind-mounted into
 	 * LKL root so the NFSv4 pseudo-fs places it where the client expects.
@@ -126,7 +127,7 @@ static int lkl_write_file(const char* path, const char* data)
  */
 
 /* Export table (set by main before starting handler) */
-static ExportInfo g_exports[MAX_SHARES];
+static ExportInfo g_exports[ANYFS_MAX_SHARES];
 static int g_n_exports = 0;
 static int g_read_only = 1;
 
@@ -609,9 +610,9 @@ int main(int argc, char** argv)
 {
 	/* ── Argument storage ───────────────────────────────────────────────
 	 */
-	const char* disk_images[MAX_DISKS];
+	const char* disk_images[ANYFS_MAX_DISKS];
 	int n_images = 0;
-	char* share_specs[MAX_SHARES];
+	char* share_specs[ANYFS_MAX_SHARES];
 	int n_share_specs = 0;
 
 	int host_port = HOST_FWD_PORT;
@@ -632,11 +633,11 @@ int main(int argc, char** argv)
 	       -1) {
 		switch (opt) {
 		case 1000: /* --share */
-			if (n_share_specs >= MAX_SHARES) {
+			if (n_share_specs >= ANYFS_MAX_SHARES) {
 				fprintf(
 				    stderr,
 				    "error: too many --share flags (max %d)\n",
-				    MAX_SHARES);
+				    ANYFS_MAX_SHARES);
 				return 1;
 			}
 			share_specs[n_share_specs++] = optarg;
@@ -665,10 +666,10 @@ int main(int argc, char** argv)
 
 	/* ── Collect positional disk images ──────────────────────────────── */
 	for (; optind < argc; optind++) {
-		if (n_images >= MAX_DISKS) {
+		if (n_images >= ANYFS_MAX_DISKS) {
 			fprintf(stderr,
 				"error: too many disk images (max %d)\n",
-				MAX_DISKS);
+				ANYFS_MAX_DISKS);
 			return 1;
 		}
 		disk_images[n_images++] = argv[optind];
@@ -697,7 +698,7 @@ int main(int argc, char** argv)
 		else
 			snprintf(legacy_spec, sizeof(legacy_spec), "p%d",
 				 legacy_part);
-		if (n_share_specs < MAX_SHARES)
+		if (n_share_specs < ANYFS_MAX_SHARES)
 			share_specs[n_share_specs++] = legacy_spec;
 	}
 
@@ -742,7 +743,7 @@ int main(int argc, char** argv)
 
 	/* ── 4. Open disk images ────────────────────────────────────────────
 	 */
-	AnyfsDisk* disks[MAX_DISKS] = {NULL};
+	AnyfsDisk* disks[ANYFS_MAX_DISKS] = {NULL};
 	{
 		uint32_t dflags = read_only ? ANYFS_DISK_READONLY : 0;
 		if (anyfs_sesh_open_disks(disks, disk_images, n_images,

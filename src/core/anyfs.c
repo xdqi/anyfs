@@ -17,6 +17,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "anyfs_disk.h"
+
 /* ── Internal state ────────────────────────────────────────────── */
 
 /* Backend registry */
@@ -53,8 +55,6 @@ const struct anyfs_backend_ops* anyfs_find_backend(const char* name)
 	return NULL;
 }
 
-#define MAX_DISKS 16
-
 struct disk_slot {
 	int in_use;
 	int disk_id;
@@ -62,7 +62,7 @@ struct disk_slot {
 	const struct anyfs_backend_ops* backend;
 };
 
-static struct disk_slot g_disks[MAX_DISKS];
+static struct disk_slot g_disks[ANYFS_MAX_DISKS];
 static int g_kernel_started;
 
 /* atexit safety net: read /proc/mounts, unmount everything under /lklmnt/,
@@ -109,7 +109,7 @@ static void anyfs_atexit_cleanup(void)
 	}
 
 	/* Remove all disk devices */
-	for (int i = 0; i < MAX_DISKS; i++) {
+	for (int i = 0; i < ANYFS_MAX_DISKS; i++) {
 		if (g_disks[i].in_use) {
 			lkl_disk_remove(g_disks[i].disk);
 			g_disks[i].backend->close(&g_disks[i].disk);
@@ -228,7 +228,7 @@ int anyfs_disk_add(const char* image_path, uint32_t flags)
 
 	/* Find free slot */
 	int slot = -1;
-	for (int i = 0; i < MAX_DISKS; i++) {
+	for (int i = 0; i < ANYFS_MAX_DISKS; i++) {
 		if (!g_disks[i].in_use) {
 			slot = i;
 			break;
@@ -281,7 +281,7 @@ int anyfs_disk_add(const char* image_path, uint32_t flags)
 
 int anyfs_disk_remove(int disk_id)
 {
-	for (int i = 0; i < MAX_DISKS; i++) {
+	for (int i = 0; i < ANYFS_MAX_DISKS; i++) {
 		if (g_disks[i].in_use && g_disks[i].disk_id == disk_id) {
 			lkl_disk_remove(g_disks[i].disk);
 			g_disks[i].backend->close(&g_disks[i].disk);

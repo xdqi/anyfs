@@ -818,7 +818,7 @@ fail_locked:
 
 /* Mount a KIND_FS slot. Caller must NOT hold the lock. */
 static int enter_fs_slot(AnyfsDisk* d, int slot_id, uint32_t flags,
-			 char lkl_path[64])
+			 char lkl_path[ANYFS_LKL_PATH_MAX])
 {
 	pthread_mutex_lock(&d->lock);
 	PartSlot* p = &d->parts[slot_id];
@@ -892,7 +892,7 @@ static int enter_fs_slot(AnyfsDisk* d, int slot_id, uint32_t flags,
 }
 
 int anyfs_disk_enter(AnyfsDisk* d, unsigned int part, uint32_t flags,
-		     char lkl_path[64])
+		     char lkl_path[ANYFS_LKL_PATH_MAX])
 {
 	if (!d || !lkl_path)
 		return -1;
@@ -917,7 +917,7 @@ int anyfs_disk_enter(AnyfsDisk* d, unsigned int part, uint32_t flags,
 
 int anyfs_disk_walk(AnyfsDisk* d, const struct AnyfsPathComp* comp,
 		    size_t n_comp, uint32_t flags, int* leaf_slot_id_out,
-		    char lkl_path[64])
+		    char lkl_path[ANYFS_LKL_PATH_MAX])
 {
 	if (!d || !comp || n_comp == 0 || !lkl_path)
 		return -LKL_EINVAL;
@@ -956,7 +956,8 @@ int anyfs_disk_walk(AnyfsDisk* d, const struct AnyfsPathComp* comp,
 }
 
 int anyfs_disk_enter_path(AnyfsDisk* d, const struct AnyfsPathComp* comp,
-			  size_t n_comp, uint32_t flags, char lkl_path[64])
+			  size_t n_comp, uint32_t flags,
+			  char lkl_path[ANYFS_LKL_PATH_MAX])
 {
 	if (!d || !comp || n_comp == 0 || !lkl_path)
 		return -LKL_EINVAL;

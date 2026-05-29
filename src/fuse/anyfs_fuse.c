@@ -148,8 +148,7 @@ typedef struct timespec fuse_timespec;
 #include "anyfs_disk.h"
 
 /* ── Multi-disk session state ────────────────────────────────────── */
-
-#define MAX_DISKS 16
+/* (ANYFS_MAX_DISKS / ANYFS_LKL_PATH_MAX are in anyfs_disk.h) */
 
 /*
  * Per-partition cached LKL path (set after first anyfs_disk_enter).
@@ -164,8 +163,8 @@ typedef struct timespec fuse_timespec;
 #define MAX_PARTS_PER_DISK 64
 
 typedef struct {
-	char lkl_path[64]; /* filled once MOUNTED; empty string = not yet
-			      entered */
+	char lkl_path[ANYFS_LKL_PATH_MAX]; /* filled once MOUNTED; empty string
+			      = not yet entered */
 } PartCache;
 
 typedef struct {
@@ -195,7 +194,7 @@ static void fuse_path_release(FusePath* fp)
 	}
 }
 
-static DiskSlot g_disks[MAX_DISKS];
+static DiskSlot g_disks[ANYFS_MAX_DISKS];
 static int g_ndisks = 0;
 
 /*
@@ -224,7 +223,7 @@ struct anyfs_fuse_config {
 };
 
 /* Additional images beyond the first: collected in opt_proc */
-static char* g_extra_images[MAX_DISKS];
+static char* g_extra_images[ANYFS_MAX_DISKS];
 static int g_nextra = 0;
 
 static struct anyfs_fuse_config cfg = {
@@ -308,7 +307,7 @@ static int anyfs_fuse_opt_proc(void* data, const char* arg, int key,
 		/* Store in extra list; last one will be the mountpoint — drop
 		 * it in main() after fuse_parse_cmdline tells us the
 		 * mountpoint. */
-		if (g_nextra < MAX_DISKS - 1) {
+		if (g_nextra < ANYFS_MAX_DISKS - 1) {
 			g_extra_images[g_nextra++] = strdup(arg);
 		}
 		return 1; /* keep arg in argv so fuse_parse_cmdline can pick the
@@ -510,7 +509,7 @@ static int resolve_walk(FusePath* fp)
 		return -ENOENT;
 	AnyfsDisk* d = g_disks[fp->disk_idx].disk;
 	int leaf = -1;
-	char lkl_path[64] = {0};
+	char lkl_path[ANYFS_LKL_PATH_MAX] = {0};
 	int rc = anyfs_disk_walk(d, fp->dsl.comp, fp->dsl.n_comp, 0, &leaf,
 				 lkl_path);
 	if (rc < 0)
@@ -1675,12 +1674,12 @@ int main(int argc, char* argv[])
 			disk_flags |= ANYFS_DISK_READONLY;
 
 		/* Build a combined image array: first image + extras */
-		const char* all_images[MAX_DISKS];
+		const char* all_images[ANYFS_MAX_DISKS];
 		all_images[0] = cfg.image;
 		for (int i = 0; i < g_nextra; i++)
 			all_images[i + 1] = g_extra_images[i];
 
-		AnyfsDisk* opened[MAX_DISKS] = {NULL};
+		AnyfsDisk* opened[ANYFS_MAX_DISKS] = {NULL};
 		int n_total = 1 + g_nextra;
 		if (anyfs_sesh_open_disks(opened, all_images, n_total,
 					  disk_flags) < 0) {
@@ -1714,7 +1713,7 @@ int main(int argc, char* argv[])
 		unsigned int part_num =
 		    dsl.comp[0].p; /* top-level slot for caching */
 
-		char lkl_path[64];
+		char lkl_path[ANYFS_LKL_PATH_MAX];
 		ret = anyfs_disk_enter_path(g_disks[didx].disk, dsl.comp,
 					    dsl.n_comp, 0, lkl_path);
 		if (ret < 0) {
@@ -1753,7 +1752,7 @@ int main(int argc, char* argv[])
 				unsigned int pn = pbuf[i].index;
 				if (pn == 0 || pn > MAX_PARTS_PER_DISK)
 					continue;
-				char lkl_path[64];
+				char lkl_path[ANYFS_LKL_PATH_MAX];
 				int r = anyfs_disk_enter(g_disks[di].disk, pn,
 							 0, lkl_path);
 				if (r < 0) {

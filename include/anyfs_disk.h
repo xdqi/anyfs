@@ -26,6 +26,14 @@
 
 #include "anyfs.h"
 
+/* ── Shared limits ──────────────────────────────────────────── */
+
+#define ANYFS_MAX_DISKS 16  /* max disk images per session */
+#define ANYFS_MAX_SHARES 32 /* max --share specs per server frontend */
+#define ANYFS_LKL_PATH_MAX                                                     \
+	64 /* max LKL mount point path length                                  \
+	      (e.g. /lklmnt/anyfs_d0_p1) */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -127,7 +135,7 @@ int anyfs_disk_list_children(AnyfsDisk* d, int parent_slot_id,
  * `lkl_path[0] = '\0'` — there is no filesystem to mount at this
  * level. Callers that need a mount must then drill into a child. */
 int anyfs_disk_enter(AnyfsDisk* d, unsigned int part, uint32_t flags,
-		     char lkl_path[64]);
+		     char lkl_path[ANYFS_LKL_PATH_MAX]);
 
 /* Walk a chain of partition components (the parsed path-DSL output).
  * Walks the segments left to right: each non-final segment must
@@ -140,7 +148,8 @@ int anyfs_disk_enter(AnyfsDisk* d, unsigned int part, uint32_t flags,
  * The query field of each comp (if non-NULL) is parsed for kind-
  * specific options (e.g. LUKS keyref/keyfile/keyfd/key). */
 int anyfs_disk_enter_path(AnyfsDisk* d, const struct AnyfsPathComp* comp,
-			  size_t n_comp, uint32_t flags, char lkl_path[64]);
+			  size_t n_comp, uint32_t flags,
+			  char lkl_path[ANYFS_LKL_PATH_MAX]);
 
 /* Like anyfs_disk_enter_path, but the leaf is allowed to be a
  * container (in which case it is materialised so its children become
@@ -156,7 +165,7 @@ int anyfs_disk_enter_path(AnyfsDisk* d, const struct AnyfsPathComp* comp,
  * keep using anyfs_disk_enter_path. */
 int anyfs_disk_walk(AnyfsDisk* d, const struct AnyfsPathComp* comp,
 		    size_t n_comp, uint32_t flags, int* leaf_slot_id_out,
-		    char lkl_path[64]);
+		    char lkl_path[ANYFS_LKL_PATH_MAX]);
 
 AnyfsPartState anyfs_disk_state(AnyfsDisk* d, unsigned int part);
 AnyfsPartState anyfs_disk_state_slot(AnyfsDisk* d, int slot_id);

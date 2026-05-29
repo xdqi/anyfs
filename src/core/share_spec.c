@@ -145,7 +145,7 @@ int anyfs_share_resolve(const char* spec, AnyfsDisk** disks, int n_disks,
 	anyfs_share_warn_literal_key(&ap, name_arg ? name_arg : path_arg);
 
 	/* 9. Enter the partition chain */
-	char lkl_path[64];
+	char lkl_path[ANYFS_LKL_PATH_MAX];
 	int ret = anyfs_disk_enter_path(disks[disk_idx], ap.comp, ap.n_comp,
 					enter_flags, lkl_path);
 	if (ret < 0) {
