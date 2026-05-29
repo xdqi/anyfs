@@ -4,8 +4,8 @@
  * Shared by every surface so they all accept the same canonical
  * partition reference.
  */
-#ifndef ANYFS_ANYFS_PATH_H
-#define ANYFS_ANYFS_PATH_H
+#ifndef ANYFS_PATH_H
+#define ANYFS_PATH_H
 
 #include <stddef.h>
 

@@ -136,7 +136,7 @@ static int resolve_luks_credential(const char* query, unsigned char* out,
  * create one dm-linear per inner partition, append child slots. The
  * kernel won't auto-scan partitions on a dm device (GENHD_FL_NO_PART),
  * so we own the parse. Caller must NOT hold the lock. */
-int enter_container_slot(struct AnyfsDisk* d, int slot_id, const char* query,
+int enter_container_slot(struct AnyfsSession* d, int slot_id, const char* query,
 			 uint32_t flags)
 {
 	(void)flags;

@@ -26,7 +26,6 @@
 
 #include "anyfs.h"
 #include "anyfs_probe.h"
-#include "anyfs_session.h"
 
 #ifndef DT_DIR
 #define DT_DIR 4
@@ -41,13 +40,13 @@
 #include "jsonw.h"
 
 /* ── Disk session table ──────────────────────────────────────── */
-/* anyfs_disk_open returns AnyfsDisk* — opaque to JS. We give JS small
+/* anyfs_session_open returns AnyfsSession* — opaque to JS. We give JS small
  * integer handles instead. */
 
 #define MAX_HANDLES 8
-static AnyfsDisk* g_handles[MAX_HANDLES];
+static AnyfsSession* g_handles[MAX_HANDLES];
 
-static int alloc_handle(AnyfsDisk* d)
+static int alloc_handle(AnyfsSession* d)
 {
 	for (int i = 0; i < MAX_HANDLES; i++) {
 		if (!g_handles[i]) {
@@ -58,7 +57,7 @@ static int alloc_handle(AnyfsDisk* d)
 	return -1;
 }
 
-static AnyfsDisk* get_handle(int h)
+static AnyfsSession* get_handle(int h)
 {
 	if (h < 0 || h >= MAX_HANDLES)
 		return NULL;
@@ -147,7 +146,7 @@ int anyfs_ts_kernel_halt(void)
 {
 	for (int i = 0; i < MAX_HANDLES; i++) {
 		if (g_handles[i]) {
-			anyfs_disk_close(g_handles[i]);
+			anyfs_session_close(g_handles[i]);
 			g_handles[i] = NULL;
 		}
 	}
@@ -157,13 +156,13 @@ int anyfs_ts_kernel_halt(void)
 
 int anyfs_ts_disk_open(const char* image_path, uint32_t flags)
 {
-	AnyfsDisk* d = NULL;
-	int rc = anyfs_disk_open(image_path, flags, &d);
+	AnyfsSession* d = NULL;
+	int rc = anyfs_session_open(image_path, flags, &d);
 	if (rc != 0 || !d)
 		return -1;
 	int h = alloc_handle(d);
 	if (h < 0) {
-		anyfs_disk_close(d);
+		anyfs_session_close(d);
 		return -2;
 	}
 	return h;
@@ -171,22 +170,22 @@ int anyfs_ts_disk_open(const char* image_path, uint32_t flags)
 
 int anyfs_ts_disk_close(int h)
 {
-	AnyfsDisk* d = get_handle(h);
+	AnyfsSession* d = get_handle(h);
 	if (!d)
 		return -1;
-	anyfs_disk_close(d);
+	anyfs_session_close(d);
 	g_handles[h] = NULL;
 	return 0;
 }
 
 int anyfs_ts_disk_list_json(int h, char* buf, size_t cap)
 {
-	AnyfsDisk* d = get_handle(h);
+	AnyfsSession* d = get_handle(h);
 	if (!d)
 		return -1;
 	AnyfsPartInfo parts[32];
 	size_t got = 0;
-	int n = anyfs_disk_list(d, parts, 32, &got);
+	int n = anyfs_session_list(d, -1, parts, 32, &got);
 	if (n < 0)
 		return -2;
 	if ((size_t)n > 32)
@@ -219,11 +218,11 @@ int anyfs_ts_disk_list_json(int h, char* buf, size_t cap)
 
 int anyfs_ts_disk_meta_json(int h, char* buf, size_t cap)
 {
-	AnyfsDisk* d = get_handle(h);
+	AnyfsSession* d = get_handle(h);
 	if (!d)
 		return -1;
-	AnyfsDiskMeta m;
-	if (anyfs_disk_meta(d, &m) != 0)
+	AnyfsSessionMeta m;
+	if (anyfs_session_meta(d, &m) != 0)
 		return -2;
 	JsonW w;
 	jw_init(&w, buf, cap);
@@ -237,13 +236,13 @@ int anyfs_ts_disk_meta_json(int h, char* buf, size_t cap)
 int anyfs_ts_disk_enter(int h, unsigned int part, uint32_t flags,
 			char* mount_out, size_t mount_cap)
 {
-	AnyfsDisk* d = get_handle(h);
+	AnyfsSession* d = get_handle(h);
 	if (!d)
 		return -1;
 	if (mount_cap < 64)
 		return -2;
 	char lkl_path[64];
-	int rc = anyfs_disk_enter(d, part, flags, lkl_path);
+	int rc = anyfs_session_enter(d, part, flags, lkl_path);
 	if (rc != 0)
 		return rc < 0 ? rc : -3;
 	snprintf(mount_out, mount_cap, "%s", lkl_path);
@@ -253,24 +252,24 @@ int anyfs_ts_disk_enter(int h, unsigned int part, uint32_t flags,
 /* Mount the whole disk (no partition table) by creating a /dev node
  * for /dev/anyfs_d<id>_whole and calling anyfs_mount_blkdev.
  *
- * Dev number and fstype hint are cached from anyfs_disk_open to avoid
+ * Dev number and fstype hint are cached from anyfs_session_open to avoid
  * QEMU block I/O in this call — any pread64 through QEMU fibers before
  * the mount would corrupt ASYNCIFY state and wedge the ext4 mount. */
 int anyfs_ts_mount_whole(int h, const char* fstype, uint32_t flags,
 			 char* mount_out, size_t mount_cap)
 {
-	AnyfsDisk* d = get_handle(h);
+	AnyfsSession* d = get_handle(h);
 	if (!d)
 		return -1;
 	if (mount_cap < 64)
 		return -2;
-	int disk_id = anyfs_disk_id(d);
+	int disk_id = anyfs_session_id(d);
 	if (disk_id < 0)
 		return -3;
 
-	/* Use cached dev_t from anyfs_disk_open; fall back to sysfs read
+	/* Use cached dev_t from anyfs_session_open; fall back to sysfs read
 	 * if the cache is cold (shouldn't happen, but be defensive). */
-	uint32_t dev = anyfs_disk_whole_dev(d);
+	uint32_t dev = anyfs_session_whole_dev(d);
 	if (dev == 0) {
 		if (lkl_get_virtio_blkdev(disk_id, 0, &dev) < 0)
 			return -4;
@@ -291,7 +290,7 @@ int anyfs_ts_mount_whole(int h, const char* fstype, uint32_t flags,
 	const char* hint =
 	    (fstype && *fstype && strcmp(fstype, "auto") != 0) ? fstype : NULL;
 	if (!hint)
-		hint = anyfs_disk_whole_fstype_hint(d);
+		hint = anyfs_session_whole_fstype_hint(d);
 	if (!hint) {
 		char probed[32] = {0}, lbl[64] = {0}, uid[40] = {0};
 		(void)anyfs_probe_meta(devpath, probed, lbl, uid);

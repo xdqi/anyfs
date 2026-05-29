@@ -30,11 +30,8 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "../core/anyfs_path.h"
-#include "../core/anyfs_share.h"
 #include "../host_proxy/host_proxy.h"
 #include "anyfs.h"
-#include "anyfs_session.h"
 #include "fastsync_win.h"
 #include <lkl.h>
 
@@ -68,7 +65,7 @@
 typedef struct {
 	char name[64]; /* SMB share name (section header in smb.conf) */
 	char lkl_path[ANYFS_LKL_PATH_MAX]; /* absolute LKL path returned by
-					      anyfs_disk_enter */
+					      anyfs_session_enter */
 } ShareInfo;
 
 static volatile int running = 1;
@@ -756,10 +753,10 @@ int main(int argc, char** argv)
 
 	/* ── 4. Open disk images ────────────────────────────────────────────
 	 */
-	AnyfsDisk* disks[ANYFS_MAX_DISKS] = {NULL};
+	AnyfsSession* disks[ANYFS_MAX_DISKS] = {NULL};
 
 	if (anyfs_share_open_disks(disks, disk_images, n_images,
-				   ANYFS_DISK_READONLY) < 0)
+				   ANYFS_SESSION_READONLY) < 0)
 		goto halt;
 
 	/* ── 5. Resolve --share specs to LKL paths ───────────────────────── */
@@ -833,11 +830,11 @@ cleanup:
 	usm_destroy();
 
 halt:
-	/* Close all disk sessions (atexit handler inside anyfs_disk_close
+	/* Close all disk sessions (atexit handler inside anyfs_session_close
 	 * will unmount any LKL-pinned mounts). */
 	for (int i = 0; i < n_images; i++) {
 		if (disks[i])
-			anyfs_disk_close(disks[i]);
+			anyfs_session_close(disks[i]);
 	}
 	anyfs_kernel_halt();
 	pr_info("Done\n");

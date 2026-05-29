@@ -67,7 +67,7 @@ static int bench_one(const char* image, const char* fstype, uint32_t part,
 		     uint32_t backend_flag, const char* backend_name,
 		     struct bench_result* result)
 {
-	uint32_t flags = ANYFS_DISK_READONLY | backend_flag;
+	uint32_t flags = ANYFS_SESSION_READONLY | backend_flag;
 	int disk_id = anyfs_disk_add(image, flags);
 	if (disk_id < 0) {
 		fprintf(stderr, "  [%s] disk_add failed\n", backend_name);

@@ -32,13 +32,13 @@ void anyfs_format_header(AnyfsStrbuf* sb)
 			    "SIZE", "KIND", "FSTYPE", "LABEL", "UUID");
 }
 
-void anyfs_format_disk(AnyfsStrbuf* sb, AnyfsDisk* d, int disk_idx)
+void anyfs_format_disk(AnyfsStrbuf* sb, AnyfsSession* d, int disk_idx)
 {
 	if (!d)
 		return;
 	AnyfsPartInfo parts[MAX_PARTS];
 	size_t got = 0;
-	int n = anyfs_disk_list(d, parts, MAX_PARTS, &got);
+	int n = anyfs_session_list(d, -1, parts, MAX_PARTS, &got);
 	if (n <= 0)
 		return;
 

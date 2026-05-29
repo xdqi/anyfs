@@ -2,7 +2,7 @@
  * anyfs-fuse — FUSE frontend for anyfs-reader using QEMU block backend
  *
  * Mounts disk images (raw, qcow2, vmdk, etc.) via FUSE.
- * Uses anyfs_disk_* session API for lazy per-partition mounting.
+ * Uses anyfs_session_* session API for lazy per-partition mounting.
  * FUSE callbacks adapted from Linux tools/lkl/lklfuse.c.
  *
  * Usage: anyfs-fuse [options] <image> [<image2> ...] <mountpoint>
@@ -19,12 +19,12 @@
  * ───────────────
  * Mode A (-o part=<path>): single-partition at FUSE root.
  *   Path is translated with fuse_path_to_lkl() after a one-time
- *   anyfs_disk_enter at startup — identical behaviour to the old anyfs_mount
+ *   anyfs_session_enter at startup — identical behaviour to the old anyfs_mount
  *   code, just using the new session API.
  *
  * Mode B (default): synthetic root listing all partitions.
  *   getattr on "/" or "/pN" or "/diskN" or "/diskN/pM" → synthesised S_IFDIR,
- *   no mount.  opendir/readdir below partition → anyfs_disk_enter fires.
+ *   no mount.  opendir/readdir below partition → anyfs_session_enter fires.
  *   .partitions / partitions.txt are synthetic read-only files at the root
  *   (and at /diskN/ in multi-disk mode).
  */
@@ -141,22 +141,18 @@ typedef unsigned int fuse_gid_t;
 typedef struct timespec fuse_timespec;
 #endif
 
-#include "../src/core/anyfs_format.h"
-#include "../src/core/anyfs_path.h"
-#include "../src/core/anyfs_share.h"
 #include "anyfs.h"
-#include "anyfs_session.h"
 
 /* ── Multi-disk session state ────────────────────────────────────── */
 /* (ANYFS_MAX_DISKS / ANYFS_LKL_PATH_MAX are in anyfs_disk.h) */
 
 /*
- * Per-partition cached LKL path (set after first anyfs_disk_enter).
+ * Per-partition cached LKL path (set after first anyfs_session_enter).
  * Indexed by 1-based partition number; slot 0 unused.
  * We cap at 64 partitions per disk for static allocation.
  *
  * v2: top-level cache only. Nested chains (e.g. /p2/p1) are mounted
- * via anyfs_disk_walk on each lookup; the disk session de-duplicates
+ * via anyfs_session_walk on each lookup; the disk session de-duplicates
  * via the MOUNTED state, so this is cheap. lkl_path[] caches the
  * resulting LKL mount path so we don't query the slot tree per call.
  */
@@ -168,7 +164,7 @@ typedef struct {
 } PartCache;
 
 typedef struct {
-	AnyfsDisk* disk;
+	AnyfsSession* disk;
 	PartCache
 	    parts[MAX_PARTS_PER_DISK]; /* parts[i] → partition i+1 (1-based) */
 } DiskSlot;
@@ -495,11 +491,11 @@ static int resolve_walk(FusePath* fp)
 		return -ENOENT;
 	if (!fp->dsl_inited)
 		return -ENOENT;
-	AnyfsDisk* d = g_disks[fp->disk_idx].disk;
+	AnyfsSession* d = g_disks[fp->disk_idx].disk;
 	int leaf = -1;
 	char lkl_path[ANYFS_LKL_PATH_MAX] = {0};
-	int rc = anyfs_disk_walk(d, fp->dsl.comp, fp->dsl.n_comp, 0, &leaf,
-				 lkl_path);
+	int rc = anyfs_session_walk(d, fp->dsl.comp, fp->dsl.n_comp, 0, &leaf,
+				    lkl_path);
 	if (rc < 0)
 		return -EIO;
 	fp->leaf_slot = leaf;
@@ -1212,8 +1208,8 @@ static int anyfs_fuse_readdir(const char* path, void* buf, fuse_fill_dir_t fill,
 			/* Single-disk root: list pN entries */
 			AnyfsPartInfo pbuf[MAX_PARTS_PER_DISK];
 			size_t got = 0;
-			anyfs_disk_list(g_disks[0].disk, pbuf,
-					MAX_PARTS_PER_DISK, &got);
+			anyfs_session_list(g_disks[0].disk, -1, pbuf,
+					   MAX_PARTS_PER_DISK, &got);
 			char name[16];
 			for (size_t i = 0; i < got; i++) {
 				snprintf(name, sizeof(name), "p%u",
@@ -1235,8 +1231,8 @@ static int anyfs_fuse_readdir(const char* path, void* buf, fuse_fill_dir_t fill,
 			/* Per-disk dir in multi-disk mode */
 			AnyfsPartInfo pbuf[MAX_PARTS_PER_DISK];
 			size_t got = 0;
-			anyfs_disk_list(g_disks[didx].disk, pbuf,
-					MAX_PARTS_PER_DISK, &got);
+			anyfs_session_list(g_disks[didx].disk, -1, pbuf,
+					   MAX_PARTS_PER_DISK, &got);
 			char name[16];
 			for (size_t i = 0; i < got; i++) {
 				snprintf(name, sizeof(name), "p%u",
@@ -1277,9 +1273,9 @@ static int anyfs_fuse_readdir(const char* path, void* buf, fuse_fill_dir_t fill,
 			if (resolve_walk(&fp) == 0 && !fp.leaf_is_fs) {
 				AnyfsPartInfo kids[MAX_PARTS_PER_DISK];
 				size_t got = 0;
-				anyfs_disk_list_children(
-				    g_disks[fp.disk_idx].disk, fp.leaf_slot,
-				    kids, MAX_PARTS_PER_DISK, &got);
+				anyfs_session_list(g_disks[fp.disk_idx].disk,
+						   fp.leaf_slot, kids,
+						   MAX_PARTS_PER_DISK, &got);
 				char name[16];
 				for (size_t i = 0; i < got; i++) {
 					snprintf(name, sizeof(name), "p%u",
@@ -1535,8 +1531,8 @@ int main(int argc, char* argv[])
 	 * Init order:
 	 *   1. FUSE setup (fuse_new, signal_handlers, mount, daemonize)
 	 *   2. LKL kernel start  (AFTER fork — threads in child only)
-	 *   3. Open disk(s) with anyfs_disk_open
-	 *   4. Mode A: anyfs_disk_enter at startup; store LKL mount point
+	 *   3. Open disk(s) with anyfs_session_open
+	 *   4. Mode A: anyfs_session_enter at startup; store LKL mount point
 	 *      Mode B: optionally prefetch all partitions
 	 *   5. FUSE event loop
 	 */
@@ -1580,7 +1576,7 @@ int main(int argc, char* argv[])
 	{
 		uint32_t disk_flags = ANYFS_BACKEND_QEMU;
 		if (cfg.readonly)
-			disk_flags |= ANYFS_DISK_READONLY;
+			disk_flags |= ANYFS_SESSION_READONLY;
 
 		/* Build a combined image array: first image + extras */
 		const char* all_images[ANYFS_MAX_DISKS];
@@ -1588,7 +1584,7 @@ int main(int argc, char* argv[])
 		for (int i = 0; i < g_nextra; i++)
 			all_images[i + 1] = g_extra_images[i];
 
-		AnyfsDisk* opened[ANYFS_MAX_DISKS] = {NULL};
+		AnyfsSession* opened[ANYFS_MAX_DISKS] = {NULL};
 		int n_total = 1 + g_nextra;
 		if (anyfs_share_open_disks(opened, all_images, n_total,
 					   disk_flags) < 0) {
@@ -1623,15 +1619,15 @@ int main(int argc, char* argv[])
 		    dsl.comp[0].p; /* top-level slot for caching */
 
 		char lkl_path[ANYFS_LKL_PATH_MAX];
-		ret = anyfs_disk_enter_path(g_disks[didx].disk, dsl.comp,
-					    dsl.n_comp, 0, lkl_path);
+		ret = anyfs_session_enter_path(g_disks[didx].disk, dsl.comp,
+					       dsl.n_comp, 0, lkl_path);
 		if (ret < 0) {
 			fprintf(
 			    stderr,
-			    "anyfs_disk_enter(disk%d, %s) failed: %d (%s)\n",
+			    "anyfs_session_enter(disk%d, %s) failed: %d (%s)\n",
 			    didx, part_str, ret,
-			    anyfs_disk_fail_reason(g_disks[didx].disk,
-						   part_num));
+			    anyfs_session_fail_reason(g_disks[didx].disk,
+						      part_num));
 			anyfs_path_free(&dsl);
 			goto out_disks_close;
 		}
@@ -1655,21 +1651,21 @@ int main(int argc, char* argv[])
 		for (int di = 0; di < g_ndisks; di++) {
 			AnyfsPartInfo pbuf[MAX_PARTS_PER_DISK];
 			size_t got = 0;
-			anyfs_disk_list(g_disks[di].disk, pbuf,
-					MAX_PARTS_PER_DISK, &got);
+			anyfs_session_list(g_disks[di].disk, -1, pbuf,
+					   MAX_PARTS_PER_DISK, &got);
 			for (size_t i = 0; i < got; i++) {
 				unsigned int pn = pbuf[i].index;
 				if (pn == 0 || pn > MAX_PARTS_PER_DISK)
 					continue;
 				char lkl_path[ANYFS_LKL_PATH_MAX];
-				int r = anyfs_disk_enter(g_disks[di].disk, pn,
-							 0, lkl_path);
+				int r = anyfs_session_enter(g_disks[di].disk,
+							    pn, 0, lkl_path);
 				if (r < 0) {
 					fprintf(stderr,
 						"anyfs-fuse: prefetch "
 						"disk%d/p%u failed: %d (%s)\n",
 						di, pn, r,
-						anyfs_disk_fail_reason(
+						anyfs_session_fail_reason(
 						    g_disks[di].disk, pn));
 				} else {
 					snprintf(
@@ -1702,7 +1698,7 @@ int main(int argc, char* argv[])
 out_disks_close:
 	for (int i = 0; i < g_ndisks; i++) {
 		if (g_disks[i].disk) {
-			anyfs_disk_close(g_disks[i].disk);
+			anyfs_session_close(g_disks[i].disk);
 			g_disks[i].disk = NULL;
 		}
 	}

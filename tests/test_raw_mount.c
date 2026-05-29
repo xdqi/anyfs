@@ -50,7 +50,7 @@ int main(int argc, char** argv)
 		return 1;
 	}
 
-	uint32_t flags = ANYFS_DISK_READONLY | backend_flag;
+	uint32_t flags = ANYFS_SESSION_READONLY | backend_flag;
 	int disk_id = anyfs_disk_add(image, flags);
 	if (disk_id < 0) {
 		fprintf(stderr, "anyfs_disk_add(%s) failed\n", image);

@@ -26,9 +26,7 @@
  *   1  setup failure (init / open / enter / mkdir / mount)
  *   2  listings diverge — bind path is NOT showing the share root
  */
-#include "../src/core/anyfs_path.h"
 #include "anyfs.h"
-#include "anyfs_session.h"
 #include <lkl.h>
 #include <lkl_host.h>
 #include <stdio.h>
@@ -91,21 +89,22 @@ int main(int argc, char** argv)
 		return 1;
 	}
 
-	AnyfsDisk* disk = NULL;
-	if (anyfs_disk_open(image, ANYFS_DISK_READONLY, &disk) < 0 || !disk) {
-		fprintf(stderr, "anyfs_disk_open(%s) failed\n", image);
+	AnyfsSession* disk = NULL;
+	if (anyfs_session_open(image, ANYFS_SESSION_READONLY, &disk) < 0 ||
+	    !disk) {
+		fprintf(stderr, "anyfs_session_open(%s) failed\n", image);
 		anyfs_kernel_halt();
 		return 1;
 	}
 
 	AnyfsPathComp comp = {.p = (uint32_t)part};
 	char lkl_path[64];
-	int r = anyfs_disk_enter_path(disk, &comp, 1, ANYFS_DISK_READONLY,
-				      lkl_path);
+	int r = anyfs_session_enter_path(disk, &comp, 1, ANYFS_SESSION_READONLY,
+					 lkl_path);
 	if (r < 0) {
-		fprintf(stderr, "anyfs_disk_enter_path(p%d) failed: %d\n", part,
-			r);
-		anyfs_disk_close(disk);
+		fprintf(stderr, "anyfs_session_enter_path(p%d) failed: %d\n",
+			part, r);
+		anyfs_session_close(disk);
 		anyfs_kernel_halt();
 		return 1;
 	}
@@ -118,7 +117,7 @@ int main(int argc, char** argv)
 	if (mret < 0 && mret != -LKL_EEXIST) {
 		fprintf(stderr, "lkl_sys_mkdir(%s): %s\n", bind_path,
 			lkl_strerror(mret));
-		anyfs_disk_close(disk);
+		anyfs_session_close(disk);
 		anyfs_kernel_halt();
 		return 1;
 	}
@@ -127,7 +126,7 @@ int main(int argc, char** argv)
 	if (mret < 0) {
 		fprintf(stderr, "bind %s -> %s: %s\n", lkl_path, bind_path,
 			lkl_strerror(mret));
-		anyfs_disk_close(disk);
+		anyfs_session_close(disk);
 		anyfs_kernel_halt();
 		return 1;
 	}
@@ -137,7 +136,7 @@ int main(int argc, char** argv)
 	struct entries dst = {0};
 	if (snapshot_dir(lkl_path, &src) < 0 ||
 	    snapshot_dir(bind_path, &dst) < 0) {
-		anyfs_disk_close(disk);
+		anyfs_session_close(disk);
 		anyfs_kernel_halt();
 		return 1;
 	}
@@ -172,7 +171,7 @@ int main(int argc, char** argv)
 	if (verdict == 0)
 		printf("\nPASS: bind path mirrors the share root.\n");
 
-	anyfs_disk_close(disk);
+	anyfs_session_close(disk);
 	anyfs_kernel_halt();
 	return verdict;
 }

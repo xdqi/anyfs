@@ -21,10 +21,9 @@
 #ifndef ANYFS_SESSION_H
 #define ANYFS_SESSION_H
 
+#include <lkl.h>
 #include <stddef.h>
 #include <stdint.h>
-
-#include "anyfs.h"
 
 /* ── Shared limits ──────────────────────────────────────────── */
 
@@ -41,7 +40,7 @@ extern "C" {
 /* Forward-declare AnyfsPathComp to avoid pulling in path_dsl.h here. */
 struct AnyfsPathComp;
 
-typedef struct AnyfsDisk AnyfsDisk;
+typedef struct AnyfsSession AnyfsSession;
 
 typedef enum {
 	ANYFS_PART_KIND_FS = 0, /* plain filesystem; enterable */
@@ -77,52 +76,48 @@ typedef enum {
 
 /* Open a disk image as a multi-partition session.
  * Internally calls anyfs_disk_add() and resolves the sysfs name.
- * `flags` is the same bitmask as anyfs_disk_add (ANYFS_DISK_READONLY,
+ * `flags` is the same bitmask as anyfs_disk_add (ANYFS_SESSION_READONLY,
  *  ANYFS_BACKEND_*). On success **out is owned by the caller and must
- *  be released with anyfs_disk_close(). */
-int anyfs_disk_open(const char* image_path, uint32_t flags, AnyfsDisk** out);
+ *  be released with anyfs_session_close(). */
+int anyfs_session_open(const char* image_path, uint32_t flags,
+		       AnyfsSession** out);
 
 /* Idempotent; safe at atexit. */
-void anyfs_disk_close(AnyfsDisk* d);
+void anyfs_session_close(AnyfsSession* d);
 
 /* The display name = basename of the image (or anything the surface
  * pinned). Used in lspart-style output. */
-const char* anyfs_disk_display(const AnyfsDisk* d);
-int anyfs_disk_id(const AnyfsDisk* d);
+const char* anyfs_session_display(const AnyfsSession* d);
+int anyfs_session_id(const AnyfsSession* d);
 
 /* Disk-level metadata: logical (virtual block-device) size from sysfs
  * and the outer partition-table flavour ("gpt", "dos", or ""). */
 typedef struct {
 	uint64_t logical_size; /* virtual block device size, in bytes */
 	char pt_type[16];      /* "gpt", "dos", or "" if no PT detected */
-} AnyfsDiskMeta;
+} AnyfsSessionMeta;
 
 /* Populate `*out` with the disk's logical size and PT flavour.
  * Returns 0 on success, negative on error. Safe to call any time
- * after anyfs_disk_open. */
-int anyfs_disk_meta(AnyfsDisk* d, AnyfsDiskMeta* out);
+ * after anyfs_session_open. */
+int anyfs_session_meta(AnyfsSession* d, AnyfsSessionMeta* out);
 
-/* Copy the disk's top-level partitions into `buf` (parent == -1).
- * Returns the number written (capped at buf_n). `got` is set to the
- * *full* count even if buf_n was too small. */
-int anyfs_disk_list(AnyfsDisk* d, AnyfsPartInfo* buf, size_t buf_n,
-		    size_t* got);
+/* Copy partitions whose parent matches `parent_slot_id` into `buf`.
+ * Pass -1 for top-level. Returns the number written (capped at buf_n).
+ * `got` is set to the *full* count even if buf_n was too small. */
+int anyfs_session_list(AnyfsSession* d, int parent_slot_id, AnyfsPartInfo* buf,
+		       size_t buf_n, size_t* got);
 
-/* Total partition count (top-level only). */
-size_t anyfs_disk_nparts(AnyfsDisk* d);
-
-/* List children of a specific slot (v2). Pass parent_slot_id = -1 for
- * top-level — same as anyfs_disk_list. Children only exist after the
- * container slot has been successfully entered. */
-int anyfs_disk_list_children(AnyfsDisk* d, int parent_slot_id,
-			     AnyfsPartInfo* buf, size_t buf_n, size_t* got);
+/* Count partitions whose parent matches `parent_slot_id`.
+ * Pass -1 for top-level. */
+size_t anyfs_session_count(AnyfsSession* d, int parent_slot_id);
 
 /* Enter a partition (or the whole disk). Idempotent. Concurrent callers
  * serialise per-slot.
  *
  *   part = 0  — whole disk, no partition table. Mounts the entire block
  *               device as a single filesystem using cached dev_t + fstype
- *               hint from anyfs_disk_open. Returns 0 and writes the LKL
+ *               hint from anyfs_session_open. Returns 0 and writes the LKL
  *               mount path into lkl_path (e.g. "/lklmnt/anyfs_d0_whole").
  *   part >= 1 — top-level partition by index. Equivalent to a one-segment
  *               enter_path.
@@ -131,8 +126,8 @@ int anyfs_disk_list_children(AnyfsDisk* d, int parent_slot_id,
  * For container kinds the call still succeeds (children become listable),
  * but lkl_path[0] = '\0'. Callers that need a mount must drill into a
  * child. */
-int anyfs_disk_enter(AnyfsDisk* d, unsigned int part, uint32_t flags,
-		     char lkl_path[ANYFS_LKL_PATH_MAX]);
+int anyfs_session_enter(AnyfsSession* d, unsigned int part, uint32_t flags,
+			char lkl_path[ANYFS_LKL_PATH_MAX]);
 
 /* Walk a chain of partition components (the parsed path-DSL output).
  * Walks the segments left to right: each non-final segment must
@@ -144,11 +139,11 @@ int anyfs_disk_enter(AnyfsDisk* d, unsigned int part, uint32_t flags,
  * `comp` must point at `n_comp` AnyfsPathComp entries (see path_dsl.h).
  * The query field of each comp (if non-NULL) is parsed for kind-
  * specific options (e.g. LUKS keyref/keyfile/keyfd/key). */
-int anyfs_disk_enter_path(AnyfsDisk* d, const struct AnyfsPathComp* comp,
-			  size_t n_comp, uint32_t flags,
-			  char lkl_path[ANYFS_LKL_PATH_MAX]);
+int anyfs_session_enter_path(AnyfsSession* d, const struct AnyfsPathComp* comp,
+			     size_t n_comp, uint32_t flags,
+			     char lkl_path[ANYFS_LKL_PATH_MAX]);
 
-/* Like anyfs_disk_enter_path, but the leaf is allowed to be a
+/* Like anyfs_session_enter_path, but the leaf is allowed to be a
  * container (in which case it is materialised so its children become
  * listable, and lkl_path[0] is set to '\0'). When the leaf is KIND_FS
  * the partition is mounted and lkl_path receives the mount path.
@@ -159,30 +154,30 @@ int anyfs_disk_enter_path(AnyfsDisk* d, const struct AnyfsPathComp* comp,
  *
  * Surfaces that need both modes (FUSE Mode B opendir) use this;
  * surfaces that strictly want a mounted FS (ksmbd, nfsd, FUSE Mode A)
- * keep using anyfs_disk_enter_path. */
-int anyfs_disk_walk(AnyfsDisk* d, const struct AnyfsPathComp* comp,
-		    size_t n_comp, uint32_t flags, int* leaf_slot_id_out,
-		    char lkl_path[ANYFS_LKL_PATH_MAX]);
+ * keep using anyfs_session_enter_path. */
+int anyfs_session_walk(AnyfsSession* d, const struct AnyfsPathComp* comp,
+		       size_t n_comp, uint32_t flags, int* leaf_slot_id_out,
+		       char lkl_path[ANYFS_LKL_PATH_MAX]);
 
-AnyfsPartState anyfs_disk_state(AnyfsDisk* d, unsigned int part);
-AnyfsPartState anyfs_disk_state_slot(AnyfsDisk* d, int slot_id);
+AnyfsPartState anyfs_session_state(AnyfsSession* d, unsigned int part);
+AnyfsPartState anyfs_session_state_slot(AnyfsSession* d, int slot_id);
 
 /* Reason string for FAILED partitions. Returns NULL when the partition
  * is in any non-FAILED state (NEW / MOUNTING / MOUNTED) and also when
  * `part` is out of range. Callers should NULL-guard. The returned
- * pointer is owned by the session and valid until anyfs_disk_close. */
-const char* anyfs_disk_fail_reason(AnyfsDisk* d, unsigned int part);
-const char* anyfs_disk_fail_reason_slot(AnyfsDisk* d, int slot_id);
+ * pointer is owned by the session and valid until anyfs_session_close. */
+const char* anyfs_session_fail_reason(AnyfsSession* d, unsigned int part);
+const char* anyfs_session_fail_reason_slot(AnyfsSession* d, int slot_id);
 
 /* Probe at the slot level. v2 fills fstype/label/uuid from cached
  * probe metadata (libblkid output, if available). Anything we don't
  * know stays as the empty string. */
-int anyfs_disk_probe(AnyfsDisk* d, unsigned int part, char fstype[32],
-		     char label[64], uint64_t* used);
+int anyfs_session_probe(AnyfsSession* d, unsigned int part, char fstype[32],
+			char label[64], uint64_t* used);
 
 /* Unmount a previously entered partition. Does not invalidate FAILED
  * cache. */
-int anyfs_disk_leave(AnyfsDisk* d, unsigned int part);
+int anyfs_session_leave(AnyfsSession* d, unsigned int part);
 
 #ifdef __cplusplus
 }

@@ -2,7 +2,7 @@
  * anyfs_mount.h — LKL mount / unmount helpers (internal)
  *
  * These are consumed only by the session layer. Public callers mount
- * via anyfs_disk_enter / anyfs_disk_enter_path.
+ * via anyfs_session_enter / anyfs_session_enter_path.
  */
 #ifndef ANYFS_MOUNT_H
 #define ANYFS_MOUNT_H

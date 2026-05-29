@@ -22,7 +22,7 @@ void anyfs_format_header(AnyfsStrbuf* sb);
 
 /* Print one disk's rows into sb. `disk_idx` is the positional 0-based
  * index the surface assigned (drives the `diskN/pM` PATH column). */
-void anyfs_format_disk(AnyfsStrbuf* sb, AnyfsDisk* d, int disk_idx);
+void anyfs_format_disk(AnyfsStrbuf* sb, AnyfsSession* d, int disk_idx);
 
 #ifdef __cplusplus
 }

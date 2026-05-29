@@ -52,7 +52,7 @@ typedef struct {
 
 /* ── Session handle ────────────────────────────────────────────── */
 
-struct AnyfsDisk {
+struct AnyfsSession {
 	int disk_id;
 	uint32_t open_flags;
 	char image_path[512];
@@ -72,8 +72,8 @@ struct AnyfsDisk {
 void set_fail(PartSlot* p, const char* reason);
 
 /* Allocate and initialise a new slot. Caller must hold the lock. */
-int alloc_slot_locked(struct AnyfsDisk* d, int parent_slot, unsigned int index,
-		      uint64_t off, uint64_t size, const char* blkdev,
-		      AnyfsPartKind kind);
+int alloc_slot_locked(struct AnyfsSession* d, int parent_slot,
+		      unsigned int index, uint64_t off, uint64_t size,
+		      const char* blkdev, AnyfsPartKind kind);
 
 #endif /* ANYFS_INTERNAL_H */

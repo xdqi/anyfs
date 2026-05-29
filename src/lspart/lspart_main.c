@@ -8,8 +8,6 @@
 #define _GNU_SOURCE
 
 #include "anyfs.h"
-#include "anyfs_format.h"
-#include "anyfs_session.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,7 +74,7 @@ int main(int argc, char** argv)
 		return 1;
 	}
 
-	AnyfsDisk* disks[16] = {0};
+	AnyfsSession* disks[16] = {0};
 	int n_open = 0;
 	int rc = 0;
 	for (int i = 0; i < n_images; i++) {
@@ -93,8 +91,9 @@ int main(int argc, char** argv)
 			clean[len] = '\0';
 			path = clean;
 		}
-		AnyfsDisk* d = NULL;
-		if (anyfs_disk_open(path, ANYFS_DISK_READONLY, &d) < 0 || !d) {
+		AnyfsSession* d = NULL;
+		if (anyfs_session_open(path, ANYFS_SESSION_READONLY, &d) < 0 ||
+		    !d) {
 			fprintf(stderr, "anyfs-lspart: failed to open %s\n",
 				images[i]);
 			rc = 1;
@@ -120,7 +119,7 @@ int main(int argc, char** argv)
 	anyfs_strbuf_free(&sb);
 
 	for (int i = 0; i < n_open; i++)
-		anyfs_disk_close(disks[i]);
+		anyfs_session_close(disks[i]);
 
 	return rc;
 }

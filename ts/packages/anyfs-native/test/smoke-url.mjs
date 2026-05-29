@@ -74,7 +74,7 @@ if (!isMainThread) {
         console.log('[smoke-url] init(64, 0)');
         if (n.init(64, 0) !== 0) process.exit(3);
 
-        // ANYFS_DISK_READONLY = 1 — required for the QEMU curl driver which is
+        // ANYFS_SESSION_READONLY = 1 — required for the QEMU curl driver which is
         // read-only by design.
         console.log('[smoke-url] diskOpen', url, '(RDONLY)');
         const h = n.diskOpen(url, 1);

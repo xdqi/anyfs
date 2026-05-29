@@ -44,11 +44,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "../core/anyfs_path.h"
-#include "../core/anyfs_share.h"
 #include "../host_proxy/host_proxy.h"
 #include "anyfs.h"
-#include "anyfs_session.h"
 #include <lkl.h>
 
 /* ── Compile-time limits ─────────────────────────────────────────────── */
@@ -68,7 +65,7 @@
 typedef struct {
 	char name[64]; /* NFS export name (client sees /<name>) */
 	char lkl_path[ANYFS_LKL_PATH_MAX]; /* absolute LKL path returned by
-					      anyfs_disk_enter */
+					      anyfs_session_enter */
 	/*
 	 * bind_path is "/<name>" — the share's filesystem bind-mounted into
 	 * LKL root so the NFSv4 pseudo-fs places it where the client expects.
@@ -743,9 +740,9 @@ int main(int argc, char** argv)
 
 	/* ── 4. Open disk images ────────────────────────────────────────────
 	 */
-	AnyfsDisk* disks[ANYFS_MAX_DISKS] = {NULL};
+	AnyfsSession* disks[ANYFS_MAX_DISKS] = {NULL};
 	{
-		uint32_t dflags = read_only ? ANYFS_DISK_READONLY : 0;
+		uint32_t dflags = read_only ? ANYFS_SESSION_READONLY : 0;
 		if (anyfs_share_open_disks(disks, disk_images, n_images,
 					   dflags) < 0)
 			goto halt;
@@ -754,7 +751,7 @@ int main(int argc, char** argv)
 	/* ── 5. Resolve --share specs to LKL paths ───────────────────────── */
 	for (int si = 0; si < n_share_specs; si++) {
 		ExportInfo* ex = &g_exports[g_n_exports];
-		uint32_t eflags = read_only ? ANYFS_DISK_READONLY : 0;
+		uint32_t eflags = read_only ? ANYFS_SESSION_READONLY : 0;
 		if (anyfs_share_resolve(share_specs[si], disks, n_images,
 					eflags, ex->name, sizeof(ex->name),
 					ex->lkl_path, sizeof(ex->lkl_path)) < 0)
@@ -860,7 +857,7 @@ int main(int argc, char** argv)
 halt:
 	for (int i = 0; i < n_images; i++) {
 		if (disks[i])
-			anyfs_disk_close(disks[i]);
+			anyfs_session_close(disks[i]);
 	}
 	anyfs_kernel_halt();
 	printf("Done\n");

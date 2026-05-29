@@ -59,7 +59,7 @@ int anyfs_disk_add(const char* image_path, uint32_t flags)
 	if (slot < 0)
 		return -1;
 
-	int readonly = (flags & ANYFS_DISK_READONLY) ? 1 : 0;
+	int readonly = (flags & ANYFS_SESSION_READONLY) ? 1 : 0;
 
 	/* Select backend */
 	const struct anyfs_backend_ops* ops = NULL;

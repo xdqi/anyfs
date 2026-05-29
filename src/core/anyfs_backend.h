@@ -41,7 +41,7 @@ extern struct disk_slot g_disks[];
 
 /* Add / remove a block device from the LKL virtio-blk bus. These are
  * internal helpers called by the session layer during open/close; the
- * public surface is anyfs_disk_open / anyfs_disk_close. */
+ * public surface is anyfs_session_open / anyfs_session_close. */
 int anyfs_disk_add(const char* image_path, uint32_t flags);
 int anyfs_disk_remove(int disk_id);
 

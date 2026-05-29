@@ -101,7 +101,7 @@ static void slot_to_info(const PartSlot* p, AnyfsPartInfo* o)
 	strncpy(o->uuid, p->uuid, sizeof(o->uuid) - 1);
 }
 
-int alloc_slot_locked(AnyfsDisk* d, int parent_slot, unsigned int index,
+int alloc_slot_locked(AnyfsSession* d, int parent_slot, unsigned int index,
 		      uint64_t off, uint64_t size, const char* blkdev,
 		      AnyfsPartKind kind)
 {
@@ -124,7 +124,7 @@ int alloc_slot_locked(AnyfsDisk* d, int parent_slot, unsigned int index,
 	return id;
 }
 
-static int find_slot_by_pair_locked(AnyfsDisk* d, int parent_slot,
+static int find_slot_by_pair_locked(AnyfsSession* d, int parent_slot,
 				    unsigned int index)
 {
 	for (size_t i = 0; i < d->n_parts; i++) {
@@ -169,7 +169,7 @@ static int get_blkdev_from_sys(int disk_id, unsigned int part, uint32_t* pdevid)
 	return 0;
 }
 
-static int load_top_parts_locked(AnyfsDisk* d)
+static int load_top_parts_locked(AnyfsSession* d)
 {
 	AnyfsSysfsPart sbuf[MAX_PARTS];
 	int n = anyfs_sysfs_walk(d->sysfs_name, sbuf, MAX_PARTS);
@@ -204,7 +204,8 @@ static int load_top_parts_locked(AnyfsDisk* d)
 	return 0;
 }
 
-int anyfs_disk_open(const char* image_path, uint32_t flags, AnyfsDisk** out)
+int anyfs_session_open(const char* image_path, uint32_t flags,
+		       AnyfsSession** out)
 {
 	if (!image_path || !out)
 		return -1;
@@ -214,7 +215,7 @@ int anyfs_disk_open(const char* image_path, uint32_t flags, AnyfsDisk** out)
 	if (disk_id < 0)
 		return -1;
 
-	AnyfsDisk* d = (AnyfsDisk*)calloc(1, sizeof(*d));
+	AnyfsSession* d = (AnyfsSession*)calloc(1, sizeof(*d));
 	if (!d) {
 		anyfs_disk_remove(disk_id);
 		return -1;
@@ -298,7 +299,7 @@ int anyfs_disk_open(const char* image_path, uint32_t flags, AnyfsDisk** out)
 	return 0;
 }
 
-void anyfs_disk_close(AnyfsDisk* d)
+void anyfs_session_close(AnyfsSession* d)
 {
 	if (!d)
 		return;
@@ -334,28 +335,28 @@ void anyfs_disk_close(AnyfsDisk* d)
 	free(d);
 }
 
-const char* anyfs_disk_display(const AnyfsDisk* d)
+const char* anyfs_session_display(const AnyfsSession* d)
 {
 	return d ? d->display : "";
 }
-int anyfs_disk_id(const AnyfsDisk* d)
+int anyfs_session_id(const AnyfsSession* d)
 {
 	return d ? d->disk_id : -1;
 }
 
-const char* anyfs_disk_whole_fstype_hint(const AnyfsDisk* d)
+const char* anyfs_session_whole_fstype_hint(const AnyfsSession* d)
 {
 	if (!d || !d->whole_fstype_hint[0])
 		return NULL;
 	return d->whole_fstype_hint;
 }
 
-uint32_t anyfs_disk_whole_dev(const AnyfsDisk* d)
+uint32_t anyfs_session_whole_dev(const AnyfsSession* d)
 {
 	return d ? d->whole_dev : 0;
 }
 
-int anyfs_disk_meta(AnyfsDisk* d, AnyfsDiskMeta* out)
+int anyfs_session_meta(AnyfsSession* d, AnyfsSessionMeta* out)
 {
 	if (!d || !out)
 		return -1;
@@ -397,13 +398,8 @@ int anyfs_disk_meta(AnyfsDisk* d, AnyfsDiskMeta* out)
 	return 0;
 }
 
-int anyfs_disk_list(AnyfsDisk* d, AnyfsPartInfo* buf, size_t buf_n, size_t* got)
-{
-	return anyfs_disk_list_children(d, ROOT_PARENT, buf, buf_n, got);
-}
-
-int anyfs_disk_list_children(AnyfsDisk* d, int parent_slot_id,
-			     AnyfsPartInfo* buf, size_t buf_n, size_t* got)
+int anyfs_session_list(AnyfsSession* d, int parent_slot_id, AnyfsPartInfo* buf,
+		       size_t buf_n, size_t* got)
 {
 	if (!d)
 		return -1;
@@ -423,20 +419,20 @@ int anyfs_disk_list_children(AnyfsDisk* d, int parent_slot_id,
 	return (int)written;
 }
 
-size_t anyfs_disk_nparts(AnyfsDisk* d)
+size_t anyfs_session_count(AnyfsSession* d, int parent_slot_id)
 {
 	if (!d)
 		return 0;
 	size_t n = 0;
 	pthread_mutex_lock(&d->lock);
 	for (size_t i = 0; i < d->n_parts; i++)
-		if (d->parts[i].parent_slot == ROOT_PARENT)
+		if (d->parts[i].parent_slot == parent_slot_id)
 			n++;
 	pthread_mutex_unlock(&d->lock);
 	return n;
 }
 
-AnyfsPartState anyfs_disk_state(AnyfsDisk* d, unsigned int part)
+AnyfsPartState anyfs_session_state(AnyfsSession* d, unsigned int part)
 {
 	if (!d)
 		return ANYFS_PART_FAILED;
@@ -447,7 +443,7 @@ AnyfsPartState anyfs_disk_state(AnyfsDisk* d, unsigned int part)
 	return s;
 }
 
-AnyfsPartState anyfs_disk_state_slot(AnyfsDisk* d, int slot_id)
+AnyfsPartState anyfs_session_state_slot(AnyfsSession* d, int slot_id)
 {
 	if (!d || slot_id < 0)
 		return ANYFS_PART_FAILED;
@@ -459,7 +455,7 @@ AnyfsPartState anyfs_disk_state_slot(AnyfsDisk* d, int slot_id)
 	return s;
 }
 
-const char* anyfs_disk_fail_reason(AnyfsDisk* d, unsigned int part)
+const char* anyfs_session_fail_reason(AnyfsSession* d, unsigned int part)
 {
 	if (!d)
 		return NULL;
@@ -472,7 +468,7 @@ const char* anyfs_disk_fail_reason(AnyfsDisk* d, unsigned int part)
 	return r;
 }
 
-const char* anyfs_disk_fail_reason_slot(AnyfsDisk* d, int slot_id)
+const char* anyfs_session_fail_reason_slot(AnyfsSession* d, int slot_id)
 {
 	if (!d || slot_id < 0)
 		return NULL;
@@ -486,7 +482,7 @@ const char* anyfs_disk_fail_reason_slot(AnyfsDisk* d, int slot_id)
 }
 
 /* Mount a KIND_FS slot. Caller must NOT hold the lock. */
-static int enter_fs_slot(AnyfsDisk* d, int slot_id, uint32_t flags,
+static int enter_fs_slot(AnyfsSession* d, int slot_id, uint32_t flags,
 			 char lkl_path[ANYFS_LKL_PATH_MAX])
 {
 	pthread_mutex_lock(&d->lock);
@@ -529,7 +525,7 @@ static int enter_fs_slot(AnyfsDisk* d, int slot_id, uint32_t flags,
 
 	AnyfsMount mnt = {0};
 	uint32_t mflags = 0;
-	if ((d->open_flags & ANYFS_DISK_READONLY) ||
+	if ((d->open_flags & ANYFS_SESSION_READONLY) ||
 	    (flags & ANYFS_MOUNT_RDONLY))
 		mflags |= ANYFS_MOUNT_RDONLY;
 
@@ -560,8 +556,8 @@ static int enter_fs_slot(AnyfsDisk* d, int slot_id, uint32_t flags,
 	return rc;
 }
 
-int anyfs_disk_enter(AnyfsDisk* d, unsigned int part, uint32_t flags,
-		     char lkl_path[ANYFS_LKL_PATH_MAX])
+int anyfs_session_enter(AnyfsSession* d, unsigned int part, uint32_t flags,
+			char lkl_path[ANYFS_LKL_PATH_MAX])
 {
 	if (!d || !lkl_path)
 		return -1;
@@ -569,7 +565,7 @@ int anyfs_disk_enter(AnyfsDisk* d, unsigned int part, uint32_t flags,
 
 	/* p0 = whole disk (no partition table).
 	 * Mount the entire block device as a single filesystem using cached
-	 * dev_t + fstype hint from anyfs_disk_open. */
+	 * dev_t + fstype hint from anyfs_session_open. */
 	if (part == 0) {
 		uint32_t dev = d->whole_dev;
 		if (dev == 0)
@@ -614,9 +610,9 @@ int anyfs_disk_enter(AnyfsDisk* d, unsigned int part, uint32_t flags,
 	return rc;
 }
 
-int anyfs_disk_walk(AnyfsDisk* d, const struct AnyfsPathComp* comp,
-		    size_t n_comp, uint32_t flags, int* leaf_slot_id_out,
-		    char lkl_path[ANYFS_LKL_PATH_MAX])
+int anyfs_session_walk(AnyfsSession* d, const struct AnyfsPathComp* comp,
+		       size_t n_comp, uint32_t flags, int* leaf_slot_id_out,
+		       char lkl_path[ANYFS_LKL_PATH_MAX])
 {
 	if (!d || !comp || n_comp == 0 || !lkl_path)
 		return -LKL_EINVAL;
@@ -654,9 +650,9 @@ int anyfs_disk_walk(AnyfsDisk* d, const struct AnyfsPathComp* comp,
 	return -LKL_EINVAL;
 }
 
-int anyfs_disk_enter_path(AnyfsDisk* d, const struct AnyfsPathComp* comp,
-			  size_t n_comp, uint32_t flags,
-			  char lkl_path[ANYFS_LKL_PATH_MAX])
+int anyfs_session_enter_path(AnyfsSession* d, const struct AnyfsPathComp* comp,
+			     size_t n_comp, uint32_t flags,
+			     char lkl_path[ANYFS_LKL_PATH_MAX])
 {
 	if (!d || !comp || n_comp == 0 || !lkl_path)
 		return -LKL_EINVAL;
@@ -664,7 +660,7 @@ int anyfs_disk_enter_path(AnyfsDisk* d, const struct AnyfsPathComp* comp,
 	 * mounted FS get the historical -LKL_EISDIR signal when the path
 	 * lands on a container. */
 	int leaf = -1;
-	int rc = anyfs_disk_walk(d, comp, n_comp, flags, &leaf, lkl_path);
+	int rc = anyfs_session_walk(d, comp, n_comp, flags, &leaf, lkl_path);
 	if (rc < 0)
 		return rc;
 	if (leaf < 0)
@@ -677,8 +673,8 @@ int anyfs_disk_enter_path(AnyfsDisk* d, const struct AnyfsPathComp* comp,
 	return 0;
 }
 
-int anyfs_disk_probe(AnyfsDisk* d, unsigned int part, char fstype[32],
-		     char label[64], uint64_t* used)
+int anyfs_session_probe(AnyfsSession* d, unsigned int part, char fstype[32],
+			char label[64], uint64_t* used)
 {
 	if (!d)
 		return -1;
@@ -706,7 +702,7 @@ int anyfs_disk_probe(AnyfsDisk* d, unsigned int part, char fstype[32],
 	return 0;
 }
 
-int anyfs_disk_leave(AnyfsDisk* d, unsigned int part)
+int anyfs_session_leave(AnyfsSession* d, unsigned int part)
 {
 	if (!d)
 		return -1;

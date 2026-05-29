@@ -59,7 +59,7 @@ void anyfs_share_warn_literal_key(const AnyfsPath* ap, const char* share_name)
 	}
 }
 
-int anyfs_share_resolve(const char* spec, AnyfsDisk** disks, int n_disks,
+int anyfs_share_resolve(const char* spec, AnyfsSession** disks, int n_disks,
 			uint32_t enter_flags, char* name_out, size_t name_sz,
 			char* lkl_out, size_t lkl_sz)
 {
@@ -146,11 +146,11 @@ int anyfs_share_resolve(const char* spec, AnyfsDisk** disks, int n_disks,
 
 	/* 9. Enter the partition chain */
 	char lkl_path[ANYFS_LKL_PATH_MAX];
-	int ret = anyfs_disk_enter_path(disks[disk_idx], ap.comp, ap.n_comp,
-					enter_flags, lkl_path);
+	int ret = anyfs_session_enter_path(disks[disk_idx], ap.comp, ap.n_comp,
+					   enter_flags, lkl_path);
 	if (ret < 0) {
 		const char* reason =
-		    anyfs_disk_fail_reason(disks[disk_idx], ap.comp[0].p);
+		    anyfs_session_fail_reason(disks[disk_idx], ap.comp[0].p);
 		fprintf(
 		    stderr,
 		    "error: cannot enter %s: %s\n"
@@ -189,7 +189,7 @@ int anyfs_share_resolve(const char* spec, AnyfsDisk** disks, int n_disks,
 	return 0;
 }
 
-int anyfs_share_open_disks(AnyfsDisk** disks_out, const char** images,
+int anyfs_share_open_disks(AnyfsSession** disks_out, const char** images,
 			   int n_images, uint32_t flags)
 {
 	for (int i = 0; i < n_images; i++) {
@@ -205,21 +205,21 @@ int anyfs_share_open_disks(AnyfsDisk** disks_out, const char** images,
 			img = img_clean;
 		}
 
-		AnyfsDisk* d = NULL;
-		int rc = anyfs_disk_open(img, flags, &d);
+		AnyfsSession* d = NULL;
+		int rc = anyfs_session_open(img, flags, &d);
 		if (rc < 0 || !d) {
 			fprintf(stderr,
 				"Failed to open disk image '%s' (rc=%d)\n",
 				images[i], rc);
 			for (int j = 0; j < i; j++) {
-				anyfs_disk_close(disks_out[j]);
+				anyfs_session_close(disks_out[j]);
 				disks_out[j] = NULL;
 			}
 			return -1;
 		}
 		disks_out[i] = d;
 		fprintf(stderr, "Opened disk%d: %s (id=%d)\n", i, img,
-			anyfs_disk_id(d));
+			anyfs_session_id(d));
 	}
 	return 0;
 }
