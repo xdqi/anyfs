@@ -6,7 +6,6 @@
  * FUSE callbacks adapted from Linux tools/lkl/lklfuse.c.
  *
  * Usage: anyfs-fuse [options] <image> [<image2> ...] <mountpoint>
- *   -o backend=NAME       block backend: qemu (default), raw
  *   -o fstype=TYPE        filesystem type hint (default: auto-detect)
  *   -o part=<path>        path DSL: p1, p2/p1, disk0/p1 (or bare int
  * back-compat) When given, that partition is mounted at the FUSE root (Mode A).
@@ -144,6 +143,7 @@ typedef struct timespec fuse_timespec;
 
 #include "../src/core/anyfs_disk_dump.h"
 #include "../src/core/path_dsl.h"
+#include "../src/core/share_spec.h"
 #include "anyfs.h"
 #include "anyfs_disk.h"
 
@@ -221,7 +221,6 @@ struct anyfs_fuse_config {
 	int loglevel;
 	char* fstype;
 	char* opts;
-	char* backend;
 };
 
 /* Additional images beyond the first: collected in opt_proc */
@@ -244,7 +243,6 @@ enum {
 };
 
 static struct fuse_opt anyfs_fuse_opts[] = {
-    ANYFS_FUSE_OPT("backend=%s", backend, 0),
     ANYFS_FUSE_OPT("fstype=%s", fstype, 0),
     ANYFS_FUSE_OPT("part=%s", part, 0),
     ANYFS_FUSE_OPT("prefetch", prefetch, 1),
@@ -268,7 +266,7 @@ static void usage(void)
 	    "    -V   --version        print version\n"
 	    "\n"
 	    "anyfs-fuse options:\n"
-	    "    -o backend=NAME       block backend: qemu (default), raw\n"
+	    ""
 	    "    -o fstype=TYPE        filesystem type hint (default: "
 	    "auto-detect)\n"
 	    "    -o part=<path>        path DSL or bare int; pin partition at "
@@ -1673,46 +1671,24 @@ int main(int argc, char* argv[])
 	/* ── Step 3: Open disk(s) ── */
 	{
 		uint32_t disk_flags = ANYFS_BACKEND_QEMU;
-		if (!cfg.backend || strcmp(cfg.backend, "qemu") == 0) {
-			disk_flags = ANYFS_BACKEND_QEMU;
-		} else if (strcmp(cfg.backend, "raw") == 0) {
-			disk_flags = ANYFS_BACKEND_RAW;
-		} else {
-			fprintf(stderr, "unknown backend '%s', using qemu\n",
-				cfg.backend);
-			disk_flags = ANYFS_BACKEND_QEMU;
-		}
 		if (cfg.readonly)
 			disk_flags |= ANYFS_DISK_READONLY;
 
-		/* First image (always present) */
-		{
-			AnyfsDisk* d = NULL;
-			ret = anyfs_disk_open(cfg.image, disk_flags, &d);
-			if (ret < 0 || !d) {
-				fprintf(stderr,
-					"anyfs_disk_open(%s) failed: %d\n",
-					cfg.image, ret);
-				ret = 1;
-				goto out_kernel_halt;
-			}
-			g_disks[g_ndisks++].disk = d;
-		}
+		/* Build a combined image array: first image + extras */
+		const char* all_images[MAX_DISKS];
+		all_images[0] = cfg.image;
+		for (int i = 0; i < g_nextra; i++)
+			all_images[i + 1] = g_extra_images[i];
 
-		/* Additional images */
-		for (int i = 0; i < g_nextra; i++) {
-			AnyfsDisk* d = NULL;
-			ret =
-			    anyfs_disk_open(g_extra_images[i], disk_flags, &d);
-			if (ret < 0 || !d) {
-				fprintf(stderr,
-					"anyfs_disk_open(%s) failed: %d\n",
-					g_extra_images[i], ret);
-				ret = 1;
-				goto out_disks_close;
-			}
-			g_disks[g_ndisks++].disk = d;
+		AnyfsDisk* opened[MAX_DISKS] = {NULL};
+		int n_total = 1 + g_nextra;
+		if (anyfs_sesh_open_disks(opened, all_images, n_total,
+					  disk_flags) < 0) {
+			ret = 1;
+			goto out_kernel_halt;
 		}
+		for (int i = 0; i < n_total; i++)
+			g_disks[g_ndisks++].disk = opened[i];
 	}
 
 	/* ── Step 4a: Mode A — enter specified partition at startup ── */
@@ -1761,13 +1737,10 @@ int main(int argc, char* argv[])
 			    sizeof(g_disks[didx].parts[part_num - 1].lkl_path),
 			    "%s", lkl_path);
 
-		const char* backend_name =
-		    (!cfg.backend || strcmp(cfg.backend, "qemu") == 0) ? "qemu"
-								       : "raw";
-		fprintf(stderr,
-			"anyfs-fuse: %s %s → %s, mounted at %s (backend: %s)\n",
-			cfg.image, part_str, lkl_path, cli_mountpoint,
-			backend_name);
+		fprintf(
+		    stderr,
+		    "anyfs-fuse: %s %s → %s, mounted at %s (backend: qemu)\n",
+		    cfg.image, part_str, lkl_path, cli_mountpoint);
 
 		/* ── Step 4b: Mode B — optional prefetch ── */
 	} else if (cfg.prefetch) {
@@ -1842,7 +1815,6 @@ out_fuse_destroy:
 out:
 	free(cli_mountpoint);
 	free(cfg.image);
-	free(cfg.backend);
 	free(cfg.fstype);
 	free(cfg.opts);
 	free(cfg.part);
