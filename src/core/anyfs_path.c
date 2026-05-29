@@ -20,7 +20,7 @@ static int hex_nyb(int c)
 	return -1;
 }
 
-int anyfs_path_dsl_pct_decode(char* s)
+int anyfs_path_pct_decode(char* s)
 {
 	if (!s)
 		return 0;
@@ -85,13 +85,13 @@ static int parse_component(char* seg, AnyfsPathComp* out)
 	if (out->query) {
 		/* URL-decode the query string in place; encoded slashes were
 		 * preserved because splitting happened first. */
-		if (anyfs_path_dsl_pct_decode((char*)out->query) < 0)
+		if (anyfs_path_pct_decode((char*)out->query) < 0)
 			return -1;
 	}
 	return 0;
 }
 
-void anyfs_path_dsl_free(AnyfsPath* p)
+void anyfs_path_free(AnyfsPath* p)
 {
 	if (!p)
 		return;
@@ -99,7 +99,7 @@ void anyfs_path_dsl_free(AnyfsPath* p)
 	memset(p, 0, sizeof(*p));
 }
 
-int anyfs_path_dsl_parse(const char* s, AnyfsPath* out)
+int anyfs_path_parse(const char* s, AnyfsPath* out)
 {
 	if (!s || !out)
 		return -1;
@@ -119,7 +119,7 @@ int anyfs_path_dsl_parse(const char* s, AnyfsPath* out)
 	if (L == 0) {
 		/* Empty path is a parse error here; surfaces that allow "the
 		 * disk root" handle that themselves. */
-		anyfs_path_dsl_free(out);
+		anyfs_path_free(out);
 		return -1;
 	}
 
@@ -127,12 +127,12 @@ int anyfs_path_dsl_parse(const char* s, AnyfsPath* out)
 	 * inside `keyfile=` must NOT split. The encoded form is %2F, so
 	 * the raw input has no literal '/' inside a value, and we can
 	 * just split on every '/'. */
-	char* segs[ANYFS_PATH_DSL_MAX_COMPONENTS + 1];
+	char* segs[ANYFS_PATH_MAX_COMPONENTS + 1];
 	size_t nseg = 0;
 	char* p = arena;
 	while (p && *p) {
 		if (nseg >= sizeof(segs) / sizeof(segs[0])) {
-			anyfs_path_dsl_free(out);
+			anyfs_path_free(out);
 			return -1;
 		}
 		segs[nseg++] = p;
@@ -145,7 +145,7 @@ int anyfs_path_dsl_parse(const char* s, AnyfsPath* out)
 		}
 	}
 	if (nseg == 0) {
-		anyfs_path_dsl_free(out);
+		anyfs_path_free(out);
 		return -1;
 	}
 
@@ -153,7 +153,7 @@ int anyfs_path_dsl_parse(const char* s, AnyfsPath* out)
 	int disk_idx = 0;
 	int dr = parse_disk_prefix(segs[0], &disk_idx);
 	if (dr < 0) {
-		anyfs_path_dsl_free(out);
+		anyfs_path_free(out);
 		return -1;
 	}
 	if (dr == 1) {
@@ -162,19 +162,19 @@ int anyfs_path_dsl_parse(const char* s, AnyfsPath* out)
 		comp_start = 1;
 		if (nseg == 1) {
 			/* "disk0" alone is not a valid partition path. */
-			anyfs_path_dsl_free(out);
+			anyfs_path_free(out);
 			return -1;
 		}
 	}
 
 	size_t ncomp = nseg - comp_start;
-	if (ncomp == 0 || ncomp > ANYFS_PATH_DSL_MAX_COMPONENTS) {
-		anyfs_path_dsl_free(out);
+	if (ncomp == 0 || ncomp > ANYFS_PATH_MAX_COMPONENTS) {
+		anyfs_path_free(out);
 		return -1;
 	}
 	for (size_t i = 0; i < ncomp; i++) {
 		if (parse_component(segs[comp_start + i], &out->comp[i]) < 0) {
-			anyfs_path_dsl_free(out);
+			anyfs_path_free(out);
 			return -1;
 		}
 	}

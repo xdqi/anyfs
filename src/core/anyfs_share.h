@@ -49,8 +49,8 @@ int anyfs_share_resolve(const char* spec, AnyfsDisk** disks, int n_disks,
  *
  * disks_out must be pre-allocated with at least n_images slots. Returns 0
  * on success, -1 on failure. */
-int anyfs_sesh_open_disks(AnyfsDisk** disks_out, const char** images,
-			  int n_images, uint32_t flags);
+int anyfs_share_open_disks(AnyfsDisk** disks_out, const char** images,
+			   int n_images, uint32_t flags);
 
 #ifdef __cplusplus
 }

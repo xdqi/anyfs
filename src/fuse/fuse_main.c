@@ -141,7 +141,7 @@ typedef unsigned int fuse_gid_t;
 typedef struct timespec fuse_timespec;
 #endif
 
-#include "../src/core/anyfs_disk_dump.h"
+#include "../src/core/anyfs_format.h"
 #include "../src/core/anyfs_path.h"
 #include "../src/core/anyfs_share.h"
 #include "anyfs.h"
@@ -177,7 +177,7 @@ typedef struct {
  * walking it against the disk session (set by resolve_fuse_path). */
 typedef struct {
 	int disk_idx;  /* -1 if path is "/" or ".partitions" only */
-	AnyfsPath dsl; /* must be released with anyfs_path_dsl_free */
+	AnyfsPath dsl; /* must be released with anyfs_path_free */
 	int dsl_inited;
 	char inner[4096]; /* "" if no inner path, else "/sub/...". */
 	/* Filled after resolve_walk_chain: */
@@ -189,7 +189,7 @@ typedef struct {
 static void fuse_path_release(FusePath* fp)
 {
 	if (fp && fp->dsl_inited) {
-		anyfs_path_dsl_free(&fp->dsl);
+		anyfs_path_free(&fp->dsl);
 		fp->dsl_inited = 0;
 	}
 }
@@ -466,7 +466,7 @@ static PathKind parse_fuse_path(const char* fuse_path, FusePath* out)
 	memcpy(dsl_buf, p, chain_len);
 	dsl_buf[chain_len] = '\0';
 
-	if (anyfs_path_dsl_parse(dsl_buf, &out->dsl) < 0)
+	if (anyfs_path_parse(dsl_buf, &out->dsl) < 0)
 		return -1;
 	out->dsl_inited = 1;
 
@@ -576,13 +576,14 @@ static char* build_partitions_table(int disk_idx, size_t* len)
 {
 	AnyfsStrbuf sb;
 	anyfs_strbuf_init(&sb);
-	anyfs_dump_header(&sb);
+	anyfs_format_header(&sb);
 	if (disk_idx < 0) {
 		for (int i = 0; i < g_ndisks; i++)
-			anyfs_dump_disk(&sb, g_disks[i].disk, i);
+			anyfs_format_disk(&sb, g_disks[i].disk, i);
 	} else {
 		if (disk_idx < g_ndisks)
-			anyfs_dump_disk(&sb, g_disks[disk_idx].disk, disk_idx);
+			anyfs_format_disk(&sb, g_disks[disk_idx].disk,
+					  disk_idx);
 	}
 	return anyfs_strbuf_detach(&sb, len);
 }
@@ -1589,8 +1590,8 @@ int main(int argc, char* argv[])
 
 		AnyfsDisk* opened[ANYFS_MAX_DISKS] = {NULL};
 		int n_total = 1 + g_nextra;
-		if (anyfs_sesh_open_disks(opened, all_images, n_total,
-					  disk_flags) < 0) {
+		if (anyfs_share_open_disks(opened, all_images, n_total,
+					   disk_flags) < 0) {
 			ret = 1;
 			goto out_kernel_halt;
 		}
@@ -1604,7 +1605,7 @@ int main(int argc, char* argv[])
 
 		AnyfsPath dsl;
 		memset(&dsl, 0, sizeof(dsl));
-		if (anyfs_path_dsl_parse(part_str, &dsl) < 0) {
+		if (anyfs_path_parse(part_str, &dsl) < 0) {
 			fprintf(stderr, "error: invalid -o part= path '%s'\n",
 				part_str);
 			ret = 1;
@@ -1614,7 +1615,7 @@ int main(int argc, char* argv[])
 		int didx = dsl.disk_idx_set ? dsl.disk_idx : 0;
 		if (didx < 0 || didx >= g_ndisks) {
 			fprintf(stderr, "error: disk%d not registered\n", didx);
-			anyfs_path_dsl_free(&dsl);
+			anyfs_path_free(&dsl);
 			ret = 1;
 			goto out_disks_close;
 		}
@@ -1631,10 +1632,10 @@ int main(int argc, char* argv[])
 			    didx, part_str, ret,
 			    anyfs_disk_fail_reason(g_disks[didx].disk,
 						   part_num));
-			anyfs_path_dsl_free(&dsl);
+			anyfs_path_free(&dsl);
 			goto out_disks_close;
 		}
-		anyfs_path_dsl_free(&dsl);
+		anyfs_path_free(&dsl);
 		snprintf(g_mount_point, sizeof(g_mount_point), "%s", lkl_path);
 		/* Cache it in the PartCache too (top-level part_num only —
 		 * nested paths are addressed by lkl_path directly). */

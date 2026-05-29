@@ -101,7 +101,7 @@ int anyfs_share_resolve(const char* spec, AnyfsDisk** disks, int n_disks,
 	/* 4. Parse via path DSL */
 	AnyfsPath ap;
 	memset(&ap, 0, sizeof(ap));
-	if (anyfs_path_dsl_parse(path_arg, &ap) < 0) {
+	if (anyfs_path_parse(path_arg, &ap) < 0) {
 		fprintf(stderr,
 			"error: --share path '%s' is not a valid path DSL "
 			"string.\n",
@@ -115,7 +115,7 @@ int anyfs_share_resolve(const char* spec, AnyfsDisk** disks, int n_disks,
 			"error: path '%s' must start with diskN/ in multi-disk "
 			"mode (have %d images: disk0..disk%d).\n",
 			spec, n_disks, n_disks - 1);
-		anyfs_path_dsl_free(&ap);
+		anyfs_path_free(&ap);
 		return -1;
 	}
 
@@ -127,7 +127,7 @@ int anyfs_share_resolve(const char* spec, AnyfsDisk** disks, int n_disks,
 			"error: disk%d not registered (only disk0..disk%d "
 			"available).\n",
 			disk_idx, n_disks - 1);
-		anyfs_path_dsl_free(&ap);
+		anyfs_path_free(&ap);
 		return -1;
 	}
 
@@ -137,7 +137,7 @@ int anyfs_share_resolve(const char* spec, AnyfsDisk** disks, int n_disks,
 		    stderr,
 		    "error: --share path '%s' has no partition component.\n",
 		    path_arg);
-		anyfs_path_dsl_free(&ap);
+		anyfs_path_free(&ap);
 		return -1;
 	}
 
@@ -159,7 +159,7 @@ int anyfs_share_resolve(const char* spec, AnyfsDisk** disks, int n_disks,
 		    "either a credential (`?keyref=`) or v3 support.\n"
 		    "Use 'anyfs-lspart' to discover the canonical leaf path.\n",
 		    path_arg, reason ? reason : lkl_strerror(ret));
-		anyfs_path_dsl_free(&ap);
+		anyfs_path_free(&ap);
 		return -1;
 	}
 
@@ -185,12 +185,12 @@ int anyfs_share_resolve(const char* spec, AnyfsDisk** disks, int n_disks,
 	strncpy(lkl_out, lkl_path, lkl_sz - 1);
 	lkl_out[lkl_sz - 1] = '\0';
 
-	anyfs_path_dsl_free(&ap);
+	anyfs_path_free(&ap);
 	return 0;
 }
 
-int anyfs_sesh_open_disks(AnyfsDisk** disks_out, const char** images,
-			  int n_images, uint32_t flags)
+int anyfs_share_open_disks(AnyfsDisk** disks_out, const char** images,
+			   int n_images, uint32_t flags)
 {
 	for (int i = 0; i < n_images; i++) {
 		const char* img = images[i];

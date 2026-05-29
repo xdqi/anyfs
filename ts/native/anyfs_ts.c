@@ -294,7 +294,7 @@ int anyfs_ts_mount_whole(int h, const char* fstype, uint32_t flags,
 		hint = anyfs_disk_whole_fstype_hint(d);
 	if (!hint) {
 		char probed[32] = {0}, lbl[64] = {0}, uid[40] = {0};
-		(void)anyfs_kindprobe_meta(devpath, probed, lbl, uid);
+		(void)anyfs_probe_meta(devpath, probed, lbl, uid);
 		if (probed[0])
 			hint = probed;
 	}

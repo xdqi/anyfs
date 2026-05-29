@@ -746,8 +746,8 @@ int main(int argc, char** argv)
 	AnyfsDisk* disks[ANYFS_MAX_DISKS] = {NULL};
 	{
 		uint32_t dflags = read_only ? ANYFS_DISK_READONLY : 0;
-		if (anyfs_sesh_open_disks(disks, disk_images, n_images,
-					  dflags) < 0)
+		if (anyfs_share_open_disks(disks, disk_images, n_images,
+					   dflags) < 0)
 			goto halt;
 	}
 

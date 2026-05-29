@@ -8,7 +8,7 @@
 #define _GNU_SOURCE
 
 #include "anyfs.h"
-#include "anyfs_disk_dump.h"
+#include "anyfs_format.h"
 #include "anyfs_session.h"
 
 #include <stdio.h>
@@ -105,10 +105,10 @@ int main(int argc, char** argv)
 
 	AnyfsStrbuf sb;
 	anyfs_strbuf_init(&sb);
-	anyfs_dump_header(&sb);
+	anyfs_format_header(&sb);
 	int disk_idx = 0;
 	for (int i = 0; i < n_open; i++) {
-		anyfs_dump_disk(&sb, disks[i], disk_idx++);
+		anyfs_format_disk(&sb, disks[i], disk_idx++);
 	}
 	if (sb.err) {
 		fprintf(stderr,

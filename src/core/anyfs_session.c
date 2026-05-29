@@ -194,9 +194,9 @@ static int load_top_parts_locked(AnyfsDisk* d)
 				(void)lkl_sys_mkdir("/dev", 0700);
 			(void)lkl_sys_mknod(blkdev, LKL_S_IFBLK | 0600, dev);
 		}
-		d->parts[sid].kind = anyfs_kindprobe_blkdev(blkdev);
+		d->parts[sid].kind = anyfs_probe_kind_blkdev(blkdev);
 		if (d->parts[sid].kind == ANYFS_PART_KIND_FS) {
-			(void)anyfs_kindprobe_meta(
+			(void)anyfs_probe_meta(
 			    blkdev, d->parts[sid].fstype_cache,
 			    d->parts[sid].label, d->parts[sid].uuid);
 		}
@@ -391,7 +391,7 @@ int anyfs_disk_meta(AnyfsDisk* d, AnyfsDiskMeta* out)
 			(void)lkl_sys_mkdir("/dev", 0700);
 		(void)lkl_sys_mknod(blk_path, LKL_S_IFBLK | 0600, whole_dev);
 	}
-	const char* pt = anyfs_pttype_blkdev(blk_path);
+	const char* pt = anyfs_probe_pttype_blkdev(blk_path);
 	strncpy(out->pt_type, pt, sizeof(out->pt_type) - 1);
 	out->pt_type[sizeof(out->pt_type) - 1] = '\0';
 	return 0;

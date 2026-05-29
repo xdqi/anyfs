@@ -5,7 +5,7 @@
  * v1 magic checks. Anything that matches none of them lands in KIND_FS
  * and the kernel figures out the filesystem at mount time.
  *
- * v2 adds anyfs_kindprobe_meta: spool 2 MB of the partition to a host
+ * v2 adds anyfs_probe_meta: spool 2 MB of the partition to a host
  * tmpfile, run libblkid against it for FSTYPE/LABEL/UUID. We snapshot
  * rather than pass libblkid an LKL fd because libblkid uses host
  * pread(2), which has no idea what an LKL kernel fd is.
@@ -37,7 +37,7 @@ static int mem_match(const void* buf, size_t len, size_t off, const void* pat,
 	return memcmp((const unsigned char*)buf + off, pat, patlen) == 0;
 }
 
-AnyfsPartKind anyfs_kindprobe_buf(const void* buf, size_t len)
+AnyfsPartKind anyfs_probe_kind_buf(const void* buf, size_t len)
 {
 	if (!buf || len < 512)
 		return ANYFS_PART_KIND_FS;
@@ -102,7 +102,7 @@ AnyfsPartKind anyfs_kindprobe_buf(const void* buf, size_t len)
 	return ANYFS_PART_KIND_FS;
 }
 
-AnyfsPartKind anyfs_kindprobe_blkdev(const char* lkl_blkdev_path)
+AnyfsPartKind anyfs_probe_kind_blkdev(const char* lkl_blkdev_path)
 {
 	if (!lkl_blkdev_path)
 		return ANYFS_PART_KIND_FS;
@@ -125,7 +125,7 @@ AnyfsPartKind anyfs_kindprobe_blkdev(const char* lkl_blkdev_path)
 	if (got == 0)
 		return ANYFS_PART_KIND_FS;
 
-	return anyfs_kindprobe_buf(buf, got);
+	return anyfs_probe_kind_buf(buf, got);
 }
 
 /* Spool up to `spool_bytes` from the start of the LKL block device to a
@@ -299,8 +299,8 @@ static int parse_gpt(const unsigned char* buf, size_t len, AnyfsInnerPart* out,
 	return n;
 }
 
-int anyfs_partprobe_buf(const void* raw, size_t len, AnyfsInnerPart* out,
-			int max)
+int anyfs_probe_pt_buf(const void* raw, size_t len, AnyfsInnerPart* out,
+		       int max)
 {
 	if (!raw || !out || max <= 0)
 		return 0;
@@ -313,8 +313,8 @@ int anyfs_partprobe_buf(const void* raw, size_t len, AnyfsInnerPart* out,
 	return parse_mbr(buf, len, out, max);
 }
 
-int anyfs_partprobe_blkdev(const char* lkl_blkdev_path, AnyfsInnerPart* out,
-			   int max)
+int anyfs_probe_pt_blkdev(const char* lkl_blkdev_path, AnyfsInnerPart* out,
+			  int max)
 {
 	if (!lkl_blkdev_path || !out || max <= 0)
 		return 0;
@@ -336,10 +336,10 @@ int anyfs_partprobe_blkdev(const char* lkl_blkdev_path, AnyfsInnerPart* out,
 	lkl_sys_close(fd);
 	if (got < 512)
 		return 0;
-	return anyfs_partprobe_buf(buf, got, out, max);
+	return anyfs_probe_pt_buf(buf, got, out, max);
 }
 
-const char* anyfs_pttype_buf(const void* raw, size_t len)
+const char* anyfs_probe_pttype_buf(const void* raw, size_t len)
 {
 	if (!raw || len < 512)
 		return "";
@@ -358,7 +358,7 @@ const char* anyfs_pttype_buf(const void* raw, size_t len)
 	return "";
 }
 
-const char* anyfs_pttype_blkdev(const char* lkl_blkdev_path)
+const char* anyfs_probe_pttype_blkdev(const char* lkl_blkdev_path)
 {
 	if (!lkl_blkdev_path)
 		return "";
@@ -375,11 +375,11 @@ const char* anyfs_pttype_blkdev(const char* lkl_blkdev_path)
 		got += (size_t)n;
 	}
 	lkl_sys_close(fd);
-	return anyfs_pttype_buf(buf, got);
+	return anyfs_probe_pttype_buf(buf, got);
 }
 
-int anyfs_kindprobe_meta(const char* lkl_blkdev_path, char fstype[32],
-			 char label[64], char uuid[40])
+int anyfs_probe_meta(const char* lkl_blkdev_path, char fstype[32],
+		     char label[64], char uuid[40])
 {
 	if (fstype)
 		fstype[0] = '\0';

@@ -22,11 +22,11 @@ extern "C" {
 #endif
 
 /* Classify based on a 64KB superblock buffer. */
-AnyfsPartKind anyfs_kindprobe_buf(const void* buf, size_t len);
+AnyfsPartKind anyfs_probe_kind_buf(const void* buf, size_t len);
 
 /* Open `/dev/<vdN>p<n>` (or `/dev/mapper/<name>`) via LKL, pread 64KB,
  * classify, close. Returns ANYFS_PART_KIND_FS on any I/O error. */
-AnyfsPartKind anyfs_kindprobe_blkdev(const char* lkl_blkdev_path);
+AnyfsPartKind anyfs_probe_kind_blkdev(const char* lkl_blkdev_path);
 
 /* v2 enrichment: drive libblkid against a snapshot of the partition's
  * superblock area. `lkl_blkdev_path` is the LKL block device.
@@ -38,8 +38,8 @@ AnyfsPartKind anyfs_kindprobe_blkdev(const char* lkl_blkdev_path);
  *
  * When libblkid is not compiled in (ANYFS_HAS_BLKID undefined), this
  * is a no-op that returns 0 with empty outputs. */
-int anyfs_kindprobe_meta(const char* lkl_blkdev_path, char fstype[32],
-			 char label[64], char uuid[40]);
+int anyfs_probe_meta(const char* lkl_blkdev_path, char fstype[32],
+		     char label[64], char uuid[40]);
 
 /* Inner partition descriptor exposed to anyfs_disk's container walker.
  * `index` is 1-based; `start_bytes`/`size_bytes` are relative to the
@@ -55,24 +55,24 @@ typedef struct AnyfsInnerPart {
  * count, or 0 if no recognisable table is found. The caller passes a
  * buffer covering at least 64 KB (so GPT entry array fits). MBR extended
  * partitions are not chased — only primary entries are exposed. */
-int anyfs_partprobe_buf(const void* buf, size_t len, AnyfsInnerPart* out,
-			int max);
+int anyfs_probe_pt_buf(const void* buf, size_t len, AnyfsInnerPart* out,
+		       int max);
 
 /* Convenience: open the LKL block device, pread a sufficient prefix,
- * delegate to anyfs_partprobe_buf. Returns 0 on I/O failure or no
+ * delegate to anyfs_probe_pt_buf. Returns 0 on I/O failure or no
  * recognisable table. */
-int anyfs_partprobe_blkdev(const char* lkl_blkdev_path, AnyfsInnerPart* out,
-			   int max);
+int anyfs_probe_pt_blkdev(const char* lkl_blkdev_path, AnyfsInnerPart* out,
+			  int max);
 
 /* Classify the partition-table flavour of a buffer covering the start
  * of a block device. Returns "gpt", "dos", or "" (empty = no table
  * detected). GPT is preferred when both signatures coexist
  * (protective-MBR + real GPT). */
-const char* anyfs_pttype_buf(const void* buf, size_t len);
+const char* anyfs_probe_pttype_buf(const void* buf, size_t len);
 
 /* Convenience: pread the prefix off the LKL block device and classify.
- * Returns the same strings as anyfs_pttype_buf. */
-const char* anyfs_pttype_blkdev(const char* lkl_blkdev_path);
+ * Returns the same strings as anyfs_probe_pttype_buf. */
+const char* anyfs_probe_pttype_blkdev(const char* lkl_blkdev_path);
 
 #ifdef __cplusplus
 }

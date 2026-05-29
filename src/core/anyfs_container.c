@@ -186,7 +186,7 @@ int enter_container_slot(struct AnyfsDisk* d, int slot_id, const char* query,
 	int n_inner = 0;
 	if (kind == ANYFS_PART_KIND_NESTED_PARTITION_TABLE) {
 		n_inner =
-		    anyfs_partprobe_blkdev(parent_blkdev, inners, MAX_PARTS);
+		    anyfs_probe_pt_blkdev(parent_blkdev, inners, MAX_PARTS);
 		DBG("partprobe(%s) -> n=%d\n", parent_blkdev, n_inner);
 		rc = (n_inner > 0) ? 0 : -LKL_ENOENT;
 	} else if (kind == ANYFS_PART_KIND_LUKS) {
@@ -278,10 +278,10 @@ fail_locked:
 			pthread_mutex_unlock(&d->lock);
 			/* Probe outside the lock — pread + libblkid on a host
 			 * tmpfile. */
-			AnyfsPartKind ck = anyfs_kindprobe_blkdev(cout);
+			AnyfsPartKind ck = anyfs_probe_kind_blkdev(cout);
 			char fst[32] = "", lbl[64] = "", uid[40] = "";
 			if (ck == ANYFS_PART_KIND_FS)
-				(void)anyfs_kindprobe_meta(cout, fst, lbl, uid);
+				(void)anyfs_probe_meta(cout, fst, lbl, uid);
 			pthread_mutex_lock(&d->lock);
 			d->parts[cid].kind = ck;
 			strncpy(d->parts[cid].fstype_cache, fst,

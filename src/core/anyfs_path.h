@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-#define ANYFS_PATH_DSL_MAX_COMPONENTS 8
+#define ANYFS_PATH_MAX_COMPONENTS 8
 
 typedef struct AnyfsPathComp {
 	unsigned int p;	   /* partition index (>0) */
@@ -22,25 +22,25 @@ typedef struct AnyfsPathComp {
 
 typedef struct {
 	/* Arena memory backing everything below. Free with
-	 * anyfs_path_dsl_free. */
+	 * anyfs_path_free. */
 	char* arena;
 
 	int disk_idx_set; /* 1 if `diskN/` was explicit */
 	int disk_idx;	  /* 0 if not set */
 
 	size_t n_comp;
-	AnyfsPathComp comp[ANYFS_PATH_DSL_MAX_COMPONENTS];
+	AnyfsPathComp comp[ANYFS_PATH_MAX_COMPONENTS];
 } AnyfsPath;
 
 /* Parse `s` into `out`. Returns 0 on success, negative on parse error.
- * `out->arena` must be released with anyfs_path_dsl_free. On error the
+ * `out->arena` must be released with anyfs_path_free. On error the
  * struct is in a safe zeroed state. */
-int anyfs_path_dsl_parse(const char* s, AnyfsPath* out);
-void anyfs_path_dsl_free(AnyfsPath* p);
+int anyfs_path_parse(const char* s, AnyfsPath* out);
+void anyfs_path_free(AnyfsPath* p);
 
 /* Percent-decode `s` in place. Returns 0 on success; -1 on a bad
  * escape (the buffer is left as-is). */
-int anyfs_path_dsl_pct_decode(char* s);
+int anyfs_path_pct_decode(char* s);
 
 #ifdef __cplusplus
 }
