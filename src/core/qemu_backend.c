@@ -113,6 +113,7 @@ int qemu_blk_open(const char* image_path, uint32_t flags,
 {
 	Error* errp = NULL;
 	bool readonly = flags & ANYFS_SESSION_READONLY;
+	bool snapshot = flags & ANYFS_SESSION_SNAPSHOT;
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -121,8 +122,19 @@ int qemu_blk_open(const char* image_path, uint32_t flags,
 	 * first poll(timeout>0) spin-loops because ASYNCIFY isn't engaged on
 	 * a worker-thread synchronous entry. */
 	emscripten_sleep(0);
+
+	/* When snapshot is requested, QEMU's create_tmp_file() writes the
+	 * temporary qcow2 overlay under /var/tmp (glib g_get_tmp_dir → /tmp →
+	 * /var/tmp on non-Windows). On Emscripten MEMFS, /var and /var/tmp
+	 * don't exist by default — create them so the overlay lands in the
+	 * in-memory filesystem instead of failing with ENOENT. */
+	if (snapshot) {
+		mkdir("/var", 0777);
+		mkdir("/var/tmp", 0777);
+	}
 #endif
-	fprintf(stderr, "[qemu_blk] open(%s) ro=%d\n", image_path, readonly);
+	fprintf(stderr, "[qemu_blk] open(%s) ro=%d snap=%d\n", image_path,
+		readonly, snapshot);
 	if (!qemu_initialized) {
 		fprintf(stderr, "[qemu_blk] bdrv_init…\n");
 		bdrv_init();
@@ -136,11 +148,25 @@ int qemu_blk_open(const char* image_path, uint32_t flags,
 		qemu_initialized = 1;
 	}
 
-	/* readonly=1 maps to plain BDRV_O_RDONLY (=0), not SNAPSHOT, so QEMU
-	 * doesn't try to create a writable overlay in /var/tmp - which doesn't
-	 * exist under emscripten MEMFS, and which silently discards writes
-	 * anyway. Callers that need write-through must pass readonly=0. */
-	int bdrv_flags = readonly ? 0 : BDRV_O_RDWR;
+	/* Map anyfs flags to QEMU BDRV_O_* flags.
+	 *
+	 * BDRV_O_SNAPSHOT: open the base image read-only, create a temporary
+	 * qcow2 overlay in $TMPDIR (or /var/tmp), and redirect all writes
+	 * there. The base image is never modified.
+	 *
+	 * On WASM, the overlay lives in MEMFS (/var/tmp/vl.XXXXXX) — it
+	 * grows as writes happen and is discarded on page reload.
+	 *
+	 * On Linux, /var/tmp is the default location (persistent).
+	 * On Windows, %TEMP% is used (no /tmp→/var/tmp redirect). */
+	int bdrv_flags;
+	if (snapshot) {
+		bdrv_flags = BDRV_O_SNAPSHOT;
+	} else if (readonly) {
+		bdrv_flags = 0;
+	} else {
+		bdrv_flags = BDRV_O_RDWR;
+	}
 
 	/* QEMU's curl block driver defaults to CURLOPT_TIMEOUT=5s. Bump it for
 	 * URL images (local files use the raw driver, which ignores "timeout").

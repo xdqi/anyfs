@@ -31,6 +31,8 @@ extern "C" {
  *   ANYFS_BACKEND_RAW    — force raw (pread/pwrite) backend
  *   ANYFS_BACKEND_GIO    — force GIO backend
  *   ANYFS_BACKEND_QEMU   — force QEMU block backend
+ *   ANYFS_SESSION_SNAPSHOT — open disk with temporary write overlay
+ *                            (QEMU backend: BDRV_O_SNAPSHOT)
  *   ANYFS_MOUNT_RDONLY   — mount filesystem read-only (used by
  *                           anyfs_session_enter / anyfs_session_enter_path)
  */
@@ -38,6 +40,7 @@ extern "C" {
 #define ANYFS_BACKEND_RAW (1u << 1)
 #define ANYFS_BACKEND_GIO (1u << 2)
 #define ANYFS_BACKEND_QEMU (1u << 3)
+#define ANYFS_SESSION_SNAPSHOT (1u << 4)
 #define ANYFS_MOUNT_RDONLY (1u << 0)
 
 /* ── Internal types ────────────────────────────────────── */
