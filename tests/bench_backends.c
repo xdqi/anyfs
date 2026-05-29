@@ -7,6 +7,7 @@
  * Automatically tests all compiled-in backends.
  */
 #include "anyfs.h"
+#include "anyfs_backend.h"
 #include <lkl/asm-generic/fcntl.h>
 #include <lkl/linux/mount.h>
 #include <lkl/linux/stat.h>

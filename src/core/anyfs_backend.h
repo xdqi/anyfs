@@ -25,4 +25,24 @@ void anyfs_register_backend(const struct anyfs_backend_ops* ops);
 /* Find backend by name */
 const struct anyfs_backend_ops* anyfs_find_backend(const char* name);
 
+/* ── Disk-slot management (internal) ───────────────────────────── */
+
+/* Per-disk slot tracked in g_disks[]. Shared between backends (which
+ * allocate/close), kernel lifecycle (which drains on atexit), and the
+ * session layer (which opens/closes sessions). */
+struct disk_slot {
+	int in_use;
+	int disk_id;
+	struct lkl_disk disk;
+	const struct anyfs_backend_ops* backend;
+};
+
+extern struct disk_slot g_disks[];
+
+/* Add / remove a block device from the LKL virtio-blk bus. These are
+ * internal helpers called by the session layer during open/close; the
+ * public surface is anyfs_disk_open / anyfs_disk_close. */
+int anyfs_disk_add(const char* image_path, uint32_t flags);
+int anyfs_disk_remove(int disk_id);
+
 #endif /* ANYFS_BACKEND_H */

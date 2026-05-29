@@ -233,7 +233,9 @@ endif
 # --- Core library ---
 
 anyfs_core_sources = files(
-    'src/core/anyfs.c',
+    'src/core/anyfs_kernel.c',
+    'src/core/anyfs_backend.c',
+    'src/core/anyfs_mount.c',
     'src/core/raw_backend.c',
     'src/core/anyfs_session.c',
     'src/core/anyfs_disk_dump.c',
@@ -339,7 +341,7 @@ if host_machine.system() == 'linux'
 endif
 test_raw_mount = executable('test_raw_mount',
     'tests/test_raw_mount.c',
-    include_directories: anyfs_inc,
+    include_directories: [anyfs_inc, include_directories('src/core')],
     dependencies: test_raw_mount_deps,
     c_args: gio_args + qemu_args,
 )
@@ -356,7 +358,7 @@ test_nfsd_pseudo_root = executable('test_nfsd_pseudo_root',
 
 bench_backends = executable('bench_backends',
     'tests/bench_backends.c',
-    include_directories: anyfs_inc,
+    include_directories: [anyfs_inc, include_directories('src/core')],
     dependencies: [anyfs_dep],
     c_args: gio_args + qemu_args,
 )

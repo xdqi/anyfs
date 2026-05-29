@@ -3,6 +3,7 @@
  * Usage: test_raw_mount [--gio|--raw] <image> <fstype> <part>
  */
 #include "anyfs.h"
+#include "anyfs_backend.h"
 #include <lkl/asm-generic/fcntl.h>
 #include <lkl/linux/capability.h>
 #include <lkl/linux/mount.h>

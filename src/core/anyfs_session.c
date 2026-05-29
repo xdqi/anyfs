@@ -15,7 +15,9 @@
 #define _GNU_SOURCE
 #include "anyfs_session.h"
 
+#include "anyfs_backend.h"
 #include "anyfs_dm.h"
+#include "anyfs_mount.h"
 #include "anyfs_path.h"
 #include "anyfs_probe.h"
 #include "anyfs_sysfs.h"

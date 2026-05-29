@@ -29,61 +29,33 @@ int anyfs_kernel_init(const AnyfsKernelOpts* opts);
 /* Halt the LKL kernel. All disks must be removed first. */
 void anyfs_kernel_halt(void);
 
-/* ── Disk management ──────────────────────────────────────────── */
+/* ── Shared flags ──────────────────────────────────────────────── */
 
+/* Flags for anyfs_disk_open / anyfs_session_open:
+ *   ANYFS_DISK_READONLY  — open disk read-only
+ *   ANYFS_BACKEND_RAW    — force raw (pread/pwrite) backend
+ *   ANYFS_BACKEND_GIO    — force GIO backend
+ *   ANYFS_BACKEND_QEMU   — force QEMU block backend
+ *   ANYFS_MOUNT_RDONLY   — mount filesystem read-only (used by
+ *                           anyfs_disk_enter / anyfs_disk_enter_path)
+ */
 #define ANYFS_DISK_READONLY (1u << 0)
 #define ANYFS_BACKEND_RAW (1u << 1)
 #define ANYFS_BACKEND_GIO (1u << 2)
 #define ANYFS_BACKEND_QEMU (1u << 3)
-
-/* Add a disk image. Selects backend based on flags (or auto-detect if none).
- * Returns LKL disk_id >= 0 on success, negative on error.
- * After this, use lkl_mount_dev(disk_id, ...) or anyfs_mount(). */
-int anyfs_disk_add(const char* image_path, uint32_t flags);
-
-/* Remove a previously added disk. Unmount first. */
-int anyfs_disk_remove(int disk_id);
-
-/* ── Mount management ─────────────────────────────────────────── */
-
 #define ANYFS_MOUNT_RDONLY (1u << 0)
+
+/* ── Mount info (returned by internal mount helpers) ──────────── */
 
 typedef struct {
 	char mount_point[64]; /* Filled: actual mount path (/lklmnt/<name>) */
 	char fstype[32];      /* Filled: detected filesystem type */
 } AnyfsMount;
 
-/* Mount a disk (partition) with automatic filesystem detection.
- * Reads /proc/filesystems and tries each type until one succeeds.
- * @disk_id   - disk id from anyfs_disk_add()
- * @part      - partition number (0 = full disk)
- * @fstype    - filesystem type (NULL or "auto" for auto-detection)
- * @name      - mount name (mounted at /lklmnt/<name>)
- * @flags     - ANYFS_MOUNT_RDONLY etc.
- * @out       - filled with mount point path and detected fstype
- * Returns 0 on success, negative on error. */
-int anyfs_mount(int disk_id, unsigned int part, const char* fstype,
-		const char* name, uint32_t flags, AnyfsMount* out);
+/* ── Error reporting ──────────────────────────────────────────── */
 
-/* Like anyfs_mount but takes an existing LKL-visible block-device
- * path (e.g. "/dev/mapper/foo"). Used by the session layer to mount
- * the children of a container device that doesn't have a disk_id of
- * its own (dm-linear over a partition, etc.). */
-int anyfs_mount_blkdev(const char* dev_path, const char* fstype,
-		       const char* name, uint32_t flags, AnyfsMount* out);
-
-/* Unmount a previously mounted filesystem. */
-int anyfs_umount(const char* name);
-
-/* Remount an existing mount as read-only. */
-int anyfs_remount_ro(const char* name);
-
-/* Get the number of partitions on a disk.
- * Returns partition count (0 = no partition table, use whole disk). */
-int anyfs_disk_partitions(int disk_id);
-
-/* Error reporting. Backends call anyfs_set_last_error() before returning
- * failure; callers can retrieve the descriptive message. */
+/* Backends call anyfs_set_last_error() before returning failure;
+ * callers can retrieve the descriptive message. */
 void anyfs_set_last_error(const char* fmt, ...)
     __attribute__((format(printf, 1, 2)));
 const char* anyfs_get_last_error(void);
