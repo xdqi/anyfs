@@ -338,7 +338,8 @@ static void handle_export(int fd, char* query)
 					     NFSEXP_FSID | NFSEXP_ALLSQUASH;
 			if (g_read_only)
 				flags |= NFSEXP_READONLY;
-			/* fsid = slot index + 1 (big-endian 4 bytes); 0 reserved */
+			/* fsid = slot index + 1 (big-endian 4 bytes); 0
+			 * reserved */
 			unsigned int fsid = (unsigned int)(i + 1);
 			snprintf(resp, sizeof(resp), "%s %s %ld %u 0 0 %u\n",
 				 domain, path, (long)expiry, flags, fsid);
@@ -380,7 +381,8 @@ static void handle_idtoname(int fd, char* query)
 	const char* name = (atoi(id_str) == 0) ? "root" : "nobody";
 	snprintf(resp, sizeof(resp), "%s %s %s %ld %s\n", domain, type, id_str,
 		 (long)expiry, name);
-	printf("[mountd] idtoname: %s %s %s -> %s\n", domain, type, id_str, name);
+	printf("[mountd] idtoname: %s %s %s -> %s\n", domain, type, id_str,
+	       name);
 	lkl_sys_write(fd, resp, strlen(resp));
 }
 
@@ -518,10 +520,12 @@ static int start_nfsd(void)
 
 	/* Limit to NFSv4.0: 4.1/4.2 require a backchannel binding during
 	 * CREATE_SESSION, which the kernel tries to drive over the same TCP
-	 * connection. host_proxy only bridges client->server, so the backchannel
-	 * negotiation stalls and the mount wedges silently after PUTROOTFH. v4.0
-	 * uses SETCLIENTID instead of sessions and is unidirectional. */
-	ret = lkl_write_file("/proc/fs/nfsd/versions", "-3 +4 +4.0 -4.1 -4.2\n");
+	 * connection. host_proxy only bridges client->server, so the
+	 * backchannel negotiation stalls and the mount wedges silently after
+	 * PUTROOTFH. v4.0 uses SETCLIENTID instead of sessions and is
+	 * unidirectional. */
+	ret =
+	    lkl_write_file("/proc/fs/nfsd/versions", "-3 +4 +4.0 -4.1 -4.2\n");
 	if (ret < 0)
 		fprintf(stderr, "Warning: could not set versions\n");
 
@@ -739,162 +743,23 @@ int main(int argc, char** argv)
 	/* ── 4. Open disk images ────────────────────────────────────────────
 	 */
 	AnyfsDisk* disks[MAX_DISKS] = {NULL};
-	int n_open = 0;
-
-	for (int i = 0; i < n_images; i++) {
-		const char* img = disk_images[i];
-		char img_clean[512];
-		const char* qmark = strchr(img, '?');
-		if (qmark) {
-			size_t len = (size_t)(qmark - img);
-			if (len >= sizeof(img_clean))
-				len = sizeof(img_clean) - 1;
-			memcpy(img_clean, img, len);
-			img_clean[len] = '\0';
-			img = img_clean;
-		}
-
+	{
 		uint32_t dflags = read_only ? ANYFS_DISK_READONLY : 0;
-		if (anyfs_disk_open(img, dflags, &disks[i]) < 0 || !disks[i]) {
-			fprintf(stderr, "Failed to open disk image '%s'\n",
-				disk_images[i]);
+		if (anyfs_sesh_open_disks(disks, disk_images, n_images,
+					  dflags) < 0)
 			goto halt;
-		}
-		n_open++;
-		printf("Opened disk%d: %s (id=%d)\n", i, img,
-		       anyfs_disk_id(disks[i]));
 	}
 
 	/* ── 5. Resolve --share specs to LKL paths ───────────────────────── */
 	for (int si = 0; si < n_share_specs; si++) {
-		const char* name_arg;
-		const char* path_arg;
-		char spec_copy[256];
-		strncpy(spec_copy, share_specs[si], sizeof(spec_copy) - 1);
-		spec_copy[sizeof(spec_copy) - 1] = '\0';
-
-		anyfs_share_split(spec_copy, &name_arg, &path_arg);
-
-		/* Back-compat: bare integer → p<N> */
-		char rebased[64];
-		if (isdigit((unsigned char)path_arg[0])) {
-			if (n_images > 1) {
-				fprintf(stderr,
-					"error: bare integer share '%s' is "
-					"only valid in "
-					"single-disk mode.\n",
-					path_arg);
-				goto halt;
-			}
-			snprintf(rebased, sizeof(rebased), "p%s", path_arg);
-			path_arg = rebased;
-			fprintf(stderr,
-				"warning: --share %s treated as --share %s "
-				"(use 'p<N>' to suppress this warning)\n",
-				share_specs[si], rebased);
-		}
-
-		/* In single-disk mode, auto-prefix missing disk<N>/ with disk0/
-		 */
-		char prefixed[256];
-		if (n_images == 1 && strncmp(path_arg, "disk", 4) != 0) {
-			snprintf(prefixed, sizeof(prefixed), "disk0/%s",
-				 path_arg);
-			path_arg = prefixed;
-		}
-
-		/* Parse via path DSL */
-		AnyfsPath ap;
-		memset(&ap, 0, sizeof(ap));
-		if (anyfs_path_dsl_parse(path_arg, &ap) < 0) {
-			fprintf(stderr,
-				"error: --share path '%s' is not a valid path "
-				"DSL string.\n",
-				path_arg);
-			goto halt;
-		}
-
-		/* Multi-disk mode: path must have explicit disk<N>/ prefix */
-		if (n_images > 1 && !ap.disk_idx_set) {
-			fprintf(stderr,
-				"error: path '%s' must start with diskN/ in "
-				"multi-disk mode "
-				"(have %d images: disk0..disk%d).\n",
-				share_specs[si], n_images, n_images - 1);
-			anyfs_path_dsl_free(&ap);
-			goto halt;
-		}
-
-		int disk_idx = ap.disk_idx;
-
-		if (disk_idx >= n_images) {
-			fprintf(stderr,
-				"error: disk%d not registered (only "
-				"disk0..disk%d available).\n",
-				disk_idx, n_images - 1);
-			anyfs_path_dsl_free(&ap);
-			goto halt;
-		}
-
-		if (ap.n_comp == 0) {
-			fprintf(stderr,
-				"error: --share path '%s' has no partition "
-				"component.\n",
-				path_arg);
-			anyfs_path_dsl_free(&ap);
-			goto halt;
-		}
-
-		anyfs_share_warn_literal_key(&ap,
-					     name_arg ? name_arg : path_arg);
-
-		/* v2: walk every component. Containers are entered, then we
-		 * descend into their children; final segment must be FS. */
-		uint32_t eflags = read_only ? ANYFS_DISK_READONLY : 0;
-		char lkl_path[64];
-		ret = anyfs_disk_enter_path(disks[disk_idx], ap.comp, ap.n_comp,
-					    eflags, lkl_path);
-		if (ret < 0) {
-			const char* reason = anyfs_disk_fail_reason(
-			    disks[disk_idx], ap.comp[0].p);
-			fprintf(
-			    stderr,
-			    "error: cannot enter %s: %s\n"
-			    "Containers (LVM_PV, LUKS, nested partition table) "
-			    "require\n"
-			    "either a credential (`?keyref=`) or v3 support.\n"
-			    "Use 'anyfs-lspart' to discover the canonical leaf "
-			    "path.\n",
-			    path_arg, reason ? reason : lkl_strerror(ret));
-			anyfs_path_dsl_free(&ap);
-			goto halt;
-		}
-
-		char canonical[160];
-		int co =
-		    snprintf(canonical, sizeof(canonical), "disk%d", disk_idx);
-		for (size_t ci = 0; ci < ap.n_comp; ci++) {
-			int n = snprintf(canonical + co, sizeof(canonical) - co,
-					 "_p%u", ap.comp[ci].p);
-			if (n < 0 || (size_t)n >= sizeof(canonical) - co)
-				break;
-			co += n;
-		}
-
 		ExportInfo* ex = &g_exports[g_n_exports];
-		if (name_arg && *name_arg) {
-			strncpy(ex->name, name_arg, sizeof(ex->name) - 1);
-			ex->name[sizeof(ex->name) - 1] = '\0';
-		} else {
-			anyfs_share_auto_name(canonical, ex->name,
-					      sizeof(ex->name));
-		}
-		strncpy(ex->lkl_path, lkl_path, sizeof(ex->lkl_path) - 1);
-		ex->lkl_path[sizeof(ex->lkl_path) - 1] = '\0';
-
-		printf("Export [%d] /%s -> %s (%s)\n", g_n_exports, ex->name,
-		       ex->lkl_path, canonical);
-		anyfs_path_dsl_free(&ap);
+		uint32_t eflags = read_only ? ANYFS_DISK_READONLY : 0;
+		if (anyfs_share_resolve(share_specs[si], disks, n_images,
+					eflags, ex->name, sizeof(ex->name),
+					ex->lkl_path, sizeof(ex->lkl_path)) < 0)
+			goto halt;
+		printf("Export [%d] /%s -> %s\n", g_n_exports, ex->name,
+		       ex->lkl_path);
 		g_n_exports++;
 	}
 
@@ -917,7 +782,8 @@ int main(int argc, char** argv)
 			"NFS requires an exportable pseudoroot (TODO).\n",
 			g_n_exports, g_exports[0].name);
 
-	/* ── 5.5 Bind each share to /<name> ────────────────────────────────── */
+	/* ── 5.5 Bind each share to /<name> ──────────────────────────────────
+	 */
 	static const char* const reserved[] = {"proc", "sys", "lklmnt", "dev",
 					       NULL};
 	for (int i = 0; i < g_n_exports; i++) {
@@ -991,7 +857,7 @@ int main(int argc, char** argv)
 	pthread_join(cache_tid, NULL);
 
 halt:
-	for (int i = 0; i < n_open; i++) {
+	for (int i = 0; i < n_images; i++) {
 		if (disks[i])
 			anyfs_disk_close(disks[i]);
 	}
