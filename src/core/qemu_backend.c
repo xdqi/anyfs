@@ -46,7 +46,7 @@
 #undef __MSYS__
 #endif
 #include "anyfs.h"
-#include "qemu_blk_backend.h"
+#include "qemu_backend.h"
 
 struct qemu_blk_ctx {
 	BlockBackend* blk;

@@ -1,5 +1,5 @@
 anyfs_lspart = executable('anyfs-lspart',
-    'anyfs_lspart.c',
+    'lspart_main.c',
     include_directories: [anyfs_inc, include_directories('../core')],
     dependencies: [anyfs_dep],
     c_args: gio_args + qemu_args,

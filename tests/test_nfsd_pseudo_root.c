@@ -26,9 +26,9 @@
  *   1  setup failure (init / open / enter / mkdir / mount)
  *   2  listings diverge — bind path is NOT showing the share root
  */
+#include "../src/core/anyfs_path.h"
 #include "anyfs.h"
-#include "anyfs_disk.h"
-#include "../src/core/path_dsl.h"
+#include "anyfs_session.h"
 #include <lkl.h>
 #include <lkl_host.h>
 #include <stdio.h>
@@ -53,7 +53,8 @@ static int snapshot_dir(const char* path, struct entries* out)
 	}
 	struct lkl_linux_dirent64* de;
 	while ((de = lkl_readdir(dir)) != NULL && out->n < MAX_ENTRIES) {
-		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+		if (strcmp(de->d_name, ".") == 0 ||
+		    strcmp(de->d_name, "..") == 0)
 			continue;
 		strncpy(out->names[out->n], de->d_name,
 			sizeof(out->names[out->n]) - 1);
@@ -102,7 +103,8 @@ int main(int argc, char** argv)
 	int r = anyfs_disk_enter_path(disk, &comp, 1, ANYFS_DISK_READONLY,
 				      lkl_path);
 	if (r < 0) {
-		fprintf(stderr, "anyfs_disk_enter_path(p%d) failed: %d\n", part, r);
+		fprintf(stderr, "anyfs_disk_enter_path(p%d) failed: %d\n", part,
+			r);
 		anyfs_disk_close(disk);
 		anyfs_kernel_halt();
 		return 1;
@@ -153,9 +155,8 @@ int main(int argc, char** argv)
 	 * a real subdirectory named <share-name> instead of the bind mount. */
 	int verdict = 0;
 	if (src.n != dst.n) {
-		fprintf(stderr,
-			"\nFAIL: entry count differs (src=%d dst=%d)\n", src.n,
-			dst.n);
+		fprintf(stderr, "\nFAIL: entry count differs (src=%d dst=%d)\n",
+			src.n, dst.n);
 		verdict = 2;
 	}
 	for (int i = 0; i < src.n && verdict == 0; i++) {

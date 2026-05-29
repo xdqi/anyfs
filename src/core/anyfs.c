@@ -4,12 +4,12 @@
 #define _GNU_SOURCE
 #include "anyfs.h"
 #include "anyfs_backend.h"
-#include "raw_blk_backend.h"
+#include "raw_backend.h"
 #ifdef ANYFS_HAS_GIO
-#include "gio_blk_backend.h"
+#include "gio_backend.h"
 #endif
 #ifdef ANYFS_HAS_QEMU
-#include "qemu_blk_backend.h"
+#include "qemu_backend.h"
 #endif
 
 #include <stdarg.h>
@@ -17,7 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "anyfs_disk.h"
+#include "anyfs_session.h"
 
 /* ── Internal state ────────────────────────────────────────────── */
 

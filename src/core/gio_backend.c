@@ -5,7 +5,7 @@
  * Phase 2a: synchronous — g_seekable_seek() + g_input_stream_read() in
  * request(). Synchronous GIO block backend using GInputStream.
  */
-#include "gio_blk_backend.h"
+#include "gio_backend.h"
 
 #include <fcntl.h>
 #include <gio/gio.h>

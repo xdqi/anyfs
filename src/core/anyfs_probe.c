@@ -11,7 +11,7 @@
  * pread(2), which has no idea what an LKL kernel fd is.
  */
 #define _GNU_SOURCE
-#include "kindprobe.h"
+#include "anyfs_probe.h"
 
 #include <lkl.h>
 #include <lkl_host.h>

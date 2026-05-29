@@ -10,7 +10,7 @@
 #ifndef ANYFS_DISK_DUMP_H
 #define ANYFS_DISK_DUMP_H
 
-#include "anyfs_disk.h"
+#include "anyfs_session.h"
 #include <stddef.h>
 
 #ifdef __cplusplus

@@ -16,7 +16,7 @@
 #   -h, --help
 #
 # Per target the script produces a libanyfs-qemublk.{so,dll} that exposes the
-# QEMU block-driver entry points used by anyfs-reader's qemu_blk_backend.c.
+# QEMU block-driver entry points used by anyfs-reader's qemu_backend.c.
 # The host pkg-config (linux-amd64) and msys2-cross's per-target wrappers
 # (mingw32/mingw64, supplied by msys-cross-pkgconfig) provide glib/zstd/zlib.
 #

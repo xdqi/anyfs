@@ -16,7 +16,7 @@
 #   ./scripts/build_libblkid_mingw.sh mingw32
 #
 # Why: util-linux's libblkid is not officially supported on Windows. We need
-# only superblock magic probing (kindprobe.c calls
+# only superblock magic probing (anyfs_probe.c calls
 # blkid_new_probe_from_filename + blkid_do_safeprobe + lookup TYPE/LABEL/UUID),
 # so we hand-compile the minimum TU set that the wasm libblkid archive also
 # uses, with mingw-specific shims. See patches/libblkid/shim/mingw_shims.c

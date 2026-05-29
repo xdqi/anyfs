@@ -1,5 +1,5 @@
-#ifndef QEMU_BLK_BACKEND_H
-#define QEMU_BLK_BACKEND_H
+#ifndef QEMU_BACKEND_H
+#define QEMU_BACKEND_H
 
 #include <lkl_host.h>
 
@@ -15,4 +15,4 @@ void qemu_blk_close(struct lkl_disk* disk);
 
 extern const struct anyfs_backend_ops qemu_backend_ops;
 
-#endif /* QEMU_BLK_BACKEND_H */
+#endif /* QEMU_BACKEND_H */

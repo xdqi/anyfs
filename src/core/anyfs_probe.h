@@ -9,13 +9,13 @@
  *     a spooled host-side snapshot of the partition's first 2 MB so it
  *     never touches the host filesystem layout where the image lives.
  */
-#ifndef ANYFS_KINDPROBE_H
-#define ANYFS_KINDPROBE_H
+#ifndef ANYFS_ANYFS_PROBE_H
+#define ANYFS_ANYFS_PROBE_H
 
 #include <stddef.h>
 #include <stdint.h>
 
-#include "anyfs_disk.h" /* AnyfsPartKind + anyfs_partkind_name */
+#include "anyfs_session.h" /* AnyfsPartKind + anyfs_partkind_name */
 
 #ifdef __cplusplus
 extern "C" {

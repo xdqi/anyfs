@@ -13,12 +13,12 @@
  * (parent_slot, index) tuple.
  */
 #define _GNU_SOURCE
-#include "anyfs_disk.h"
+#include "anyfs_session.h"
 
 #include "anyfs_dm.h"
+#include "anyfs_path.h"
+#include "anyfs_probe.h"
 #include "anyfs_sysfs.h"
-#include "kindprobe.h"
-#include "path_dsl.h"
 
 #include <lkl.h>
 #include <lkl_host.h>

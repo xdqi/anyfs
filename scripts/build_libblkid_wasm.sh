@@ -70,7 +70,7 @@ cd "$BLD_DIR"
 # Notes on quirks:
 #   * configure tests `int openat()` at configure-time. Emscripten exposes
 #     it, so HAVE_OPENAT is set and libblkid compiles the sysfs/path code
-#     paths. They don't run at our use site (kindprobe.c feeds blkid a
+#     paths. They don't run at our use site (anyfs_probe.c feeds blkid a
 #     regular tmpfile path), so this is fine.
 #   * The C99 flag is set by util-linux's configure; emcc inherits it.
 

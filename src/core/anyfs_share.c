@@ -2,7 +2,7 @@
  * share_spec.c — Implementation of the `--share` parsing helpers.
  */
 #define _GNU_SOURCE
-#include "share_spec.h"
+#include "anyfs_share.h"
 
 #include <ctype.h>
 #include <lkl.h>

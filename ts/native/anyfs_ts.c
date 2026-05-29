@@ -25,8 +25,8 @@
 #include <lkl_host.h>
 
 #include "anyfs.h"
-#include "anyfs_disk.h"
-#include "kindprobe.h"
+#include "anyfs_probe.h"
+#include "anyfs_session.h"
 
 #ifndef DT_DIR
 #define DT_DIR 4

@@ -1,5 +1,5 @@
-#ifndef RAW_BLK_BACKEND_H
-#define RAW_BLK_BACKEND_H
+#ifndef RAW_BACKEND_H
+#define RAW_BACKEND_H
 
 #include <lkl_host.h>
 
@@ -15,4 +15,4 @@ void raw_blk_destroy(struct lkl_disk* disk);
 
 extern const struct anyfs_backend_ops raw_backend_ops;
 
-#endif /* RAW_BLK_BACKEND_H */
+#endif /* RAW_BACKEND_H */

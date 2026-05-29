@@ -1,5 +1,5 @@
-#ifndef GIO_BLK_BACKEND_H
-#define GIO_BLK_BACKEND_H
+#ifndef GIO_BACKEND_H
+#define GIO_BACKEND_H
 
 #include <lkl_host.h>
 
@@ -15,4 +15,4 @@ void gio_blk_destroy(struct lkl_disk* disk);
 
 extern const struct anyfs_backend_ops gio_backend_ops;
 
-#endif /* GIO_BLK_BACKEND_H */
+#endif /* GIO_BACKEND_H */

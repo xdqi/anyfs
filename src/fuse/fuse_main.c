@@ -142,10 +142,10 @@ typedef struct timespec fuse_timespec;
 #endif
 
 #include "../src/core/anyfs_disk_dump.h"
-#include "../src/core/path_dsl.h"
-#include "../src/core/share_spec.h"
+#include "../src/core/anyfs_path.h"
+#include "../src/core/anyfs_share.h"
 #include "anyfs.h"
-#include "anyfs_disk.h"
+#include "anyfs_session.h"
 
 /* ── Multi-disk session state ────────────────────────────────────── */
 /* (ANYFS_MAX_DISKS / ANYFS_LKL_PATH_MAX are in anyfs_disk.h) */

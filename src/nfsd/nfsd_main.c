@@ -44,11 +44,11 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "../core/path_dsl.h"
-#include "../core/share_spec.h"
+#include "../core/anyfs_path.h"
+#include "../core/anyfs_share.h"
 #include "../host_proxy/host_proxy.h"
 #include "anyfs.h"
-#include "anyfs_disk.h"
+#include "anyfs_session.h"
 #include <lkl.h>
 
 /* ── Compile-time limits ─────────────────────────────────────────────── */

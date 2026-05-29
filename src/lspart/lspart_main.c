@@ -8,8 +8,8 @@
 #define _GNU_SOURCE
 
 #include "anyfs.h"
-#include "anyfs_disk.h"
 #include "anyfs_disk_dump.h"
+#include "anyfs_session.h"
 
 #include <stdio.h>
 #include <stdlib.h>

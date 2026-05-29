@@ -5,11 +5,11 @@
  * `name=path[?query]` form and reject literal `key=` credentials with
  * the same warning, so the logic lives here.
  */
-#ifndef ANYFS_SHARE_SPEC_H
-#define ANYFS_SHARE_SPEC_H
+#ifndef ANYFS_ANYFS_SHARE_H
+#define ANYFS_ANYFS_SHARE_H
 
-#include "anyfs_disk.h"
-#include "path_dsl.h"
+#include "anyfs_path.h"
+#include "anyfs_session.h"
 #include <stddef.h>
 
 #ifdef __cplusplus

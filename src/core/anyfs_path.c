@@ -2,7 +2,7 @@
  * path_dsl.c — Parser for [disk<N>/]p<n>[?<query>](/p<m>...)*
  */
 #define _GNU_SOURCE
-#include "path_dsl.h"
+#include "anyfs_path.h"
 
 #include <ctype.h>
 #include <stdio.h>

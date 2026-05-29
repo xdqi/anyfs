@@ -30,12 +30,12 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "../core/path_dsl.h"
-#include "../core/share_spec.h"
+#include "../core/anyfs_path.h"
+#include "../core/anyfs_share.h"
 #include "../host_proxy/host_proxy.h"
 #include "anyfs.h"
-#include "anyfs_disk.h"
-#include "lkl_fastsync.h"
+#include "anyfs_session.h"
+#include "fastsync_win.h"
 #include <lkl.h>
 
 #include <config_parser.h>

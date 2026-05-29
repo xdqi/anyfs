@@ -18,8 +18,8 @@
  * are recognised by kindprobe but enter fails with a clear FAILED
  * reason pointing at v3 work (LVM metadata parser / libcryptsetup).
  */
-#ifndef ANYFS_DISK_H
-#define ANYFS_DISK_H
+#ifndef ANYFS_SESSION_H
+#define ANYFS_SESSION_H
 
 #include <stddef.h>
 #include <stdint.h>

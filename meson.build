@@ -234,14 +234,14 @@ endif
 
 anyfs_core_sources = files(
     'src/core/anyfs.c',
-    'src/core/raw_blk_backend.c',
-    'src/core/anyfs_disk.c',
+    'src/core/raw_backend.c',
+    'src/core/anyfs_session.c',
     'src/core/anyfs_disk_dump.c',
     'src/core/anyfs_dm.c',
     'src/core/anyfs_sysfs.c',
-    'src/core/kindprobe.c',
-    'src/core/path_dsl.c',
-    'src/core/share_spec.c',
+    'src/core/anyfs_probe.c',
+    'src/core/anyfs_path.c',
+    'src/core/anyfs_share.c',
 )
 
 # libblkid (optional, v2 enrichment of KIND_FS rows with FSTYPE/LABEL/UUID).
@@ -274,13 +274,13 @@ endif
 
 if enable_gio
     anyfs_core_sources += files(
-        'src/core/gio_blk_backend.c',
+        'src/core/gio_backend.c',
     )
 endif
 
 if enable_qemu
     anyfs_core_sources += files(
-        'src/core/qemu_blk_backend.c',
+        'src/core/qemu_backend.c',
     )
     if not qemu_shared
         anyfs_core_sources += files(
@@ -292,7 +292,7 @@ endif
 # QEMU sources need gnu11 due to osdep.h macros using __COUNTER__
 qemu_c_args = enable_qemu ? ['-std=gnu11'] : []
 
-# On mingw, qemu_blk_backend.c #defines __MSYS__ to dodge a struct iovec
+# On mingw, qemu_backend.c #defines __MSYS__ to dodge a struct iovec
 # collision between QEMU's osdep.h and LKL's lkl_host.h. That same #define
 # makes lkl_host.h include <sys/uio.h>, which mingw doesn't ship — supply an
 # empty shim alongside the core sources.
@@ -377,21 +377,21 @@ endif
 #   lkl-shmem-relay-bench : abandoned kthread+ring relay experiment
 # install=false on all three — these are dev tools, not shipped binaries.
 lkl_zerobench = executable('lkl-zerobench',
-    'src/bench/lkl_zerobench.c',
+    'src/bench/zerobench.c',
     include_directories: [anyfs_inc],
     dependencies: [lkl_dep, thread_dep, host_proxy_dep],
     link_with: [anyfs_core],
     install: false,
 )
 lkl_loopbench = executable('lkl-loopbench',
-    'src/bench/lkl_loopbench.c',
+    'src/bench/loopbench.c',
     include_directories: [anyfs_inc],
     dependencies: [lkl_dep, thread_dep],
     link_with: [anyfs_core],
     install: false,
 )
 lkl_shmem_relay_bench = executable('lkl-shmem-relay-bench',
-    'src/bench/lkl_shmem_relay_bench.c',
+    'src/bench/shmem_relay_bench.c',
     include_directories: [anyfs_inc],
     dependencies: [lkl_dep, thread_dep],
     link_with: [anyfs_core],
@@ -416,7 +416,7 @@ if enable_ksmbd
 
     glib_sys_dep2 = dependency('glib-2.0', required: true)
 
-    # ksmbd-tools source files (no libnl dependency - we use ipc_lkl.c)
+    # ksmbd-tools source files (no libnl dependency - we use ksmbd_ipc.c)
     ksmbd_tools_sources = files(
         ksmbd_tools_root / 'mountd/worker.c',
         ksmbd_tools_root / 'mountd/rpc.c',
@@ -454,16 +454,16 @@ if enable_ksmbd
     )
     ksmbd_config_inc = include_directories('.')
 
-    fastsync_srcs = ['src/ksmbd/lkl_fastsync.c']
+    fastsync_srcs = ['src/ksmbd/fastsync_win.c']
     fastsync_link_args = []
     if host_machine.system() == 'windows'
         fastsync_link_args += ['-lsynchronization']
     endif
 
     lkl_ksmbd = executable('anyfs-ksmbd',
-        'src/ksmbd/lkl_ksmbd.c',
-        'src/ksmbd/ipc_lkl.c',
-        'src/ksmbd/stubs_lkl.c',
+        'src/ksmbd/ksmbd_main.c',
+        'src/ksmbd/ksmbd_ipc.c',
+        'src/ksmbd/ksmbd_stubs.c',
         fastsync_srcs,
         ksmbd_tools_sources,
         include_directories: [anyfs_inc, ksmbd_tools_inc],
@@ -487,7 +487,7 @@ if enable_ksmbd  # reuses same LKL build with NFSD config
     # Data path is host_proxy (host TCP <-> LKL TCP on lo); no virtio-net
     # on the path.
     lkl_nfsd = executable('anyfs-nfsd',
-        'src/nfsd/lkl_nfsd.c',
+        'src/nfsd/nfsd_main.c',
         include_directories: [anyfs_inc],
         dependencies: [lkl_dep, thread_dep, host_proxy_dep],
         link_with: [anyfs_core],
@@ -508,7 +508,7 @@ if enable_fuse
     endif
 
     anyfs_fuse = executable('anyfs-fuse',
-        'src/fuse/anyfs_fuse.c',
+        'src/fuse/fuse_main.c',
         include_directories: [anyfs_inc],
         dependencies: fuse_deps,
         link_with: [anyfs_core],
@@ -537,7 +537,7 @@ if enable_winfsp
     )
 
     anyfs_winfsp = executable('anyfs-winfsp',
-        'src/fuse/anyfs_fuse.c',
+        'src/fuse/fuse_main.c',
         include_directories: [anyfs_inc, winfsp_inc],
         dependencies: [lkl_dep, winfsp_lib, thread_dep, ws2_dep, iphlpapi_dep],
         link_with: [anyfs_core],

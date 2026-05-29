@@ -167,9 +167,9 @@ if [[ "$USE_QEMU" == "1" ]]; then
          -DANYFS_HAS_QEMU \
          -c "$SRC_CORE/anyfs.c" -o "$ANYFS_QEMU_OBJ"
 
-    # qemu_blk_backend.c needs QEMU headers (qemu/osdep.h etc.) and sysroot.
+    # qemu_backend.c needs QEMU headers (qemu/osdep.h etc.) and sysroot.
     QEMU_BLK_OBJ="$BLD/qemu_blk_backend.${TARGET}.o"
-    echo "  CC   src/core/qemu_blk_backend.c -> $QEMU_BLK_OBJ"
+    echo "  CC   src/core/qemu_backend.c -> $QEMU_BLK_OBJ"
     emcc -pthread -O2 -g \
          -I "$SRC_CORE" \
          -I "$HOME/anyfs-reader/include" \
@@ -181,7 +181,7 @@ if [[ "$USE_QEMU" == "1" ]]; then
          -I "$OUT/tools/lkl/include" \
          -D_GNU_SOURCE \
          -DLKL_HOST_CONFIG_POSIX=1 -DLKL_HOST_CONFIG_WASM=1 \
-         -c "$SRC_CORE/qemu_blk_backend.c" -o "$QEMU_BLK_OBJ"
+         -c "$SRC_CORE/qemu_backend.c" -o "$QEMU_BLK_OBJ"
 
     QEMU_STUBS_OBJ="$BLD/qemu_stubs.${TARGET}.o"
     echo "  CC   src/core/qemu_stubs.c -> $QEMU_STUBS_OBJ"
@@ -190,12 +190,12 @@ if [[ "$USE_QEMU" == "1" ]]; then
     # Rebuild kindprobe with ANYFS_HAS_BLKID so anyfs_ts_mount_whole's
     # fstype probe succeeds and avoids the brute-force /proc/filesystems
     # mount loop (30+ fstypes * ASYNCIFY unwind corrupts fiber state).
-    KINDPROBE_BLKID_OBJ="$BLD/kindprobe.blkid.${TARGET}.o"
-    echo "  CC   src/core/kindprobe.c (ANYFS_HAS_BLKID) -> $KINDPROBE_BLKID_OBJ"
+    KINDPROBE_BLKID_OBJ="$BLD/anyfs_probe.blkid.${TARGET}.o"
+    echo "  CC   src/core/anyfs_probe.c (ANYFS_HAS_BLKID) -> $KINDPROBE_BLKID_OBJ"
     emcc "${CFLAGS[@]}" "${INC[@]}" \
          -DANYFS_HAS_BLKID \
          -I "$SYS/include" \
-         -c "$SRC_CORE/kindprobe.c" -o "$KINDPROBE_BLKID_OBJ"
+         -c "$SRC_CORE/anyfs_probe.c" -o "$KINDPROBE_BLKID_OBJ"
 
     EXTRA_OBJS=("$ANYFS_QEMU_OBJ" "$QEMU_BLK_OBJ" "$QEMU_STUBS_OBJ" "$KINDPROBE_BLKID_OBJ")
     EXTRA_ARCHIVES=(
