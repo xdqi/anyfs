@@ -1,7 +1,7 @@
-export type DiskHandle = number;
+export type SessionHandle = number;
 export type LklFd = number;
 
-export interface PartInfo {
+export interface SessionPartInfo {
     slot_id: number;
     parent: number;
     index: number;
@@ -45,7 +45,7 @@ export interface Stat {
     blocks?: number;
 }
 
-export interface MountOpts {
+export interface SessionOpts {
     /** LKL ram size (MiB). Default 64. */
     memMb?: number;
     /** LKL loglevel (0=silent, 7=debug). Default 0. */
@@ -54,14 +54,17 @@ export interface MountOpts {
     forceFstype?: string;
 }
 
-export interface EnterOpts {
-    fstype?: string;
-    flags?: number;
-}
-
-export interface DiskMeta {
+/** C: AnyfsSessionMeta */
+export interface SessionMeta {
     /** Total logical (virtual block device) size in bytes. */
     logical_size: number;
     /** Outer partition-table flavour: "gpt", "dos", or "" if no PT detected. */
     pt_type: string;
 }
+
+/** What the session can attach to. TS-specific — C has a single
+ *  anyfs_session_open(path, flags). */
+export type SessionSource =
+    | { kind: 'file'; file: File }
+    | { kind: 'url'; url: string; name?: string }
+    | { kind: 'path'; path: string; name?: string };
