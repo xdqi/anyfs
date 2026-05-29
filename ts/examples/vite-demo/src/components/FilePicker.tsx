@@ -5,6 +5,8 @@ import { getAnyfsNative, getUrlProxyPrefix } from '@anyfs/core';
 import { useSettings } from '../Settings';
 import {
     addRecentFile,
+    addRecentPath,
+    addRecentUrl,
     listRecents,
     removeRecent,
     tryReopen,
@@ -12,8 +14,15 @@ import {
     pickFile,
     type Recent,
 } from '../recents';
+import { sourceName, probeUrlAhead } from '../utils';
+import { getElectronDialog, getElectronDrives } from './SystemDrivesDialog';
+import { RecentsList } from './RecentsList';
+import { SupportedFormats } from './SupportedFormats';
+import { UrlPromptDialog } from './UrlPromptDialog';
+import { SystemDrivesDialog } from './SystemDrivesDialog';
+import { UrlErrorDialog } from './UrlErrorDialog';
 
-function FilePicker({ onSource }: { onSource: (s: SessionSource) => void }) {
+export function FilePicker({ onSource }: { onSource: (s: SessionSource) => void }) {
     const [dragging, setDragging] = useState(false);
     const [errorDialog, setErrorDialog] = useState<{ title: string; message: string } | null>(null);
     const [recents, setRecents] = useState<Recent[]>([]);
@@ -65,7 +74,7 @@ function FilePicker({ onSource }: { onSource: (s: SessionSource) => void }) {
             setErrorDialog({
                 title: 'Drag-and-drop not supported in native mode',
                 message:
-                    'Use “Open file…” to pick a disk image — the native bridge needs an absolute host path, not an in-browser File object.',
+                    'Use "Open file…" to pick a disk image — the native bridge needs an absolute host path, not an in-browser File object.',
             });
             return;
         }
@@ -196,7 +205,7 @@ function FilePicker({ onSource }: { onSource: (s: SessionSource) => void }) {
                     setErrorDialog({
                         title: 'Can’t reopen this file in native mode',
                         message:
-                            'This recent was saved as an in-browser File handle. Use “Open file…” to pick it again by path.',
+                            'This recent was saved as an in-browser File handle. Use "Open file…" to pick it again by path.',
                     });
                     return;
                 }
@@ -207,7 +216,7 @@ function FilePicker({ onSource }: { onSource: (s: SessionSource) => void }) {
             if (res.kind === 'missing') {
                 setErrorDialog({
                     title: 'File no longer available',
-                    message: `“${r.name}” was moved or deleted since you opened it. Removing from Recents.`,
+                    message: `"${r.name}" was moved or deleted since you opened it. Removing from Recents.`,
                 });
                 await removeRecent(r.id);
                 await refreshRecents();
@@ -217,7 +226,7 @@ function FilePicker({ onSource }: { onSource: (s: SessionSource) => void }) {
             setErrorDialog({
                 title: 'Permission needed',
                 message:
-                    'The browser blocked re-opening this file. Click the Recents item again and choose “Allow” in the prompt.',
+                    'The browser blocked re-opening this file. Click the Recents item again and choose "Allow" in the prompt.',
             });
         } catch (e) {
             setErrorDialog({ title: 'Can’t reopen', message: (e as Error).message });

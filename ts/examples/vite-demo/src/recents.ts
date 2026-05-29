@@ -15,7 +15,7 @@
 // objects are tiny (~hundreds of bytes); URLs are smaller. We never store
 // file *contents* — only the handle the browser uses to ask permission.
 
-import type { DiskSource } from '@anyfs/core';
+import type { SessionSource } from '@anyfs/core';
 
 // TS's stock lib.dom only ships the FileSystemFileHandle type itself; the
 // permission helpers and the showOpenFilePicker entry are still flagged as
@@ -241,7 +241,7 @@ export async function removeRecent(id: string): Promise<void> {
 }
 
 export type ReopenResult =
-    | { kind: 'ok'; source: DiskSource }
+    | { kind: 'ok'; source: SessionSource }
     | { kind: 'denied' }
     | { kind: 'missing' };
 

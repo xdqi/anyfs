@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
+import { applyUrlProxy } from '@anyfs/core';
 import { useAnyfsDisk } from '@anyfs/react';
 import { AnyfsFileBrowser } from '@anyfs/trees';
 import type { NativeSession, SessionPartInfo, SessionMeta, SessionSource } from '@anyfs/core';
 import { SupportedFormats } from './SupportedFormats';
 import { DiskSummary } from './DiskSummary';
 import { DownloadingFileTree } from './DownloadingFileTree';
-import { streamDownload } from '../stream-download';
 
-function DiskView({
+export function DiskView({
     source,
     selectedPart,
     setSelectedPart,
@@ -34,7 +34,7 @@ function DiskView({
     }, [selectedPart]);
 
     useEffect(() => {
-        if (!disk || status !== 'ready') return;
+        if (!session || status !== 'ready') return;
         session
             .listParts()
             .then(setParts)
@@ -43,7 +43,7 @@ function DiskView({
             .meta()
             .then(setMeta)
             .catch(() => setMeta(null));
-    }, [disk, status]);
+    }, [session, status]);
 
     // Resolve "on-disk" (raw container) size: File.size for local, a HEAD's
     // Content-Length for URL. Differs from logical_size for qcow2/etc.
@@ -74,7 +74,7 @@ function DiskView({
     }, [source]);
 
     useEffect(() => {
-        if (!disk || selectedPart === null) return;
+        if (!session || selectedPart === null) return;
         let cancelled = false;
         setMountError(null);
         session.enter(selectedPart).then(
@@ -90,7 +90,7 @@ function DiskView({
         return () => {
             cancelled = true;
         };
-    }, [disk, selectedPart]);
+    }, [session, selectedPart]);
 
     if (
         status === 'booting' ||
@@ -113,10 +113,10 @@ function DiskView({
     if (status !== 'ready') return null;
 
     // Whole-disk: AnyfsProvider already mounted under mountPath.
-    if (mountPath) {
+    if (mountPath && session) {
         return (
             <section className="flex-1 flex flex-col min-h-0 p-3">
-                <DownloadingFileTree disk={disk!} mountPath={mountPath} rootLabel="" />
+                <DownloadingFileTree disk={session} mountPath={mountPath} rootLabel="" />
             </section>
         );
     }
@@ -173,8 +173,8 @@ function DiskView({
 
     return (
         <section className="flex-1 flex flex-col min-h-0 p-3">
-            {manualMount && disk ? (
-                <DownloadingFileTree disk={disk} mountPath={manualMount} rootLabel="" />
+            {manualMount && session ? (
+                <DownloadingFileTree disk={session} mountPath={manualMount} rootLabel="" />
             ) : mountError ? (
                 <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
                     <div className="text-base text-red-600 dark:text-red-400">

@@ -1,4 +1,6 @@
-function ConfirmDialog({
+import { useEffect } from 'react';
+
+export function ConfirmDialog({
     title,
     message,
     confirmLabel = 'Confirm',

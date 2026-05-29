@@ -1,4 +1,4 @@
-function TopBar({
+export function TopBar({
     onOpenSettings,
     onOpenAbout,
     onHomeClick,

@@ -1,16 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { SessionSource } from '@anyfs/core';
-import { getAnyfsNative } from '@anyfs/core';
-import { useSettings } from '../Settings';
-import { addRecentPath } from '../recents';
+import { useCallback, useEffect, useState } from 'react';
+import { formatSize } from '@anyfs/core';
+import type { SysDrive, ElectronDrives } from './AboutDialog';
 
-function getElectronDrives(): ElectronDrives | null {
+export function getElectronDrives(): ElectronDrives | null {
     const w = window as unknown as { electronDrives?: ElectronDrives };
     return w.electronDrives ?? null;
 }
 
-type ElectronDialog = { openImage: () => Promise<string | null> };
-function getElectronDialog(): ElectronDialog | null {
+export type ElectronDialog = { openImage: () => Promise<string | null> };
+export function getElectronDialog(): ElectronDialog | null {
     const w = window as unknown as { electronDialog?: ElectronDialog };
     return w.electronDialog ?? null;
 }
@@ -22,7 +20,7 @@ function getElectronDialog(): ElectronDialog | null {
 // Whole-disk rows are clickable too — useful for partitionless block devices
 // (loopback, optical, removable) and for letting the user lean on the
 // kernel's own partition table parsing.
-function SystemDrivesDialog({
+export function SystemDrivesDialog({
     onPick,
     onClose,
 }: {
@@ -210,9 +208,3 @@ function SystemDrivesDialog({
         </div>
     );
 }
-
-// Modal prompt for an http(s)/ftp URL. Triggered from the "Open URL…" link
-// on the landing page. Resolves with the entered URL or null on cancel.
-// Probes the URL in browser mode (HEAD via probeUrlAhead so CORS/404 errors
-// surface here rather than as a worker crash); in native mode QEMU's curl
-// driver handles probing itself, so we accept any non-empty string.

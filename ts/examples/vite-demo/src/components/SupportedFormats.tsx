@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useAnyfsDisk } from '@anyfs/react';
 
 // Fallback FS list shown when the kernel hasn't booted yet (or /proc/filesystems
@@ -115,7 +115,7 @@ function parseProcFilesystems(text: string): string[] {
     return out;
 }
 
-function SupportedFormats() {
+export function SupportedFormats() {
     const { kernel, status } = useAnyfsDisk();
     const [kernelFs, setKernelFs] = useState<string[] | null>(null);
 
@@ -142,7 +142,7 @@ function SupportedFormats() {
     // catches anything compiled in but not categorized above.
     const claimed = new Set<string>();
 
-    const Chip = ({ children, title }: { children: ReactNode; title?: string }) => (
+    const Chip = ({ children, title }: { children: ReactNode; title?: string | undefined }) => (
         <span
             className="inline-block rounded-md bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 px-1.5 py-0.5 text-[11px] font-mono text-zinc-700 dark:text-zinc-300"
             title={title}
@@ -155,7 +155,7 @@ function SupportedFormats() {
         chips,
     }: {
         label: string;
-        chips: Array<{ key: string; text: string; title?: string }>;
+        chips: Array<{ key: string; text: string; title?: string | undefined }>;
     }) =>
         chips.length === 0 ? null : (
             <div>
@@ -220,10 +220,30 @@ function SupportedFormats() {
     );
 }
 
+// Image formats come from QEMU's block layer, not the Linux FS registry,
+// so they have to stay hardcoded — there's no kernel pseudo-file for them.
+const IMAGE_FORMATS: Array<{ name: string; title?: string }> = [
+    { name: 'raw' },
+    { name: 'qcow2' },
+    { name: 'qcow', title: 'qcow v1 (legacy, obsoleted by qcow2)' },
+    { name: 'vmdk', title: 'VMware Virtual Machine Disk' },
+    { name: 'vdi', title: 'VirtualBox Disk Image' },
+    { name: 'vhd', title: 'Microsoft Virtual Hard Disk (fixed/dynamic, QEMU vpc driver)' },
+    { name: 'vhdx', title: 'Microsoft Hyper-V Virtual Hard Disk v2' },
+    {
+        name: 'dmg',
+        title: 'Apple Disk Image (UDIF, incl. UDBZ bzip2; lzfse-compressed chunks unsupported)',
+    },
+    { name: 'qed', title: 'QEMU Enhanced Disk (deprecated)' },
+    { name: 'parallels', title: 'Parallels Desktop disk image' },
+    { name: 'bochs', title: 'Bochs emulator disk image' },
+    { name: 'cloop', title: 'Compressed Loopback (Knoppix)' },
+];
+
 // `shrink-0 bg-* relative z-10` keeps the bar planted at the bottom and
 // painted on top even when the page content above is taller than the
 // viewport (e.g. the picker card with Recents + SupportedFormats expanded).
 // Without the opaque bg, overflowing content peeks through the transparent
 // bar; without shrink-0, flex layout can compress it on very short windows.
-const STATUS_BAR_CLS =
+export const STATUS_BAR_CLS =
     'shrink-0 relative z-10 bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 px-4 py-1.5 text-sm';

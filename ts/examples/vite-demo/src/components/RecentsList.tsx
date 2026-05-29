@@ -13,7 +13,7 @@ function formatTs(ts: number): string {
     return new Date(ts).toLocaleDateString();
 }
 
-function RecentsList({
+export function RecentsList({
     recents,
     onReopen,
     onRemove,
@@ -97,35 +97,3 @@ function RecentsList({
         </div>
     );
 }
-
-// Surfaced on the landing card so users know up front what we can open.
-// Image formats come from the wasm QEMU bundle (build-anyfs-wasm/libblock.a);
-// filesystems come from the LKL kernel config — the list below mirrors the
-// CONFIG_*_FS=y set actually built into lkl-wasm/.config (run
-// `grep _FS=y lkl-wasm/.config` to verify). XFS is the one mainline FS off
-// (wasm32 computed-goto limitation); REISERFS / BCACHEFS / SYSV silently
-// drop out of the kernel build and aren't listed.
-// Image formats come from QEMU's block layer, not the Linux FS registry,
-// so they have to stay hardcoded — there's no kernel pseudo-file for them.
-// Mirrors the format drivers actually inside libblock.a; to verify run:
-//   ls $HOME/qemu/build-anyfs-wasm/libblock.a.p/ | grep '^block_[a-z]\+\.c\.o$'
-const IMAGE_FORMATS: Array<{ name: string; title?: string }> = [
-    { name: 'raw' },
-    { name: 'qcow2' },
-    { name: 'qcow', title: 'qcow v1 (legacy, obsoleted by qcow2)' },
-    { name: 'vmdk', title: 'VMware Virtual Machine Disk' },
-    { name: 'vdi', title: 'VirtualBox Disk Image' },
-    { name: 'vhd', title: 'Microsoft Virtual Hard Disk (fixed/dynamic, QEMU vpc driver)' },
-    { name: 'vhdx', title: 'Microsoft Hyper-V Virtual Hard Disk v2' },
-    {
-        name: 'dmg',
-        title: 'Apple Disk Image (UDIF, incl. UDBZ bzip2; lzfse-compressed chunks unsupported)',
-    },
-    { name: 'qed', title: 'QEMU Enhanced Disk (deprecated)' },
-    { name: 'parallels', title: 'Parallels Desktop disk image' },
-    { name: 'bochs', title: 'Bochs emulator disk image' },
-    { name: 'cloop', title: 'Compressed Loopback (Knoppix)' },
-];
-
-// Fallback FS list shown when the kernel hasn't booted yet (or /proc/filesystems
-// read fails). Should track CONFIG_*_FS=y in scripts/gen_lkl_config.sh.

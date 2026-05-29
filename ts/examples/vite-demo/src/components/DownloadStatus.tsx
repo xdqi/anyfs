@@ -1,6 +1,7 @@
 import { fmtBytes } from '@anyfs/core';
+import type { DownloadJob } from './DownloadingFileTree';
 
-function DownloadStatus({ job, onDismiss }: { job: DownloadJob; onDismiss: () => void }) {
+export function DownloadStatus({ job, onDismiss }: { job: DownloadJob; onDismiss: () => void }) {
     const pct = job.size > 0 ? Math.min(100, (job.written / job.size) * 100) : 0;
     return (
         <div className="rounded-md bg-zinc-100 dark:bg-zinc-800 px-4 py-3 text-base flex items-center gap-3 text-zinc-900 dark:text-zinc-100">

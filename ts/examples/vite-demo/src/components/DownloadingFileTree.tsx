@@ -1,7 +1,11 @@
+import { useCallback, useState } from 'react';
 import type { AnyfsSession, NativeSession } from '@anyfs/core';
 import { AnyfsFileBrowser } from '@anyfs/trees';
+import { useSettings } from '../Settings';
+import { streamDownload } from '../stream-download';
+import { DownloadStatus } from './DownloadStatus';
 
-function DownloadingFileTree({
+export function DownloadingFileTree({
     disk,
     mountPath,
     rootLabel,
@@ -28,7 +32,7 @@ function DownloadingFileTree({
             const abs = mountPath.endsWith('/')
                 ? `${mountPath}${relPath}`
                 : `${mountPath}/${relPath}`;
-            const { stream, size } = await session.openReadable(abs);
+            const { stream, size } = await disk.openReadable(abs);
             const job: DownloadJob = {
                 name: fileName,
                 size,
@@ -40,12 +44,14 @@ function DownloadingFileTree({
                 stream,
                 fileName,
                 size,
-                onProgress: inElectron
-                    ? (written) => {
-                          job.written = written;
-                          setActive({ ...job });
+                ...(inElectron
+                    ? {
+                          onProgress: (written: number) => {
+                              job.written = written;
+                              setActive({ ...job });
+                          },
                       }
-                    : undefined,
+                    : {}),
             });
             job.cancel = () => handle.cancel();
             if (inElectron) setActive(job);
@@ -57,13 +63,13 @@ function DownloadingFileTree({
                 else console.error('[anyfs] download failed:', err);
             }
         },
-        [disk, mountPath, inElectron],
+        [disk, mountPath, inElectron, settings],
     );
 
     return (
         <>
             <AnyfsFileBrowser
-                session={session as AnyfsSession}
+                session={disk as AnyfsSession}
                 mountPath={mountPath}
                 rootLabel={rootLabel}
                 followSymlinks={settings.followSymlinks}
@@ -78,7 +84,7 @@ function DownloadingFileTree({
     );
 }
 
-interface DownloadJob {
+export interface DownloadJob {
     name: string;
     size: number;
     written: number;

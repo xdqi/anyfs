@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 
-function AboutDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function AboutDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
     useEffect(() => {
         if (!open) return;
         const onKey = (e: KeyboardEvent) => {
@@ -131,70 +131,9 @@ function AboutDialog({ open, onClose }: { open: boolean; onClose: () => void }) 
     );
 }
 
-// Probe a URL via async HEAD on the main thread. Returns the size on
-// success; throws a user-readable Error on failure. We do this here
-// (before handing off to the worker) so we can show a real dialog
-// instead of an attach-time crash buried in the status bar.
-async function probeUrlAhead(url: string): Promise<number> {
-    // Route through applyUrlProxy: when an Electron preload has set up the
-    // anyfs-url:// proxy prefix, the fetch goes through the privileged scheme
-    // handler (net.fetch in main), bypassing renderer CORS. In plain browsers
-    // with no proxy prefix, applyUrlProxy returns the URL unchanged.
-    const fetchUrl = applyUrlProxy(url);
-    let resp: Response;
-    try {
-        resp = await fetch(fetchUrl, { method: 'HEAD', cache: 'no-store' });
-    } catch (e) {
-        const msg = getUrlProxyPrefix()
-            ? `Couldn't reach the URL — DNS, TLS, or the host is down. ` +
-              `See the console for the real error.`
-            : `Couldn't reach the URL — usually CORS (the server didn't send ` +
-              `Access-Control-Allow-Origin), or the host is down. ` +
-              `Browser console has the real error.`;
-        throw new Error(msg, { cause: e });
-    }
-    if (!resp.ok) {
-        throw new Error(`Server returned HTTP ${resp.status} ${resp.statusText}.`);
-    }
-    const cl = resp.headers.get('Content-Length');
-    if (!cl) {
-        throw new Error(
-            `Server didn't return a Content-Length header on HEAD. ` +
-                `URLFS needs to know the file size up front to scan partitions.`,
-        );
-    }
-    const size = Number.parseInt(cl, 10);
-    if (!Number.isFinite(size) || size <= 0) {
-        throw new Error(`Server returned an invalid Content-Length: ${cl}.`);
-    }
-    const ar = (resp.headers.get('Accept-Ranges') ?? '').toLowerCase();
-    if (!ar.includes('bytes')) {
-        let probe: Response;
-        try {
-            probe = await fetch(fetchUrl, {
-                method: 'GET',
-                headers: { Range: 'bytes=0-0' },
-                cache: 'no-store',
-            });
-        } catch (e) {
-            throw new Error(`Range probe failed: ${(e as Error).message}`, { cause: e });
-        }
-        if (probe.status !== 206) {
-            throw new Error(
-                `Server doesn't support Range requests ` +
-                    `(got HTTP ${probe.status} for a Range probe). ` +
-                    `URLFS needs partial reads, not a full download.`,
-            );
-        }
-    }
-    return size;
-}
-
 // Subset of drivelist-anyfs's Drive/Partition that we actually consume.
-// The renderer doesn't import drivelist (Node-only); the Electron preload
-// hands us already-serialized JSON via window.electronDrives.list().
-type SysMountpoint = { path: string; label: string | null };
-type SysPartition = {
+export type SysMountpoint = { path: string; label: string | null };
+export type SysPartition = {
     device: string;
     size: number | null;
     number: number | null;
@@ -206,7 +145,7 @@ type SysPartition = {
     mountpoints: SysMountpoint[];
     isReadOnly: boolean;
 };
-type SysDrive = {
+export type SysDrive = {
     device: string;
     description: string;
     size: number | null;
@@ -218,4 +157,4 @@ type SysDrive = {
     partitions: SysPartition[] | null;
 };
 
-type ElectronDrives = { list: () => Promise<SysDrive[] | null> };
+export type ElectronDrives = { list: () => Promise<SysDrive[] | null> };

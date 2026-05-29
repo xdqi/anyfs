@@ -1,5 +1,6 @@
 import type { SessionSource, SessionMeta } from '@anyfs/core';
 import { fmtBytes } from '@anyfs/core';
+import { sourceName } from '../utils';
 
 function ptLabel(pt: string): string {
     const k = pt.toLowerCase();
@@ -13,7 +14,7 @@ function ptLabel(pt: string): string {
 // block device) size, container size on disk (Content-Length for URL, File.size
 // for File — differs from logical for qcow2/vmdk/etc), and partition-table
 // flavour. Best-effort; missing pieces hide.
-function DiskSummary({
+export function DiskSummary({
     source,
     meta,
     onDiskSize,

@@ -1,14 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { SessionSource } from '@anyfs/core';
-import { applyUrlProxy } from '@anyfs/core';
-import { addRecentUrl, tryReopen } from '../recents';
+import { useEffect, useState } from 'react';
+import { getUrlProxyPrefix } from '@anyfs/core';
+import { probeUrlAhead } from '../utils';
 
 // Modal prompt for an http(s)/ftp URL. Triggered from the "Open URL…" link
 // on the landing page. Resolves with the entered URL or null on cancel.
 // Probes the URL in browser mode (HEAD via probeUrlAhead so CORS/404 errors
 // surface here rather than as a worker crash); in native mode QEMU's curl
 // driver handles probing itself, so we accept any non-empty string.
-function UrlPromptDialog({
+export function UrlPromptDialog({
     onSubmit,
     onClose,
     mode,

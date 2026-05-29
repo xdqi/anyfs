@@ -1,6 +1,7 @@
 import { useAnyfsDiskMaybe } from '@anyfs/react';
+import { STATUS_BAR_CLS } from './SupportedFormats';
 
-function KernelStatusBar() {
+export function KernelStatusBar() {
     const anyfs = useAnyfsDiskMaybe();
     if (!anyfs)
         return <div className={`${STATUS_BAR_CLS} text-zinc-600 dark:text-zinc-400`}>idle</div>;

@@ -9,57 +9,9 @@ import { AboutDialog } from './components/AboutDialog';
 import { DiskView } from './components/DiskView';
 import { KernelStatusBar } from './components/KernelStatusBar';
 import { FilePicker } from './components/FilePicker';
-
-// The wasm lives inside a dedicated Web Worker (required: WORKERFS asserts
-// ENVIRONMENT_IS_WORKER, and LKL sem_wait → Atomics.wait is blocked on
-// Chrome's main thread). The worker script and wasm bundle are served from
-// /public/wasm/.
-
-import { TopBar } from './components/TopBar';
-import { ConfirmDialog } from './components/ConfirmDialog';
-import { AboutDialog } from './components/AboutDialog';
-import { SystemDrivesDialog } from './components/SystemDrivesDialog';
-import { UrlPromptDialog } from './components/UrlPromptDialog';
-import { FilePicker } from './components/FilePicker';
-import { UrlErrorDialog } from './components/UrlErrorDialog';
-import { RecentsList } from './components/RecentsList';
-import { KernelStatusBar } from './components/KernelStatusBar';
-import { DiskView } from './components/DiskView';
-import { DownloadStatus, DownloadJob } from './components/DownloadStatus';
+import { clearNavHash, sourceName } from './utils';
 
 const WORKER_URL = new URL('/wasm/anyfs.worker.js', window.location.href).href;
-
-// Wipe the in-disk navigation hash. AnyfsFileBrowser writes paths like
-// `#/etc/os-release`; when we tear down the disk or step back out of a
-// partition, that hash no longer points anywhere meaningful and would
-// otherwise stick around in the address bar (and re-seed the next mount
-// with a stale path).
-function clearNavHash() {
-    if (typeof window === 'undefined') return;
-    if (!window.location.hash) return;
-    window.history.replaceState(null, '', window.location.pathname + window.location.search);
-}
-
-// User-facing label for a SessionSource. For files it's the on-disk filename;
-// for URLs we lift the last path segment (decoded), falling back to host or
-// the raw URL if the path is empty.
-function sourceName(s: SessionSource): string {
-    if (s.kind === 'file') return s.file.name;
-    if (s.kind === 'path') {
-        if (s.name) return s.name;
-        // Best-effort basename: take the last segment after / or \.
-        const parts = s.path.split(/[\\/]/).filter(Boolean);
-        return parts[parts.length - 1] || s.path;
-    }
-    try {
-        const u = new URL(s.url, window.location.href);
-        const last = u.pathname.split('/').filter(Boolean).pop();
-        if (last) return decodeURIComponent(last);
-        return u.host || s.url;
-    } catch {
-        return s.url;
-    }
-}
 
 interface ConfirmCfg {
     title: string;
@@ -159,7 +111,7 @@ export function App() {
                 workerUrl={WORKER_URL}
                 wasmBaseUrl="/wasm/"
                 wasmModuleName="anyfs.qemu.mjs"
-                autoMount="auto"
+                autoMount
                 mountOpts={{ loglevel: 7 }}
                 prewarm
                 {...(settingsDisableNative ? { forceMode: 'wasm' as const } : {})}

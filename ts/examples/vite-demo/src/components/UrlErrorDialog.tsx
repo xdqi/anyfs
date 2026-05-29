@@ -1,4 +1,6 @@
-function UrlErrorDialog({
+import { useEffect } from 'react';
+
+export function UrlErrorDialog({
     title,
     message,
     onClose,
