@@ -235,6 +235,7 @@ endif
 anyfs_core_sources = files(
     'src/core/anyfs_kernel.c',
     'src/core/anyfs_backend.c',
+    'src/core/anyfs_container.c',
     'src/core/anyfs_mount.c',
     'src/core/raw_backend.c',
     'src/core/anyfs_session.c',
