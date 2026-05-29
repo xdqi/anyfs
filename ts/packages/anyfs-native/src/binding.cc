@@ -32,19 +32,17 @@ extern "C" PfnDliHook __pfnDliNotifyHook2 = anyfs_dli_hook;
 #endif
 
 extern "C" {
-int anyfs_ts_init(uint32_t mem_mb, uint32_t loglevel);
+int anyfs_ts_kernel_init(uint32_t mem_mb, uint32_t loglevel);
 int anyfs_ts_kernel_halt(void);
 
 const char* anyfs_get_last_error(void);
 
-int anyfs_ts_disk_open(const char* image_path, uint32_t flags);
-int anyfs_ts_disk_close(int h);
-int anyfs_ts_disk_list_json(int h, char* buf, size_t cap);
-int anyfs_ts_disk_meta_json(int h, char* buf, size_t cap);
-int anyfs_ts_disk_enter(int h, unsigned int part, uint32_t flags,
-			char* mount_out, size_t mount_cap);
-int anyfs_ts_mount_whole(int h, const char* fstype, uint32_t flags,
-			 char* mount_out, size_t mount_cap);
+int anyfs_ts_session_open(const char* image_path, uint32_t flags);
+int anyfs_ts_session_close(int h);
+int anyfs_ts_session_list_json(int h, char* buf, size_t cap);
+int anyfs_ts_session_meta_json(int h, char* buf, size_t cap);
+int anyfs_ts_session_enter(int h, unsigned int part, uint32_t flags,
+			   char* mount_out, size_t mount_cap);
 
 int anyfs_ts_readdir_json(const char* path, char* buf, size_t cap);
 int anyfs_ts_lstat_json(const char* path, char* buf, size_t cap);
@@ -90,11 +88,11 @@ static Napi::Value CallOverflowing(Napi::Env env, const char* name, Fn fn)
 
 // ── lifecycle ────────────────────────────────────────────────────────────
 
-static Napi::Value Init_(const Napi::CallbackInfo& info)
+static Napi::Value KernelInit(const Napi::CallbackInfo& info)
 {
 	uint32_t mem = info[0].As<Napi::Number>().Uint32Value();
 	uint32_t lvl = info[1].As<Napi::Number>().Uint32Value();
-	return Napi::Number::New(info.Env(), anyfs_ts_init(mem, lvl));
+	return Napi::Number::New(info.Env(), anyfs_ts_kernel_init(mem, lvl));
 }
 
 static Napi::Value KernelHalt(const Napi::CallbackInfo& info)
@@ -104,77 +102,61 @@ static Napi::Value KernelHalt(const Napi::CallbackInfo& info)
 
 // ── disk handle ──────────────────────────────────────────────────────────
 
-static Napi::Value DiskOpen(const Napi::CallbackInfo& info)
+static Napi::Value SessionOpen(const Napi::CallbackInfo& info)
 {
 	std::string p = info[0].As<Napi::String>();
 	uint32_t fl = info[1].As<Napi::Number>().Uint32Value();
-	int rc = anyfs_ts_disk_open(p.c_str(), fl);
+	int rc = anyfs_ts_session_open(p.c_str(), fl);
 	if (rc < 0) {
 		const char* err = anyfs_get_last_error();
 		if (err && *err)
 			Napi::Error::New(info.Env(), err)
 			    .ThrowAsJavaScriptException();
 		else
-			Napi::Error::New(info.Env(), "diskOpen failed")
+			Napi::Error::New(info.Env(), "sessionOpen failed")
 			    .ThrowAsJavaScriptException();
 		return info.Env().Undefined();
 	}
 	return Napi::Number::New(info.Env(), rc);
 }
 
-static Napi::Value DiskClose(const Napi::CallbackInfo& info)
+static Napi::Value SessionClose(const Napi::CallbackInfo& info)
 {
 	int h = info[0].As<Napi::Number>().Int32Value();
-	return Napi::Number::New(info.Env(), anyfs_ts_disk_close(h));
+	return Napi::Number::New(info.Env(), anyfs_ts_session_close(h));
 }
 
-static Napi::Value DiskListJson(const Napi::CallbackInfo& info)
+static Napi::Value SessionListJson(const Napi::CallbackInfo& info)
 {
 	int h = info[0].As<Napi::Number>().Int32Value();
-	return CallOverflowing(info.Env(), "diskListJson",
-			       [h](char* b, size_t c) {
-				       return anyfs_ts_disk_list_json(h, b, c);
-			       });
+	return CallOverflowing(
+	    info.Env(), "sessionListJson", [h](char* b, size_t c) {
+		    return anyfs_ts_session_list_json(h, b, c);
+	    });
 }
 
-static Napi::Value DiskMetaJson(const Napi::CallbackInfo& info)
+static Napi::Value SessionMetaJson(const Napi::CallbackInfo& info)
 {
 	int h = info[0].As<Napi::Number>().Int32Value();
-	return CallOverflowing(info.Env(), "diskMetaJson",
-			       [h](char* b, size_t c) {
-				       return anyfs_ts_disk_meta_json(h, b, c);
-			       });
+	return CallOverflowing(
+	    info.Env(), "sessionMetaJson", [h](char* b, size_t c) {
+		    return anyfs_ts_session_meta_json(h, b, c);
+	    });
 }
 
-// disk_enter/mount_whole write the LKL mount path into a small buffer and
-// return rc; the wrapper returns the mount path as a string and throws on rc<0.
-static Napi::Value DiskEnter(const Napi::CallbackInfo& info)
+// session_enter writes the LKL mount path into a buffer and returns rc;
+// the wrapper returns the mount path as a string and throws on rc<0.
+// part=0 mounts the whole disk, part>=1 enters a partition.
+static Napi::Value SessionEnter(const Napi::CallbackInfo& info)
 {
 	int h = info[0].As<Napi::Number>().Int32Value();
 	uint32_t part = info[1].As<Napi::Number>().Uint32Value();
 	uint32_t flags = info[2].As<Napi::Number>().Uint32Value();
 	char out[256] = {0};
-	int rc = anyfs_ts_disk_enter(h, part, flags, out, sizeof(out));
+	int rc = anyfs_ts_session_enter(h, part, flags, out, sizeof(out));
 	if (rc != 0) {
 		Napi::Error::New(info.Env(),
-				 "diskEnter: rc=" + std::to_string(rc))
-		    .ThrowAsJavaScriptException();
-		return info.Env().Null();
-	}
-	return Napi::String::New(info.Env(), out);
-}
-
-static Napi::Value MountWhole(const Napi::CallbackInfo& info)
-{
-	int h = info[0].As<Napi::Number>().Int32Value();
-	std::string fs =
-	    info[1].IsString() ? info[1].As<Napi::String>().Utf8Value() : "";
-	uint32_t flags = info[2].As<Napi::Number>().Uint32Value();
-	char out[256] = {0};
-	int rc = anyfs_ts_mount_whole(h, fs.c_str(), flags, out, sizeof(out));
-	if (rc != 0) {
-		Napi::Error::New(info.Env(),
-				 "mountWhole: rc=" + std::to_string(rc))
+				 "sessionEnter: rc=" + std::to_string(rc))
 		    .ThrowAsJavaScriptException();
 		return info.Env().Null();
 	}
@@ -279,15 +261,16 @@ static Napi::Value FileClose(const Napi::CallbackInfo& info)
 
 static Napi::Object InitModule(Napi::Env env, Napi::Object exports)
 {
-	exports.Set("init", Napi::Function::New(env, Init_));
+	exports.Set("kernelInit", Napi::Function::New(env, KernelInit));
 	exports.Set("kernelHalt", Napi::Function::New(env, KernelHalt));
 
-	exports.Set("diskOpen", Napi::Function::New(env, DiskOpen));
-	exports.Set("diskClose", Napi::Function::New(env, DiskClose));
-	exports.Set("diskListJson", Napi::Function::New(env, DiskListJson));
-	exports.Set("diskMetaJson", Napi::Function::New(env, DiskMetaJson));
-	exports.Set("diskEnter", Napi::Function::New(env, DiskEnter));
-	exports.Set("mountWhole", Napi::Function::New(env, MountWhole));
+	exports.Set("sessionOpen", Napi::Function::New(env, SessionOpen));
+	exports.Set("sessionClose", Napi::Function::New(env, SessionClose));
+	exports.Set("sessionListJson",
+		    Napi::Function::New(env, SessionListJson));
+	exports.Set("sessionMetaJson",
+		    Napi::Function::New(env, SessionMetaJson));
+	exports.Set("sessionEnter", Napi::Function::New(env, SessionEnter));
 
 	exports.Set("readKernelFile", Napi::Function::New(env, ReadKernelFile));
 	exports.Set("readdirJson", Napi::Function::New(env, ReaddirJson));
