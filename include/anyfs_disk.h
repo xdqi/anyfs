@@ -77,6 +77,15 @@ int anyfs_disk_open(const char* image_path, uint32_t flags, AnyfsDisk** out);
 /* Idempotent; safe at atexit. */
 void anyfs_disk_close(AnyfsDisk* d);
 
+/* Cached superblock-probe fstype for the whole disk (no partition
+ * table). Set during anyfs_disk_open; NULL if unknown. Caller does not
+ * own the returned pointer. */
+const char* anyfs_disk_whole_fstype_hint(const AnyfsDisk* d);
+
+/* Cached dev_t for the whole-disk block device (e.g. for mknod).
+ * Set during anyfs_disk_open; returns 0 if unknown. */
+uint32_t anyfs_disk_whole_dev(const AnyfsDisk* d);
+
 /* The display name = basename of the image (or anything the surface
  * pinned). Used in lspart-style output. */
 const char* anyfs_disk_display(const AnyfsDisk* d);

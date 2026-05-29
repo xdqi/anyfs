@@ -18,6 +18,7 @@
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
+#include <pthread.h>
 #endif
 
 #include <lkl.h>
@@ -202,6 +203,60 @@ int anyfs_ts_init(uint32_t mem_mb, uint32_t loglevel)
 	return anyfs_kernel_init(&opts);
 }
 
+#ifdef __EMSCRIPTEN__
+/*
+ * Async boot for wasm/Worker environments: the synchronous anyfs_ts_init
+ * blocks the calling thread in sem_down(init_sem) → Atomics.wait. While
+ * the caller is blocked, pthread Workers cannot proxy nested thread
+ * creation back to the calling thread (which owns the pool), so the
+ * kernel deadlocks during boot.
+ *
+ * The fix: run anyfs_ts_init on a dedicated pthread. The pool-owning
+ * thread returns to JavaScript immediately and polls
+ * anyfs_ts_is_boot_complete(), with its event loop free to process
+ * spawnThread messages while the kernel boots.
+ */
+
+static volatile int g_boot_complete = 0;
+static volatile int g_boot_result = 0;
+
+static void* boot_thread_fn(void* arg)
+{
+	uint32_t mem_mb = ((uint32_t*)arg)[0];
+	uint32_t loglevel = ((uint32_t*)arg)[1];
+
+	g_boot_result = anyfs_ts_init(mem_mb, loglevel);
+	__sync_synchronize();
+	g_boot_complete = 1;
+
+	return NULL;
+}
+
+int anyfs_ts_init_async(uint32_t mem_mb, uint32_t loglevel)
+{
+	static uint32_t args[2];
+	args[0] = mem_mb;
+	args[1] = loglevel;
+
+	pthread_t thread;
+	int rc = pthread_create(&thread, NULL, boot_thread_fn, args);
+	if (rc != 0)
+		return -1;
+	pthread_detach(thread);
+	return 0; /* returns immediately — caller must poll */
+}
+
+int anyfs_ts_is_boot_complete(void)
+{
+	return g_boot_complete;
+}
+
+int anyfs_ts_boot_result(void)
+{
+	return g_boot_result;
+}
+#endif
+
 int anyfs_ts_kernel_halt(void)
 {
 	for (int i = 0; i < MAX_HANDLES; i++) {
@@ -310,7 +365,11 @@ int anyfs_ts_disk_enter(int h, unsigned int part, uint32_t flags,
 }
 
 /* Mount the whole disk (no partition table) by creating a /dev node
- * for /dev/anyfs_d<id>_whole and calling anyfs_mount_blkdev. */
+ * for /dev/anyfs_d<id>_whole and calling anyfs_mount_blkdev.
+ *
+ * Dev number and fstype hint are cached from anyfs_disk_open to avoid
+ * QEMU block I/O in this call — any pread64 through QEMU fibers before
+ * the mount would corrupt ASYNCIFY state and wedge the ext4 mount. */
 int anyfs_ts_mount_whole(int h, const char* fstype, uint32_t flags,
 			 char* mount_out, size_t mount_cap)
 {
@@ -323,9 +382,13 @@ int anyfs_ts_mount_whole(int h, const char* fstype, uint32_t flags,
 	if (disk_id < 0)
 		return -3;
 
-	uint32_t dev = 0;
-	if (lkl_get_virtio_blkdev(disk_id, 0, &dev) < 0)
-		return -4;
+	/* Use cached dev_t from anyfs_disk_open; fall back to sysfs read
+	 * if the cache is cold (shouldn't happen, but be defensive). */
+	uint32_t dev = anyfs_disk_whole_dev(d);
+	if (dev == 0) {
+		if (lkl_get_virtio_blkdev(disk_id, 0, &dev) < 0)
+			return -4;
+	}
 
 	if (lkl_sys_access("/dev", 0) < 0)
 		lkl_sys_mkdir("/dev", 0700);
@@ -336,22 +399,27 @@ int anyfs_ts_mount_whole(int h, const char* fstype, uint32_t flags,
 	char name[32];
 	snprintf(name, sizeof(name), "anyfs_d%d_whole", disk_id);
 
-	/* If no fstype hint was passed (NULL/empty/"auto"), libblkid-probe
-	 * the whole-disk /dev node the same way per-partition mounts do
-	 * (see anyfs_disk.c). Without this, e.g. an iso9660 image with no
-	 * partition table can't be mounted because the caller has no way
-	 * to know the fstype up front. If blkid can't identify it, we
-	 * still fall through to anyfs_mount_blkdev(NULL) which triggers
-	 * the kernel-side brute-force loop in mount_via_devpath. */
-	char probed[32] = {0};
+	/* Resolve fstype: explicit arg > cached superblock probe > kindprobe.
+	 * The inline pread64 probe is intentionally absent here — any QEMU
+	 * block I/O before the mount corrupts ASYNCIFY fiber state. */
 	const char* hint =
 	    (fstype && *fstype && strcmp(fstype, "auto") != 0) ? fstype : NULL;
+	if (!hint)
+		hint = anyfs_disk_whole_fstype_hint(d);
 	if (!hint) {
-		char lbl[64] = {0}, uid[40] = {0};
+		char probed[32] = {0}, lbl[64] = {0}, uid[40] = {0};
 		(void)anyfs_kindprobe_meta(devpath, probed, lbl, uid);
 		if (probed[0])
 			hint = probed;
 	}
+
+	/* Flush ASYNCIFY fiber state before the ext4 mount's block I/O.
+	 * fprintf+fflush to stderr proxies to the main thread via
+	 * postMessage+Atomics.wait, forcing a full save/restore cycle. */
+#ifdef __EMSCRIPTEN__
+	fprintf(stderr, " ");
+	fflush(stderr);
+#endif
 
 	AnyfsMount mnt = {0};
 	int rc = anyfs_mount_blkdev(devpath, hint, name, flags, &mnt);

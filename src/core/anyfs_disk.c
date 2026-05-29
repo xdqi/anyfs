@@ -27,6 +27,9 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <pthread.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -77,7 +80,9 @@ struct AnyfsDisk {
 	uint32_t open_flags;
 	char image_path[512];
 	char display[256];
-	char sysfs_name[64]; /* "vda" */
+	char sysfs_name[64];	    /* "vda" */
+	char whole_fstype_hint[32]; /* cached superblock probe result */
+	uint32_t whole_dev;	    /* cached dev_t for whole-disk /dev node */
 	pthread_mutex_t lock;
 	PartSlot* parts; /* size = parts_cap */
 	size_t n_parts;
@@ -286,6 +291,39 @@ static int find_slot_by_pair_locked(AnyfsDisk* d, int parent_slot,
 }
 
 /* Append top-level partitions from sysfs. Caller holds d->lock. */
+/* Read device number from the already-mounted /sys instead of
+ * lkl_get_virtio_blkdev which mounts a second sysfs instance and
+ * hangs under ASYNCIFY+QEMU+fiber builds. */
+static int get_blkdev_from_sys(int disk_id, unsigned int part, uint32_t* pdevid)
+{
+	char path[128];
+	char vd[8];
+	snprintf(vd, sizeof(vd), "vd%c", 'a' + disk_id);
+	if (part == 0)
+		snprintf(path, sizeof(path), "/sys/block/%s/dev", vd);
+	else
+		snprintf(path, sizeof(path), "/sys/block/%s/%s%d/dev", vd, vd,
+			 part);
+
+	int fd = lkl_sys_open(path, LKL_O_RDONLY, 0);
+	if (fd < 0)
+		return fd;
+
+	char buf[16];
+	long n = lkl_sys_read(fd, buf, sizeof(buf) - 1);
+	lkl_sys_close(fd);
+	if (n <= 0)
+		return -1;
+
+	buf[n] = '\0';
+	unsigned int major, minor;
+	if (sscanf(buf, "%u:%u", &major, &minor) != 2)
+		return -1;
+
+	*pdevid = (minor & 0xff) | (major << 8) | ((minor & ~0xff) << 12);
+	return 0;
+}
+
 static int load_top_parts_locked(AnyfsDisk* d)
 {
 	AnyfsSysfsPart sbuf[MAX_PARTS];
@@ -306,8 +344,7 @@ static int load_top_parts_locked(AnyfsDisk* d)
 
 		/* Best-effort mknod so kindprobe can pread the partition. */
 		uint32_t dev = 0;
-		if (lkl_get_virtio_blkdev(d->disk_id, sbuf[i].index, &dev) ==
-		    0) {
+		if (get_blkdev_from_sys(d->disk_id, sbuf[i].index, &dev) == 0) {
 			if (lkl_sys_access("/dev", 0) < 0)
 				(void)lkl_sys_mkdir("/dev", 0700);
 			(void)lkl_sys_mknod(blkdev, LKL_S_IFBLK | 0600, dev);
@@ -353,19 +390,64 @@ int anyfs_disk_open(const char* image_path, uint32_t flags, AnyfsDisk** out)
 	}
 	d->n_parts = 0;
 
-	/* Resolve sysfs name via /sys/dev/block/<maj>:<min>. */
-	uint32_t whole_dev = 0;
-	int gv = lkl_get_virtio_blkdev(disk_id, 0, &whole_dev);
-	if (gv < 0 ||
-	    anyfs_sysfs_resolve_disk_name(whole_dev, d->sysfs_name) < 0) {
-		d->sysfs_name[0] = '\0';
-		*out = d;
-		return 0;
-	}
+	/* Yield to the event loop to flush any stale ASYNCIFY fiber
+	 * state left over from QEMU block I/O during lkl_disk_add.
+	 * Without this checkpoint, subsequent sysfs reads may hang. */
+#ifdef __EMSCRIPTEN__
+	emscripten_sleep(0);
+#endif
+	/* Construct sysfs block name from disk_id. The first LKL
+	 * virtio-blk device is always "vda", second "vdb", etc.
+	 * Reading from the already-mounted /sys avoids the hang
+	 * that lkl_get_virtio_blkdev triggers in ASYNCIFY builds. */
+	snprintf(d->sysfs_name, sizeof(d->sysfs_name), "vd%c", 'a' + disk_id);
 
 	pthread_mutex_lock(&d->lock);
 	(void)load_top_parts_locked(d);
 	pthread_mutex_unlock(&d->lock);
+
+	/* Cache the whole-disk fstype via superblock magic probe.
+	 * This runs after the ASYNCIFY checkpoint above, so the
+	 * block I/O is safe. mountWhole reuses the cached hint
+	 * and avoids any probe reads that would corrupt fibers. */
+	d->whole_fstype_hint[0] = '\0';
+	d->whole_dev = 0;
+	uint32_t probe_dev = 0;
+	if (get_blkdev_from_sys(d->disk_id, 0, &probe_dev) == 0) {
+		d->whole_dev = probe_dev;
+		if (lkl_sys_access("/dev", 0) < 0)
+			lkl_sys_mkdir("/dev", 0700);
+		char tmpdev[80];
+		snprintf(tmpdev, sizeof(tmpdev), "/dev/.anyfs_probe_%d",
+			 d->disk_id);
+		(void)lkl_sys_mknod(tmpdev, LKL_S_IFBLK | 0600, probe_dev);
+		int probe_fd = lkl_sys_open(tmpdev, LKL_O_RDONLY, 0);
+		if (probe_fd >= 0) {
+			char sb[4096];
+			long n = lkl_sys_pread64(probe_fd, sb, sizeof(sb), 0);
+			if (n >= (long)sizeof(sb)) {
+				if ((unsigned char)sb[0x438] == 0x53 &&
+				    (unsigned char)sb[0x439] == 0xEF)
+					snprintf(d->whole_fstype_hint,
+						 sizeof(d->whole_fstype_hint),
+						 "ext4");
+				else if (memcmp(sb, "XFSB", 4) == 0)
+					snprintf(d->whole_fstype_hint,
+						 sizeof(d->whole_fstype_hint),
+						 "xfs");
+				else if (memcmp(sb + 3, "NTFS    ", 8) == 0)
+					snprintf(d->whole_fstype_hint,
+						 sizeof(d->whole_fstype_hint),
+						 "ntfs");
+				else if (memcmp(sb + 3, "EXFAT   ", 8) == 0)
+					snprintf(d->whole_fstype_hint,
+						 sizeof(d->whole_fstype_hint),
+						 "exfat");
+			}
+			lkl_sys_close(probe_fd);
+		}
+		lkl_sys_unlink(tmpdev);
+	}
 
 	*out = d;
 	return 0;
@@ -416,6 +498,18 @@ int anyfs_disk_id(const AnyfsDisk* d)
 	return d ? d->disk_id : -1;
 }
 
+const char* anyfs_disk_whole_fstype_hint(const AnyfsDisk* d)
+{
+	if (!d || !d->whole_fstype_hint[0])
+		return NULL;
+	return d->whole_fstype_hint;
+}
+
+uint32_t anyfs_disk_whole_dev(const AnyfsDisk* d)
+{
+	return d ? d->whole_dev : 0;
+}
+
 int anyfs_disk_meta(AnyfsDisk* d, AnyfsDiskMeta* out)
 {
 	if (!d || !out)
@@ -447,7 +541,7 @@ int anyfs_disk_meta(AnyfsDisk* d, AnyfsDiskMeta* out)
 	char blk_path[80];
 	snprintf(blk_path, sizeof(blk_path), "/dev/%s", d->sysfs_name);
 	uint32_t whole_dev = 0;
-	if (lkl_get_virtio_blkdev(d->disk_id, 0, &whole_dev) == 0) {
+	if (get_blkdev_from_sys(d->disk_id, 0, &whole_dev) == 0) {
 		if (lkl_sys_access("/dev", 0) < 0)
 			(void)lkl_sys_mkdir("/dev", 0700);
 		(void)lkl_sys_mknod(blk_path, LKL_S_IFBLK | 0600, whole_dev);

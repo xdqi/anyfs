@@ -263,14 +263,10 @@ int anyfs_disk_add(const char* image_path, uint32_t flags)
 
 	struct lkl_disk disk;
 	int ret = ops->open(image_path, readonly, &disk);
-	fprintf(stderr, "[anyfs] backend(%s)->open returned %d\n", ops->name,
-		ret);
 	if (ret < 0)
 		return -1;
 
-	fprintf(stderr, "[anyfs] lkl_disk_add…\n");
 	int disk_id = lkl_disk_add(&disk);
-	fprintf(stderr, "[anyfs] lkl_disk_add returned %d\n", disk_id);
 	if (disk_id < 0) {
 		ops->close(&disk);
 		return -1;
