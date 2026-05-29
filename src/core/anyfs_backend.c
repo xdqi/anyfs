@@ -59,8 +59,6 @@ int anyfs_disk_add(const char* image_path, uint32_t flags)
 	if (slot < 0)
 		return -1;
 
-	int readonly = (flags & ANYFS_SESSION_READONLY) ? 1 : 0;
-
 	/* Select backend */
 	const struct anyfs_backend_ops* ops = NULL;
 #ifdef ANYFS_HAS_QEMU
@@ -84,7 +82,7 @@ int anyfs_disk_add(const char* image_path, uint32_t flags)
 	}
 
 	struct lkl_disk disk;
-	int ret = ops->open(image_path, readonly, &disk);
+	int ret = ops->open(image_path, flags, &disk);
 	if (ret < 0)
 		return -1;
 

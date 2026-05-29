@@ -1,8 +1,10 @@
 #define _GNU_SOURCE
 #define _FILE_OFFSET_BITS 64
 #include "raw_backend.h"
+#include "anyfs.h"
 
 #include <lkl.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -61,8 +63,9 @@ static struct lkl_dev_blk_ops raw_ops = {
     .request = raw_request,
 };
 
-int raw_blk_open(const char* path, int readonly, struct lkl_disk* disk_out)
+int raw_blk_open(const char* path, uint32_t flags, struct lkl_disk* disk_out)
 {
+	bool readonly = flags & ANYFS_SESSION_READONLY;
 	DWORD access = readonly ? GENERIC_READ : (GENERIC_READ | GENERIC_WRITE);
 	DWORD share = FILE_SHARE_READ;
 	HANDLE hFile = CreateFileA(path, access, share, NULL, OPEN_EXISTING,
@@ -164,10 +167,11 @@ static struct lkl_dev_blk_ops raw_ops = {
     .request = raw_request,
 };
 
-int raw_blk_open(const char* path, int readonly, struct lkl_disk* disk_out)
+int raw_blk_open(const char* path, uint32_t flags, struct lkl_disk* disk_out)
 {
-	int flags = readonly ? O_RDONLY : O_RDWR;
-	int fd = open(path, flags);
+	bool readonly = flags & ANYFS_SESSION_READONLY;
+	int oflags = readonly ? O_RDONLY : O_RDWR;
+	int fd = open(path, oflags);
 	if (fd < 0)
 		return -1;
 

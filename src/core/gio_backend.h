@@ -10,7 +10,7 @@
  */
 #include "anyfs_backend.h"
 
-int gio_blk_open(const char* path, int readonly, struct lkl_disk* disk_out);
+int gio_blk_open(const char* path, uint32_t flags, struct lkl_disk* disk_out);
 void gio_blk_destroy(struct lkl_disk* disk);
 
 extern const struct anyfs_backend_ops gio_backend_ops;

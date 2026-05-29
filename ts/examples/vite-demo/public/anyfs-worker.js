@@ -46,7 +46,7 @@ const ops = {
         send({ event: 'progress', step: `anyfs_ts_init -> ${rc}` });
         if (rc !== 0) throw new Error(`anyfs_ts_init failed: ${rc}`);
 
-        // flags: ANYFS_DISK_READONLY = 1 (WORKERFS-backed image is read-only)
+        // flags: ANYFS_SESSION_READONLY = 1 (WORKERFS-backed image is read-only)
         diskHandle = M.ccall('anyfs_ts_disk_open', 'number', ['string', 'number'], [fsPath, 1]);
         send({ event: 'progress', step: `anyfs_ts_disk_open -> ${diskHandle}` });
         if (diskHandle < 0) throw new Error(`anyfs_ts_disk_open failed: ${diskHandle}`);

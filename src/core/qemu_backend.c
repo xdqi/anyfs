@@ -108,10 +108,11 @@ struct lkl_dev_blk_ops qemu_blk_ops = {
 
 static int qemu_initialized = 0;
 
-int qemu_blk_open(const char* image_path, int readonly,
+int qemu_blk_open(const char* image_path, uint32_t flags,
 		  struct lkl_disk* disk_out)
 {
 	Error* errp = NULL;
+	bool readonly = flags & ANYFS_SESSION_READONLY;
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -139,7 +140,7 @@ int qemu_blk_open(const char* image_path, int readonly,
 	 * doesn't try to create a writable overlay in /var/tmp - which doesn't
 	 * exist under emscripten MEMFS, and which silently discards writes
 	 * anyway. Callers that need write-through must pass readonly=0. */
-	int flags = readonly ? 0 : BDRV_O_RDWR;
+	int bdrv_flags = readonly ? 0 : BDRV_O_RDWR;
 
 	/* QEMU's curl block driver defaults to CURLOPT_TIMEOUT=5s. Bump it for
 	 * URL images (local files use the raw driver, which ignores "timeout").
@@ -152,9 +153,9 @@ int qemu_blk_open(const char* image_path, int readonly,
 	}
 
 	fprintf(stderr, "[qemu_blk] blk_new_open flags=0x%x timeout=%d\n",
-		flags, is_url ? 20 : 0);
+		bdrv_flags, is_url ? 20 : 0);
 	BlockBackend* blk =
-	    blk_new_open(image_path, NULL, options, flags, &errp);
+	    blk_new_open(image_path, NULL, options, bdrv_flags, &errp);
 	fprintf(stderr, "[qemu_blk] blk_new_open returned %p\n", (void*)blk);
 	if (!blk) {
 		anyfs_set_last_error("%s", error_get_pretty(errp));

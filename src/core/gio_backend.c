@@ -88,9 +88,9 @@ static struct lkl_dev_blk_ops gio_ops = {
     .request = gio_request,
 };
 
-int gio_blk_open(const char* path, int readonly, struct lkl_disk* disk_out)
+int gio_blk_open(const char* path, uint32_t flags, struct lkl_disk* disk_out)
 {
-	(void)readonly; /* GIO backend is read-only for now */
+	(void)flags; /* GIO backend is read-only for now */
 	GError* error = NULL;
 
 	GFile* file = g_file_new_for_path(path);

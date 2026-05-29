@@ -9,7 +9,7 @@
  */
 #include "anyfs_backend.h"
 
-int qemu_blk_open(const char* image_path, int readonly,
+int qemu_blk_open(const char* image_path, uint32_t flags,
 		  struct lkl_disk* disk_out);
 void qemu_blk_close(struct lkl_disk* disk);
 

@@ -2,6 +2,7 @@
 #define ANYFS_BACKEND_H
 
 #include <lkl_host.h>
+#include <stdint.h>
 
 /*
  * Block backend operations interface.
@@ -9,7 +10,8 @@
  */
 struct anyfs_backend_ops {
 	const char* name;
-	int (*open)(const char* path, int readonly, struct lkl_disk* disk_out);
+	int (*open)(const char* path, uint32_t flags,
+		    struct lkl_disk* disk_out);
 	void (*close)(struct lkl_disk* disk);
 };
 
