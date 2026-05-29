@@ -39,7 +39,7 @@
 
 #include "jsonw.h"
 
-/* ── Disk session table ──────────────────────────────────────── */
+/* ── Session table ──────────────────────────────────────── */
 /* anyfs_session_open returns AnyfsSession* — opaque to JS. We give JS small
  * integer handles instead. */
 
@@ -81,7 +81,7 @@ static void ts_lkl_print(const char* str, int len)
 	fflush(stderr);
 }
 
-int anyfs_ts_init(uint32_t mem_mb, uint32_t loglevel)
+int anyfs_ts_kernel_init(uint32_t mem_mb, uint32_t loglevel)
 {
 	lkl_host_ops.print = ts_lkl_print;
 	AnyfsKernelOpts opts = {.mem_mb = mem_mb, .loglevel = loglevel};
@@ -110,7 +110,7 @@ static void* boot_thread_fn(void* arg)
 	uint32_t mem_mb = ((uint32_t*)arg)[0];
 	uint32_t loglevel = ((uint32_t*)arg)[1];
 
-	g_boot_result = anyfs_ts_init(mem_mb, loglevel);
+	g_boot_result = anyfs_ts_kernel_init(mem_mb, loglevel);
 	__sync_synchronize();
 	g_boot_complete = 1;
 
@@ -154,7 +154,7 @@ int anyfs_ts_kernel_halt(void)
 	return 0;
 }
 
-int anyfs_ts_disk_open(const char* image_path, uint32_t flags)
+int anyfs_ts_session_open(const char* image_path, uint32_t flags)
 {
 	AnyfsSession* d = NULL;
 	int rc = anyfs_session_open(image_path, flags, &d);
@@ -168,7 +168,7 @@ int anyfs_ts_disk_open(const char* image_path, uint32_t flags)
 	return h;
 }
 
-int anyfs_ts_disk_close(int h)
+int anyfs_ts_session_close(int h)
 {
 	AnyfsSession* d = get_handle(h);
 	if (!d)
@@ -178,7 +178,7 @@ int anyfs_ts_disk_close(int h)
 	return 0;
 }
 
-int anyfs_ts_disk_list_json(int h, char* buf, size_t cap)
+int anyfs_ts_session_list_json(int h, char* buf, size_t cap)
 {
 	AnyfsSession* d = get_handle(h);
 	if (!d)
@@ -216,7 +216,7 @@ int anyfs_ts_disk_list_json(int h, char* buf, size_t cap)
 	return jw_finish(&w, buf, cap);
 }
 
-int anyfs_ts_disk_meta_json(int h, char* buf, size_t cap)
+int anyfs_ts_session_meta_json(int h, char* buf, size_t cap)
 {
 	AnyfsSession* d = get_handle(h);
 	if (!d)
@@ -233,8 +233,8 @@ int anyfs_ts_disk_meta_json(int h, char* buf, size_t cap)
 	return jw_finish(&w, buf, cap);
 }
 
-int anyfs_ts_disk_enter(int h, unsigned int part, uint32_t flags,
-			char* mount_out, size_t mount_cap)
+int anyfs_ts_session_enter(int h, unsigned int part, uint32_t flags,
+			   char* mount_out, size_t mount_cap)
 {
 	AnyfsSession* d = get_handle(h);
 	if (!d)
@@ -246,71 +246,6 @@ int anyfs_ts_disk_enter(int h, unsigned int part, uint32_t flags,
 	if (rc != 0)
 		return rc < 0 ? rc : -3;
 	snprintf(mount_out, mount_cap, "%s", lkl_path);
-	return 0;
-}
-
-/* Mount the whole disk (no partition table) by creating a /dev node
- * for /dev/anyfs_d<id>_whole and calling anyfs_mount_blkdev.
- *
- * Dev number and fstype hint are cached from anyfs_session_open to avoid
- * QEMU block I/O in this call — any pread64 through QEMU fibers before
- * the mount would corrupt ASYNCIFY state and wedge the ext4 mount. */
-int anyfs_ts_mount_whole(int h, const char* fstype, uint32_t flags,
-			 char* mount_out, size_t mount_cap)
-{
-	AnyfsSession* d = get_handle(h);
-	if (!d)
-		return -1;
-	if (mount_cap < 64)
-		return -2;
-	int disk_id = anyfs_session_id(d);
-	if (disk_id < 0)
-		return -3;
-
-	/* Use cached dev_t from anyfs_session_open; fall back to sysfs read
-	 * if the cache is cold (shouldn't happen, but be defensive). */
-	uint32_t dev = anyfs_session_whole_dev(d);
-	if (dev == 0) {
-		if (lkl_get_virtio_blkdev(disk_id, 0, &dev) < 0)
-			return -4;
-	}
-
-	if (lkl_sys_access("/dev", 0) < 0)
-		lkl_sys_mkdir("/dev", 0700);
-	char devpath[80];
-	snprintf(devpath, sizeof(devpath), "/dev/anyfs_d%d_whole", disk_id);
-	(void)lkl_sys_mknod(devpath, LKL_S_IFBLK | 0600, dev);
-
-	char name[32];
-	snprintf(name, sizeof(name), "anyfs_d%d_whole", disk_id);
-
-	/* Resolve fstype: explicit arg > cached superblock probe > kindprobe.
-	 * The inline pread64 probe is intentionally absent here — any QEMU
-	 * block I/O before the mount corrupts ASYNCIFY fiber state. */
-	const char* hint =
-	    (fstype && *fstype && strcmp(fstype, "auto") != 0) ? fstype : NULL;
-	if (!hint)
-		hint = anyfs_session_whole_fstype_hint(d);
-	if (!hint) {
-		char probed[32] = {0}, lbl[64] = {0}, uid[40] = {0};
-		(void)anyfs_probe_meta(devpath, probed, lbl, uid);
-		if (probed[0])
-			hint = probed;
-	}
-
-	/* Flush ASYNCIFY fiber state before the ext4 mount's block I/O.
-	 * fprintf+fflush to stderr proxies to the main thread via
-	 * postMessage+Atomics.wait, forcing a full save/restore cycle. */
-#ifdef __EMSCRIPTEN__
-	fprintf(stderr, " ");
-	fflush(stderr);
-#endif
-
-	AnyfsMount mnt = {0};
-	int rc = anyfs_mount_blkdev(devpath, hint, name, flags, &mnt);
-	if (rc != 0)
-		return rc < 0 ? rc : -5;
-	snprintf(mount_out, mount_cap, "%s", mnt.mount_point);
 	return 0;
 }
 
@@ -495,17 +430,14 @@ int anyfs_ts_close(int fd)
 		*out = (int32_t)anyfs_ts_##name call;                          \
 	}
 
-DEF_P_TRAMP(disk_open, (const char* image_path, uint32_t flags, int32_t* out),
+DEF_P_TRAMP(session_open,
+	    (const char* image_path, uint32_t flags, int32_t* out),
 	    (image_path, flags))
-DEF_P_TRAMP(disk_list_json, (int h, char* buf, size_t cap, int32_t* out),
+DEF_P_TRAMP(session_list_json, (int h, char* buf, size_t cap, int32_t* out),
 	    (h, buf, cap))
-DEF_P_TRAMP(disk_meta_json, (int h, char* buf, size_t cap, int32_t* out),
+DEF_P_TRAMP(session_meta_json, (int h, char* buf, size_t cap, int32_t* out),
 	    (h, buf, cap))
-DEF_P_TRAMP(mount_whole,
-	    (int h, const char* fstype, uint32_t flags, char* mount_out,
-	     size_t mount_cap, int32_t* out),
-	    (h, fstype, flags, mount_out, mount_cap))
-DEF_P_TRAMP(disk_enter,
+DEF_P_TRAMP(session_enter,
 	    (int h, unsigned int part, uint32_t flags, char* mount_out,
 	     size_t mount_cap, int32_t* out),
 	    (h, part, flags, mount_out, mount_cap))
