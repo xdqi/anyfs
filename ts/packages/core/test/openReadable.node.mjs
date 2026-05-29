@@ -1,15 +1,22 @@
 /**
- * Verifies AnyfsDisk.openReadable() streams a file in chunks without
+ * Verifies AnyfsSession.openReadable() streams a file in chunks without
  * buffering the whole file in wasm memory.
  *
  *   node ts/packages/core/test/openReadable.node.mjs single
  *   node ts/packages/core/test/openReadable.node.mjs big
  */
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { strict as assert } from 'node:assert';
 
+const DISKS_DIR = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '../../../examples/vite-demo/public/disks',
+);
+
 const IMAGES = {
-    single: { path: '${LKLFTPD_SRC}/disk_single.img', target: 'hello.txt' },
-    big: { path: '${LKLFTPD_SRC}/build/diagnostic/big_ext4.img', target: 'big.bin' },
+    single: { path: path.join(DISKS_DIR, 'single.img'), target: 'hello.txt' },
+    big: { path: path.join(DISKS_DIR, 'big.img'), target: 'big.bin' },
 };
 
 const which = process.argv[2] || 'single';
@@ -25,15 +32,15 @@ const { mountNodeFile, haltKernel } = await import(
 const { default: factory } = await import(new URL('../wasm/anyfs.node.mjs', import.meta.url).href);
 
 console.log(`[stream] mounting ${cfg.path} …`);
-const disk = await mountNodeFile(cfg.path, factory, { memMb: 64 });
-const mp = await disk.mountWhole('ext4');
+const session = await mountNodeFile(cfg.path, factory, { memMb: 64 });
+const mp = await session.enter(0);
 const abs = `${mp}/${cfg.target}`;
-const stat = await disk.stat(abs);
-console.log(`[stream] ${abs} size=${stat.size}`);
+const st = await session.stat(abs);
+console.log(`[stream] ${abs} size=${st.size}`);
 
 const chunkSize = 1 << 20; // 1 MiB — what the demo defaults to
-const { stream, size } = await disk.openReadable(abs, { chunkSize });
-assert.equal(size, stat.size);
+const { stream, size } = await session.openReadable(abs, { chunkSize });
+assert.equal(size, st.size);
 
 let received = 0;
 let maxChunk = 0;
@@ -65,7 +72,7 @@ if (which === 'big') {
     console.log(`[stream] tail16 =`, Buffer.from(tail16).toString('hex'));
 }
 
-await disk.dispose();
+await session.close();
 await haltKernel();
 console.log('[stream] OK');
 process.exit(0);

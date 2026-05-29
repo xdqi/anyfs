@@ -1,18 +1,24 @@
 // Minimal Node smoke test for the wasm bundle.
-// Exercises: createAnyfsModule() -> NODEFS mount -> _anyfs_ts_init ->
-// _anyfs_ts_disk_open + _anyfs_ts_disk_list_json against disk_multi.img.
+// Exercises: createAnyfsModule() -> NODEFS mount -> anyfs_ts_init ->
+// anyfs_ts_disk_open + anyfs_ts_disk_list_json against disk_multi.img.
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 
 const { default: createAnyfsModule } = await import(
     new URL('../wasm/anyfs.node.mjs', import.meta.url).href
 );
 
+const DISKS_DIR = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '../../../examples/vite-demo/public/disks',
+);
+
 const IMAGES = {
-    single: '${LKLFTPD_SRC}/disk_single.img',
-    multi: '${LKLFTPD_SRC}/disk_multi.img',
-    big: '${LKLFTPD_SRC}/build/diagnostic/big_ext4.img',
+    single: path.join(DISKS_DIR, 'single.img'),
+    multi: path.join(DISKS_DIR, 'multi.img'),
+    big: path.join(DISKS_DIR, 'big.img'),
 };
 
 const which = process.argv[2] || 'multi';
@@ -33,13 +39,13 @@ const M = await createAnyfsModule({
 });
 console.log('[smoke] module loaded; main() ran automatically');
 
-console.log('[smoke] _anyfs_ts_init(64, 0)…');
+console.log('[smoke] anyfs_ts_init(64, 0)…');
 const rc = M.ccall('anyfs_ts_init', 'number', ['number', 'number'], [64, 0]);
 console.log('  rc =', rc);
 if (rc !== 0) process.exit(3);
 
 const fsPath = '/work/' + path.basename(imgHost);
-console.log('[smoke] _anyfs_ts_disk_open(', fsPath, ', 0)…');
+console.log('[smoke] anyfs_ts_disk_open(', fsPath, ', 0)…');
 const h = M.ccall('anyfs_ts_disk_open', 'number', ['string', 'number'], [fsPath, 0]);
 console.log('  handle =', h);
 if (h < 0) process.exit(4);
@@ -67,7 +73,7 @@ const exerciseEntry =
         ? { mountWhole: 'ext4' }
         : which === 'single'
           ? { mountWhole: 'ext4' }
-          : { part: 0 }; // multi-part: first FS partition
+          : { part: 3 }; // multi-part: ext2 partition (no journal replay needed)
 
 let mountPath;
 const mountBuf = M._malloc(128);

@@ -1,7 +1,7 @@
 // Smoke: open a local image over http:// to validate QEMU's curl block driver
 // is linked correctly into anyfs_native.node.
 //
-// The HTTP server runs in a Worker thread because anyfs_native's diskOpen is
+// The HTTP server runs in a Worker thread because anyfs_native's sessionOpen is
 // synchronous: it blocks the main Node thread inside QEMU coroutines, which
 // then issue libcurl requests we must serve concurrently. A same-thread http
 // server would deadlock.
@@ -71,22 +71,22 @@ if (!isMainThread) {
     console.log('[smoke-url] serving', img, 'at', url);
 
     try {
-        console.log('[smoke-url] init(64, 0)');
-        if (n.init(64, 0) !== 0) process.exit(3);
+        console.log('[smoke-url] kernelInit(64, 0)');
+        if (n.kernelInit(64, 0) !== 0) process.exit(3);
 
         // ANYFS_SESSION_READONLY = 1 — required for the QEMU curl driver which is
         // read-only by design.
-        console.log('[smoke-url] diskOpen', url, '(RDONLY)');
-        const h = n.diskOpen(url, 1);
+        console.log('[smoke-url] sessionOpen', url, '(RDONLY)');
+        const h = n.sessionOpen(url, 1);
         if (h < 0) {
             console.error('open rc=', h);
             process.exit(4);
         }
 
-        const meta = JSON.parse(n.diskMetaJson(h));
-        console.log('[smoke-url] diskMeta:', meta);
+        const meta = JSON.parse(n.sessionMetaJson(h));
+        console.log('[smoke-url] sessionMeta:', meta);
 
-        const parts = JSON.parse(n.diskListJson(h));
+        const parts = JSON.parse(n.sessionListJson(h));
         console.log(
             '[smoke-url] partitions:',
             parts.length,
@@ -96,16 +96,16 @@ if (!isMainThread) {
 
         const pick = parts.find((p) => p.fstype === 'ext2') ?? parts[0];
         console.log(
-            `[smoke-url] diskEnter(part=${pick.index} ${pick.fstype}/${pick.label}, RDONLY)`,
+            `[smoke-url] sessionEnter(part=${pick.index} ${pick.fstype}/${pick.label}, RDONLY)`,
         );
-        const mount = n.diskEnter(h, pick.index, 1);
+        const mount = n.sessionEnter(h, pick.index, 1);
         console.log('  mounted at', mount);
 
         const entries = JSON.parse(n.readdirJson(mount));
         console.log('[smoke-url] readdir:', entries.length, 'entries');
         console.log(' ', entries.slice(0, 5));
 
-        if (n.diskClose(h) !== 0) console.warn('diskClose nonzero');
+        if (n.sessionClose(h) !== 0) console.warn('sessionClose nonzero');
         console.log('[smoke-url] OK');
     } finally {
         await worker.terminate();

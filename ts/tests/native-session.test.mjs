@@ -82,10 +82,10 @@ test('sessionMetaJson returns expected shape', () => {
     console.log(`    logical_size=${meta.logical_size} pt_type=${meta.pt_type}`);
 });
 
-// ── 5. Enter whole-disk (part=0) ──────────────────
+// ── 5. Enter partition ──────────────────────
 
-test('sessionEnter(handle, 0, 0) mounts whole disk', () => {
-    const mp = addon.sessionEnter(handle, 0, 0);
+test('sessionEnter(handle, 2, 0) mounts partition', () => {
+    const mp = addon.sessionEnter(handle, 2, 0);
     assert(mp && mp.length > 0, `mount path empty: "${mp}"`);
     console.log(`    mount path: "${mp}"`);
 

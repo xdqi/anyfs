@@ -7,17 +7,17 @@ const here = dirname(fileURLToPath(import.meta.url));
 const n = require('../index.js');
 const img = resolve(here, '../../../examples/vite-demo/public/disks/multi.img');
 
-console.log('[smoke] init(64, 0)');
-if (n.init(64, 0) !== 0) process.exit(3);
+console.log('[smoke] kernelInit(64, 0)');
+if (n.kernelInit(64, 0) !== 0) process.exit(3);
 
-console.log('[smoke] diskOpen', img);
-const h = n.diskOpen(img, 0);
+console.log('[smoke] sessionOpen', img);
+const h = n.sessionOpen(img, 0);
 if (h < 0) {
     console.error('open rc=', h);
     process.exit(4);
 }
 
-const parts = JSON.parse(n.diskListJson(h));
+const parts = JSON.parse(n.sessionListJson(h));
 console.log(
     '[smoke] partitions:',
     parts.length,
@@ -25,13 +25,13 @@ console.log(
 );
 if (parts.length === 0) process.exit(5);
 
-const meta = JSON.parse(n.diskMetaJson(h));
-console.log('[smoke] diskMeta:', meta);
+const meta = JSON.parse(n.sessionMetaJson(h));
+console.log('[smoke] sessionMeta:', meta);
 
 // Pick the first non-journaled FS so RDONLY mount doesn't need replay.
 const pick = parts.find((p) => p.fstype === 'ext2') ?? parts[0];
-console.log(`[smoke] diskEnter(part=${pick.index} ${pick.fstype}/${pick.label}, RDONLY)`);
-const mount = n.diskEnter(h, pick.index, 1); // ANYFS_MOUNT_RDONLY
+console.log(`[smoke] sessionEnter(part=${pick.index} ${pick.fstype}/${pick.label}, RDONLY)`);
+const mount = n.sessionEnter(h, pick.index, 1); // ANYFS_MOUNT_RDONLY
 console.log('  mounted at', mount);
 
 const entries = JSON.parse(n.readdirJson(mount));
@@ -64,5 +64,5 @@ if (firstFile) {
     console.log('[smoke] no regular files in mount root (skipping pread)');
 }
 
-if (n.diskClose(h) !== 0) console.warn('diskClose nonzero');
+if (n.sessionClose(h) !== 0) console.warn('sessionClose nonzero');
 console.log('[smoke] OK');
