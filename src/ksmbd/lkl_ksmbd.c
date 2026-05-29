@@ -755,174 +755,22 @@ int main(int argc, char** argv)
 	/* ── 4. Open disk images ────────────────────────────────────────────
 	 */
 	AnyfsDisk* disks[MAX_DISKS] = {NULL};
-	int n_open = 0;
 
-	for (int i = 0; i < n_images; i++) {
-		/* Strip optional ?<query> suffix from the image path (v1:
-		 * ignored). */
-		const char* img = disk_images[i];
-		char img_clean[512];
-		const char* qmark = strchr(img, '?');
-		if (qmark) {
-			size_t len = (size_t)(qmark - img);
-			if (len >= sizeof(img_clean))
-				len = sizeof(img_clean) - 1;
-			memcpy(img_clean, img, len);
-			img_clean[len] = '\0';
-			img = img_clean;
-		}
-
-		if (anyfs_disk_open(img, ANYFS_DISK_READONLY, &disks[i]) < 0 ||
-		    !disks[i]) {
-			pr_err("Failed to open disk image '%s'\n",
-			       disk_images[i]);
-			goto halt;
-		}
-		n_open++;
-		pr_info("Opened disk%d: %s (id=%d)\n", i, img,
-			anyfs_disk_id(disks[i]));
-	}
+	if (anyfs_sesh_open_disks(disks, disk_images, n_images,
+				  ANYFS_DISK_READONLY) < 0)
+		goto halt;
 
 	/* ── 5. Resolve --share specs to LKL paths ───────────────────────── */
 	ShareInfo shares[MAX_SHARES];
 	int n_shares = 0;
 
 	for (int si = 0; si < n_share_specs; si++) {
-		const char* name_arg;
-		const char* path_arg;
-		char spec_copy[256];
-		strncpy(spec_copy, share_specs[si], sizeof(spec_copy) - 1);
-		spec_copy[sizeof(spec_copy) - 1] = '\0';
-
-		anyfs_share_split(spec_copy, &name_arg, &path_arg);
-
-		/* Back-compat: bare integer → p<N> */
-		char rebased[64];
-		if (isdigit((unsigned char)path_arg[0])) {
-			if (n_images > 1) {
-				fprintf(stderr,
-					"error: bare integer share '%s' is "
-					"only valid in "
-					"single-disk mode.\n",
-					path_arg);
-				goto halt;
-			}
-			snprintf(rebased, sizeof(rebased), "p%s", path_arg);
-			path_arg = rebased;
-			fprintf(stderr,
-				"warning: --share %s treated as --share %s "
-				"(use 'p<N>' to suppress this warning)\n",
-				share_specs[si], rebased);
-		}
-
-		/* In single-disk mode, auto-prefix missing disk<N>/ with disk0/
-		 */
-		char prefixed[256];
-		if (n_images == 1 && strncmp(path_arg, "disk", 4) != 0) {
-			snprintf(prefixed, sizeof(prefixed), "disk0/%s",
-				 path_arg);
-			path_arg = prefixed;
-		}
-
-		/* Parse via path DSL */
-		AnyfsPath ap;
-		memset(&ap, 0, sizeof(ap));
-		if (anyfs_path_dsl_parse(path_arg, &ap) < 0) {
-			fprintf(stderr,
-				"error: --share path '%s' is not a valid path "
-				"DSL string.\n",
-				path_arg);
-			goto halt;
-		}
-
-		/* Multi-disk mode: path must have explicit disk<N>/ prefix */
-		if (n_images > 1 && !ap.disk_idx_set) {
-			fprintf(stderr,
-				"error: path '%s' must start with diskN/ in "
-				"multi-disk mode "
-				"(have %d images: disk0..disk%d).\n",
-				share_specs[si], n_images, n_images - 1);
-			anyfs_path_dsl_free(&ap);
-			goto halt;
-		}
-
-		int disk_idx = ap.disk_idx;
-
-		/* Validate disk index in range */
-		if (disk_idx >= n_images) {
-			fprintf(stderr,
-				"error: disk%d not registered (only "
-				"disk0..disk%d available).\n",
-				disk_idx, n_images - 1);
-			anyfs_path_dsl_free(&ap);
-			goto halt;
-		}
-
-		/* Must have at least one path component */
-		if (ap.n_comp == 0) {
-			fprintf(stderr,
-				"error: --share path '%s' has no partition "
-				"component.\n",
-				path_arg);
-			anyfs_path_dsl_free(&ap);
-			goto halt;
-		}
-
-		/* Validate and warn about credentials */
-		anyfs_share_warn_literal_key(&ap,
-					     name_arg ? name_arg : path_arg);
-
-		/* Walk every component (v2): containers along the way are
-		 * entered automatically; the final segment must be FS. */
-		char lkl_path[64];
-		ret = anyfs_disk_enter_path(disks[disk_idx], ap.comp, ap.n_comp,
-					    0, lkl_path);
-		if (ret < 0) {
-			/* Get the reason from the slot that failed — for
-			 * top-level single-component shares this matches the v1
-			 * behaviour. */
-			const char* reason = anyfs_disk_fail_reason(
-			    disks[disk_idx], ap.comp[0].p);
-			fprintf(stderr,
-				"error: cannot enter %s: %s\n"
-				"Containers (LVM_PV, LUKS, nested partition "
-				"table) require\n"
-				"either a credential (`?keyref=`/`keyfile=`) "
-				"or v3 support.\n"
-				"Use 'anyfs-lspart' to discover the canonical "
-				"leaf path.\n",
-				path_arg, reason ? reason : lkl_strerror(ret));
-			anyfs_path_dsl_free(&ap);
-			goto halt;
-		}
-
-		/* Build a canonical path string for share-name derivation. */
-		char canonical[160];
-		int co =
-		    snprintf(canonical, sizeof(canonical), "disk%d", disk_idx);
-		for (size_t ci = 0; ci < ap.n_comp; ci++) {
-			int n = snprintf(canonical + co, sizeof(canonical) - co,
-					 "_p%u", ap.comp[ci].p);
-			if (n < 0 || (size_t)n >= sizeof(canonical) - co)
-				break;
-			co += n;
-		}
-
-		/* Derive the share name if not given */
 		ShareInfo* sh = &shares[n_shares];
-		if (name_arg && *name_arg) {
-			strncpy(sh->name, name_arg, sizeof(sh->name) - 1);
-			sh->name[sizeof(sh->name) - 1] = '\0';
-		} else {
-			anyfs_share_auto_name(canonical, sh->name,
-					      sizeof(sh->name));
-		}
-		strncpy(sh->lkl_path, lkl_path, sizeof(sh->lkl_path) - 1);
-		sh->lkl_path[sizeof(sh->lkl_path) - 1] = '\0';
-
-		pr_info("Share [%s] -> %s (%s)\n", sh->name, sh->lkl_path,
-			canonical);
-		anyfs_path_dsl_free(&ap);
+		if (anyfs_share_resolve(share_specs[si], disks, n_images, 0,
+					sh->name, sizeof(sh->name),
+					sh->lkl_path, sizeof(sh->lkl_path)) < 0)
+			goto halt;
+		pr_info("Share [%s] -> %s\n", sh->name, sh->lkl_path);
 		n_shares++;
 	}
 
@@ -985,7 +833,7 @@ cleanup:
 halt:
 	/* Close all disk sessions (atexit handler inside anyfs_disk_close
 	 * will unmount any LKL-pinned mounts). */
-	for (int i = 0; i < n_open; i++) {
+	for (int i = 0; i < n_images; i++) {
 		if (disks[i])
 			anyfs_disk_close(disks[i]);
 	}
