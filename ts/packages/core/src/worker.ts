@@ -148,15 +148,15 @@ const ops: Record<string, (a: any) => unknown> = {
             }
             const result = M.ccall('anyfs_ts_boot_result', 'number', [], []);
             send({ event: 'stderr', message: `anyfs_ts_boot_result=${result}` });
-            if (result !== 0) throw new Error(`anyfs_ts_init failed: ${result}`);
+            if (result !== 0) throw new Error(`anyfs_ts_kernel_init failed: ${result}`);
         } else {
             const ic = (await callA(
-                'anyfs_ts_init',
+                'anyfs_ts_kernel_init',
                 'number',
                 ['number', 'number'],
                 [memMb, loglevel],
             )) as number;
-            if (ic !== 0) throw new Error(`anyfs_ts_init failed: ${ic}`);
+            if (ic !== 0) throw new Error(`anyfs_ts_kernel_init failed: ${ic}`);
         }
         send({ event: 'progress', step: 'kernel ready' });
         return { ok: true };
@@ -180,8 +180,8 @@ const ops: Record<string, (a: any) => unknown> = {
         send({ event: 'progress', step: 'opening disk' });
         // Always open the underlying image read-only — WORKERFS-backed disks
         // can't accept writebacks.
-        diskHandle = await callP('anyfs_ts_disk_open_p', ['string', 'number'], [fsPath, 1]);
-        if (diskHandle < 0) throw new Error(`anyfs_ts_disk_open failed: ${diskHandle}`);
+        diskHandle = await callP('anyfs_ts_session_open_p', ['string', 'number'], [fsPath, 1]);
+        if (diskHandle < 0) throw new Error(`anyfs_ts_session_open failed: ${diskHandle}`);
         return { diskHandle };
     },
 
@@ -202,9 +202,9 @@ const ops: Record<string, (a: any) => unknown> = {
         send({ event: 'stderr', message: '[diag] attachUrl URLFS mounted, calling disk_open...' });
         send({ event: 'progress', step: 'opening disk' });
         // Read-only — the URL backend has no writeback path.
-        diskHandle = await callP('anyfs_ts_disk_open_p', ['string', 'number'], [fsPath, 1]);
+        diskHandle = await callP('anyfs_ts_session_open_p', ['string', 'number'], [fsPath, 1]);
         send({ event: 'stderr', message: `[diag] attachUrl disk_open returned ${diskHandle}` });
-        if (diskHandle < 0) throw new Error(`anyfs_ts_disk_open failed: ${diskHandle}`);
+        if (diskHandle < 0) throw new Error(`anyfs_ts_session_open failed: ${diskHandle}`);
         send({ event: 'stderr', message: '[diag] attachUrl done, returning diskHandle' });
         return { diskHandle };
     },
@@ -216,29 +216,12 @@ const ops: Record<string, (a: any) => unknown> = {
         return await ops.attach({ file: a.file });
     },
 
-    listPartitions() {
-        return callJsonOut('anyfs_ts_disk_list_json_p', ['number'], [diskHandle]);
+    listParts() {
+        return callJsonOut('anyfs_ts_session_list_json_p', ['number'], [diskHandle]);
     },
 
-    diskMeta() {
-        return callJsonOut('anyfs_ts_disk_meta_json_p', ['number'], [diskHandle]);
-    },
-
-    async mountWhole({ fstype, flags }: { fstype?: string; flags?: number }) {
-        if (!M) throw new Error('not mounted');
-        const cap = 128;
-        const out = M._malloc(cap);
-        try {
-            const rc = await callP(
-                'anyfs_ts_mount_whole_p',
-                ['number', 'string', 'number', 'number', 'number'],
-                [diskHandle, fstype ?? '', flags ?? 1, out, cap],
-            );
-            if (rc < 0) throw new Error(`mount_whole rc=${rc}`);
-            return M.UTF8ToString(out);
-        } finally {
-            M._free(out);
-        }
+    meta() {
+        return callJsonOut('anyfs_ts_session_meta_json_p', ['number'], [diskHandle]);
     },
 
     async enter({ part, flags }: { part: number; flags?: number }) {
@@ -247,7 +230,7 @@ const ops: Record<string, (a: any) => unknown> = {
         const out = M._malloc(cap);
         try {
             const rc = await callP(
-                'anyfs_ts_disk_enter_p',
+                'anyfs_ts_session_enter_p',
                 ['number', 'number', 'number', 'number', 'number'],
                 [diskHandle, part, flags ?? 1, out, cap],
             );
@@ -367,7 +350,7 @@ const ops: Record<string, (a: any) => unknown> = {
         if (!M) return 0;
         if (diskHandle >= 0) {
             try {
-                await callA('anyfs_ts_disk_close', 'number', ['number'], [diskHandle]);
+                await callA('anyfs_ts_session_close', 'number', ['number'], [diskHandle]);
             } catch {
                 /* best effort */
             }
