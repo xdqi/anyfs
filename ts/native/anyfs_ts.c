@@ -490,70 +490,44 @@ int anyfs_ts_close(int fd)
  * handleSleep path). Workaround: write the result through an out-pointer,
  * JS reads it via getValue/HEAP32 after the call resolves. */
 
-void anyfs_ts_disk_open_p(const char* image_path, uint32_t flags, int32_t* out)
-{
-	*out = anyfs_ts_disk_open(image_path, flags);
-}
+#define DEF_P_TRAMP(name, params, call)                                        \
+	void anyfs_ts_##name##_p params                                        \
+	{                                                                      \
+		*out = (int32_t)anyfs_ts_##name call;                          \
+	}
 
-void anyfs_ts_disk_list_json_p(int h, char* buf, size_t cap, int32_t* out)
-{
-	*out = anyfs_ts_disk_list_json(h, buf, cap);
-}
+DEF_P_TRAMP(disk_open, (const char* image_path, uint32_t flags, int32_t* out),
+	    (image_path, flags))
+DEF_P_TRAMP(disk_list_json, (int h, char* buf, size_t cap, int32_t* out),
+	    (h, buf, cap))
+DEF_P_TRAMP(disk_meta_json, (int h, char* buf, size_t cap, int32_t* out),
+	    (h, buf, cap))
+DEF_P_TRAMP(mount_whole,
+	    (int h, const char* fstype, uint32_t flags, char* mount_out,
+	     size_t mount_cap, int32_t* out),
+	    (h, fstype, flags, mount_out, mount_cap))
+DEF_P_TRAMP(disk_enter,
+	    (int h, unsigned int part, uint32_t flags, char* mount_out,
+	     size_t mount_cap, int32_t* out),
+	    (h, part, flags, mount_out, mount_cap))
+DEF_P_TRAMP(readdir_json,
+	    (const char* path, char* buf, size_t cap, int32_t* out),
+	    (path, buf, cap))
+DEF_P_TRAMP(lstat_json, (const char* path, char* buf, size_t cap, int32_t* out),
+	    (path, buf, cap))
+DEF_P_TRAMP(stat_json, (const char* path, char* buf, size_t cap, int32_t* out),
+	    (path, buf, cap))
+DEF_P_TRAMP(realpath, (const char* path, char* buf, size_t cap, int32_t* out),
+	    (path, buf, cap))
+DEF_P_TRAMP(readlink, (const char* path, char* buf, size_t cap, int32_t* out),
+	    (path, buf, cap))
+DEF_P_TRAMP(read_kernel_file,
+	    (const char* path, char* buf, size_t cap, int32_t* out),
+	    (path, buf, cap))
+DEF_P_TRAMP(open, (const char* path, int flags, int32_t* out), (path, flags))
+DEF_P_TRAMP(close, (int fd, int32_t* out), (fd))
 
-void anyfs_ts_disk_meta_json_p(int h, char* buf, size_t cap, int32_t* out)
-{
-	*out = anyfs_ts_disk_meta_json(h, buf, cap);
-}
-
-void anyfs_ts_mount_whole_p(int h, const char* fstype, uint32_t flags,
-			    char* mount_out, size_t mount_cap, int32_t* out)
-{
-	*out = anyfs_ts_mount_whole(h, fstype, flags, mount_out, mount_cap);
-}
-
-void anyfs_ts_disk_enter_p(int h, unsigned int part, uint32_t flags,
-			   char* mount_out, size_t mount_cap, int32_t* out)
-{
-	*out = anyfs_ts_disk_enter(h, part, flags, mount_out, mount_cap);
-}
-
-void anyfs_ts_readdir_json_p(const char* path, char* buf, size_t cap,
-			     int32_t* out)
-{
-	*out = anyfs_ts_readdir_json(path, buf, cap);
-}
-
-void anyfs_ts_lstat_json_p(const char* path, char* buf, size_t cap,
-			   int32_t* out)
-{
-	*out = anyfs_ts_lstat_json(path, buf, cap);
-}
-
-void anyfs_ts_stat_json_p(const char* path, char* buf, size_t cap, int32_t* out)
-{
-	*out = anyfs_ts_stat_json(path, buf, cap);
-}
-
-void anyfs_ts_realpath_p(const char* path, char* buf, size_t cap, int32_t* out)
-{
-	*out = anyfs_ts_realpath(path, buf, cap);
-}
-
-void anyfs_ts_readlink_p(const char* path, char* buf, size_t cap, int32_t* out)
-{
-	*out = anyfs_ts_readlink(path, buf, cap);
-}
-
-void anyfs_ts_read_kernel_file_p(const char* path, char* buf, size_t cap,
-				 int32_t* out)
-{
-	*out = anyfs_ts_read_kernel_file(path, buf, cap);
-}
-
-void anyfs_ts_open_p(const char* path, int flags, int32_t* out)
-{
-	*out = anyfs_ts_open(path, flags);
-}
+#undef DEF_P_TRAMP
 
 /* Offset split into low/high 32-bit halves to avoid i64 args (which
  * crash the asyncify rewind path under WASM_BIGINT). */
@@ -565,11 +539,6 @@ void anyfs_ts_pread_p(int fd, void* buf, uint32_t n, uint32_t off_lo,
 	if (got > 0x7fffffff)
 		got = 0x7fffffff;
 	*out = (int32_t)got;
-}
-
-void anyfs_ts_close_p(int fd, int32_t* out)
-{
-	*out = anyfs_ts_close(fd);
 }
 
 /* PROXY_TO_PTHREAD requires a main(). It runs on the worker pthread that
