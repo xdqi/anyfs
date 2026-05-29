@@ -50,15 +50,23 @@ export interface BrowserMountOpts extends MountOpts {
  *  Use this to pay the wasm download + kernel boot cost during your landing
  *  page; call `disk.attach(file)` once the user selects a file. */
 export async function prewarm(opts: BrowserMountOpts): Promise<WorkerAnyfsDisk> {
+    // eslint-disable-next-line no-console
+    console.log('[PREWARM] creating worker, url=', String(opts.workerUrl));
     const worker = new Worker(opts.workerUrl, { type: 'module' });
     try {
+        // eslint-disable-next-line no-console
+        console.log('[PREWARM] waiting for host-ready...');
         await WorkerAnyfsDisk.waitForReady(worker);
+        // eslint-disable-next-line no-console
+        console.log('[PREWARM] host-ready received');
     } catch (err) {
         worker.terminate();
         throw err;
     }
     const client = new WorkerAnyfsDisk(worker);
     try {
+        // eslint-disable-next-line no-console
+        console.log('[PREWARM] calling boot...');
         await client.callRaw('boot', {
             memMb: opts.memMb ?? 64,
             loglevel: opts.loglevel ?? 0,
@@ -68,6 +76,8 @@ export async function prewarm(opts: BrowserMountOpts): Promise<WorkerAnyfsDisk> 
             // to the renderer — the worker has no preload of its own.
             urlProxyPrefix: getUrlProxyPrefix(),
         });
+        // eslint-disable-next-line no-console
+        console.log('[PREWARM] boot complete');
         return client;
     } catch (err) {
         await client.dispose();

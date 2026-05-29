@@ -115,9 +115,24 @@ export class WorkerAnyfsDisk {
         if (this.disposed) return Promise.reject(new Error('AnyfsDisk: already disposed'));
         if (this.workerError) return Promise.reject(this.workerError);
         const id = this.nextId++;
+        // eslint-disable-next-line no-console
+        console.log(
+            `[CALL_TRACE] op=${op} id=${id} disposed=${this.disposed} workerError=${!!this.workerError}`,
+        );
         return new Promise<T>((res, rej) => {
             this.pending.set(id, { res: res as (v: unknown) => void, rej });
-            this.worker.postMessage({ id, op, args });
+            try {
+                this.worker.postMessage({ id, op, args });
+                // eslint-disable-next-line no-console
+                console.log(`[CALL_TRACE] postMessage ok op=${op} id=${id}`);
+            } catch (err) {
+                // eslint-disable-next-line no-console
+                console.log(
+                    `[CALL_TRACE] postMessage FAIL op=${op}: ${err instanceof Error ? err.message : String(err)}`,
+                );
+                this.pending.delete(id);
+                rej(err instanceof Error ? err : new Error(String(err)));
+            }
         });
     }
 

@@ -228,6 +228,11 @@ export function AnyfsProvider({
             return;
         }
         desired.current = source;
+        console.log(
+            '[PROVIDER] source effect firing',
+            source.kind,
+            source.kind === 'url' ? (source as any).url : '',
+        );
 
         const stale = current.current;
         current.current = null;
@@ -243,8 +248,11 @@ export function AnyfsProvider({
         }));
 
         const p = (async () => {
-            const disk = await (startPrewarm.current?.() ??
-                Promise.reject(new Error('no prewarm slot')));
+            console.log('[PROVIDER] calling startPrewarm...');
+            const d = startPrewarm.current?.();
+            console.log('[PROVIDER] startPrewarm returned', d ? 'promise' : 'null');
+            const disk = await (d ?? Promise.reject(new Error('no prewarm slot')));
+            console.log('[PROVIDER] got disk, calling attach...');
             if (source.kind === 'file') {
                 if (disk instanceof NativeAnyfsDisk) {
                     throw new Error(
@@ -254,11 +262,13 @@ export function AnyfsProvider({
                 }
                 await disk.attach(source.file);
             } else if (source.kind === 'url') {
+                console.log('[PROVIDER] calling disk.attachUrl', source.url, source.name);
                 if (disk instanceof NativeAnyfsDisk) {
                     await disk.attachUrl(source.url, source.name);
                 } else {
                     await disk.attachUrl(source.url, source.name);
                 }
+                console.log('[PROVIDER] disk.attachUrl returned');
             } else {
                 // kind:'path' — native only.
                 if (!(disk instanceof NativeAnyfsDisk)) {
@@ -308,6 +318,10 @@ export function AnyfsProvider({
                     mode,
                 });
             } catch (err) {
+                console.log(
+                    '[PROVIDER] error in source effect:',
+                    err instanceof Error ? err.message : String(err),
+                );
                 if (desired.current !== source) return;
                 setState({
                     disk: null,

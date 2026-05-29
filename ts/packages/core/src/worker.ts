@@ -20,6 +20,8 @@
 import { createUrlFs } from './url-fs.js';
 import { setUrlProxyPrefix } from './electron-proxy.js';
 
+console.log('[WORKER_V3] anyfs.worker.js loaded at ' + Date.now());
+
 declare const self: DedicatedWorkerGlobalScope;
 
 interface AnyMod {
@@ -124,13 +126,38 @@ const ops: Record<string, (a: any) => unknown> = {
         readBuf = M._malloc(readBufSize);
 
         send({ event: 'progress', step: 'booting kernel' });
-        const ic = (await callA(
-            'anyfs_ts_init',
-            'number',
-            ['number', 'number'],
-            [memMb, loglevel],
-        )) as number;
-        if (ic !== 0) throw new Error(`anyfs_ts_init failed: ${ic}`);
+        // Prefer async boot when available (worker-only builds without
+        // PROXY_TO_PTHREAD). The async path runs anyfs_ts_init on a
+        // dedicated pthread so the pool-owning thread stays free to
+        // process spawnThread messages during kernel boot.
+        if ((M as any)._anyfs_ts_init_async) {
+            send({ event: 'stderr', message: 'using async boot path' });
+            const asyncRc = M.ccall(
+                'anyfs_ts_init_async',
+                'number',
+                ['number', 'number'],
+                [memMb, loglevel],
+            );
+            send({ event: 'stderr', message: `anyfs_ts_init_async rc=${asyncRc}` });
+            if (asyncRc !== 0) throw new Error(`anyfs_ts_init_async failed: ${asyncRc}`);
+
+            send({ event: 'progress', step: 'waiting for kernel ready' });
+            for (let i = 0; i < 600; i++) {
+                if (M.ccall('anyfs_ts_is_boot_complete', 'number', [], [])) break;
+                await new Promise((r) => setTimeout(r, 100));
+            }
+            const result = M.ccall('anyfs_ts_boot_result', 'number', [], []);
+            send({ event: 'stderr', message: `anyfs_ts_boot_result=${result}` });
+            if (result !== 0) throw new Error(`anyfs_ts_init failed: ${result}`);
+        } else {
+            const ic = (await callA(
+                'anyfs_ts_init',
+                'number',
+                ['number', 'number'],
+                [memMb, loglevel],
+            )) as number;
+            if (ic !== 0) throw new Error(`anyfs_ts_init failed: ${ic}`);
+        }
         send({ event: 'progress', step: 'kernel ready' });
         return { ok: true };
     },
@@ -159,18 +186,26 @@ const ops: Record<string, (a: any) => unknown> = {
     },
 
     async attachUrl(a: AttachUrlArgs) {
+        send({
+            event: 'stderr',
+            message: `[diag] attachUrl entered, url=${a.url}, name=${a.name}, M=${!!M}`,
+        });
         if (!M) throw new Error('attachUrl: kernel not booted (call boot first)');
         if (diskHandle >= 0) throw new Error('attachUrl: already attached');
         const fsPath = `/work/${a.name || 'image'}`;
+        send({ event: 'stderr', message: `[diag] attachUrl fsPath=${fsPath}` });
         send({ event: 'progress', step: 'probing URL' });
         const URLFS = createUrlFs(M);
+        send({ event: 'stderr', message: '[diag] attachUrl URLFS created ok' });
         M.FS.mkdir('/work');
         M.FS.mount(URLFS, { url: a.url, name: a.name || 'image' }, '/work');
-
+        send({ event: 'stderr', message: '[diag] attachUrl URLFS mounted, calling disk_open...' });
         send({ event: 'progress', step: 'opening disk' });
         // Read-only — the URL backend has no writeback path.
         diskHandle = await callP('anyfs_ts_disk_open_p', ['string', 'number'], [fsPath, 1]);
+        send({ event: 'stderr', message: `[diag] attachUrl disk_open returned ${diskHandle}` });
         if (diskHandle < 0) throw new Error(`anyfs_ts_disk_open failed: ${diskHandle}`);
+        send({ event: 'stderr', message: '[diag] attachUrl done, returning diskHandle' });
         return { diskHandle };
     },
 
@@ -399,6 +434,7 @@ let opChain: Promise<void> = Promise.resolve();
 
 self.addEventListener('message', (e: MessageEvent) => {
     const { id, op, args } = e.data as { id: number; op: string; args: unknown };
+    send({ event: 'stderr', message: `[diag] rcvd op=${op} id=${id}` });
     opChain = opChain.then(async () => {
         const t0 = performance.now();
         try {

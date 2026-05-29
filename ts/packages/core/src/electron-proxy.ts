@@ -36,11 +36,15 @@ export function getUrlProxyPrefix(): string | undefined {
 }
 
 /** Rewrite an http(s) URL through the configured proxy prefix, if any.
- *  Non-http URLs and unconfigured environments pass through unchanged. */
+ *  Non-http URLs, unconfigured environments, and loopback addresses pass
+ *  through unchanged — loopback servers are under developer control and
+ *  ship their own CORS headers. */
 export function applyUrlProxy(url: string): string {
     const prefix = getUrlProxyPrefix();
     if (!prefix) return url;
     if (!/^https?:\/\//i.test(url)) return url;
+    // Don't proxy loopback — CORS headers are under our control.
+    if (/^https?:\/\/(localhost|127\.\d+\.\d+\.\d+)(:\d+)?(\/|$)/i.test(url)) return url;
     return prefix + encodeURIComponent(url);
 }
 
