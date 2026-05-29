@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AnyfsDisk, Stat } from '@anyfs/core';
+import type { AnyfsSession, Stat } from '@anyfs/core';
+import { fmtBytes, fmtDev, fmtMode, fmtTime, splitExt } from '@anyfs/core';
 import { useAnyfsDiskMaybe } from '@anyfs/react';
 import {
     ChonkyActions,
@@ -41,13 +42,13 @@ if (typeof window !== 'undefined' && !window.__chonkyInitDone) {
 }
 
 export interface AnyfsFileBrowserProps {
-    /** Override the disk; otherwise read from <AnyfsProvider>. */
-    disk?: AnyfsDisk;
+    /** Override the session; otherwise read from <AnyfsProvider>. */
+    session?: AnyfsSession;
     /** Override mount point; otherwise from provider. */
     mountPath?: string;
     /**
      * When true (default), opening a symlink-to-directory resolves through
-     * `disk.realpath` and the breadcrumb shows the canonical target (e.g.
+     * `session.realpath` and the breadcrumb shows the canonical target (e.g.
      * `/bin` → `/usr/bin`). When false, the breadcrumb stays at the literal
      * link path.
      */
@@ -101,22 +102,6 @@ interface PropsTarget {
     linkTarget: string | null;
 }
 
-// Chonky's built-in extension splitter (`_extname`) is buggy: for a name with
-// no dot it returns `"." + name`, which renders as ".name" with an empty
-// title. Work around by computing `ext` ourselves and passing it on FileData
-// — Chonky honors a non-null `file.ext` and skips its own splitter.
-//
-// Rules:
-//   - no dot → no extension (`""`)
-//   - leading dot (dotfile like `.pwd.lock`) → only split on a *later* dot
-//   - trailing dot → no extension
-function splitExt(name: string): string {
-    const i = name.lastIndexOf('.');
-    if (i <= 0) return '';
-    if (i === name.length - 1) return '';
-    return name.substring(i);
-}
-
 // Convert an absolute LKL path back to a mount-relative path, or null if
 // the absolute path falls outside the mount (e.g. a symlink that escapes).
 function stripMount(mountPath: string, abs: string): string | null {
@@ -163,7 +148,7 @@ function writeHash(rel: string, mode: 'push' | 'replace') {
 }
 
 export function AnyfsFileBrowser({
-    disk: diskProp,
+    session: sessionProp,
     mountPath: mountProp,
     followSymlinks = true,
     darkMode,
@@ -173,7 +158,7 @@ export function AnyfsFileBrowser({
     superCrumb,
 }: AnyfsFileBrowserProps) {
     const ctx = useAnyfsDiskMaybe();
-    const disk = diskProp ?? ctx?.disk ?? null;
+    const session = sessionProp ?? ctx?.session ?? null;
     const mountPath = mountProp ?? ctx?.mountPath ?? null;
 
     // Seed from URL hash so deep-linking and back/forward work. The hash is
@@ -223,11 +208,11 @@ export function AnyfsFileBrowser({
         prevMountRef.current = cur;
         navGen.current += 1;
         setFiles([null]);
-    }, [disk, mountPath, navigate]);
+    }, [session, mountPath, navigate]);
 
     // Readdir + lazy stat-follow per row.
     useEffect(() => {
-        if (!disk || !mountPath) return;
+        if (!session || !mountPath) return;
         const myGen = ++navGen.current;
         setFiles([null, null, null]); // chonky shows a loader skeleton
 
@@ -235,7 +220,7 @@ export function AnyfsFileBrowser({
         (async () => {
             let entries;
             try {
-                entries = await disk.readdir(abs);
+                entries = await session.readdir(abs);
             } catch (err) {
                 if (navGen.current !== myGen) return;
                 // eslint-disable-next-line no-console
@@ -268,8 +253,8 @@ export function AnyfsFileBrowser({
             // semantic of the toggle (the setting also gates Properties below
             // and navigation in handleFileAction).
             const rowStat = followSymlinks
-                ? (p: string) => disk.statFollow(p)
-                : (p: string) => disk.stat(p);
+                ? (p: string) => session.statFollow(p)
+                : (p: string) => session.stat(p);
             for (const e of entries) {
                 if (navGen.current !== myGen) return;
                 const absChild = joinAbs(mountPath, rowIdFor(relPath, e.name));
@@ -299,13 +284,17 @@ export function AnyfsFileBrowser({
                 });
             }
         })();
-    }, [disk, mountPath, relPath, followSymlinks]);
+    }, [session, mountPath, relPath, followSymlinks]);
 
     const folderChain = useMemo<FileArray>(() => {
         if (!mountPath) return [];
         const chain: FileData[] = [];
         if (superCrumb) {
-            chain.push({ id: '__super__', name: superCrumb.label, isDir: true });
+            chain.push({
+                id: '__super__',
+                name: superCrumb.label,
+                isDir: true,
+            });
         }
         // Empty rootLabel = icon-only crumb. Two things to work around:
         //   1. Chonky's sanitizer (redux/files-transforms.ts) drops any FileData
@@ -335,16 +324,13 @@ export function AnyfsFileBrowser({
 
     const handleFileAction = useCallback(
         async (data: ChonkyFileActionData) => {
-            // Chonky's ChonkyFileActionData is a discriminated union over built-in
-            // action IDs, so a custom `defineFileAction` id isn't in the union and
-            // a direct `data.id === ShowPropertiesAction.id` narrows `data` to
-            // `never`. Compare via a widened string and re-read state from a cast.
+            // Properties: stat the selected row and pop the modal.
             if ((data.id as string) === ShowPropertiesAction.id) {
-                // Properties: stat the selected row and pop the modal. Use the
-                // same lstat-vs-stat choice as the row metadata so the modal
-                // mirrors what the size column shows.
                 const anyData = data as unknown as {
-                    state: { selectedFilesForAction?: FileData[]; selectedFiles?: FileData[] };
+                    state: {
+                        selectedFilesForAction?: FileData[];
+                        selectedFiles?: FileData[];
+                    };
                 };
                 const sel = (
                     anyData.state.selectedFilesForAction ||
@@ -352,22 +338,19 @@ export function AnyfsFileBrowser({
                     []
                 ).filter(Boolean) as FileData[];
                 const tgt = sel[0];
-                if (!tgt || !disk || !mountPath) return;
+                if (!tgt || !session || !mountPath) return;
                 if (tgt.id === '__super__' || tgt.id === '__root__') return;
                 const abs = joinAbs(mountPath, tgt.id);
                 let lstat: Stat;
                 try {
-                    lstat = await disk.stat(abs);
+                    lstat = await session.stat(abs);
                 } catch {
                     return;
                 }
-                // Symlink: surface the literal target string (readlink), not a
-                // followed/canonical path. The user explicitly wants raw lstat
-                // metadata, with the link's stored target shown verbatim.
                 let linkTarget: string | null = null;
-                if (lstat.kind === 'link' && typeof disk.readlink === 'function') {
+                if (lstat.kind === 'link' && typeof session.readlink === 'function') {
                     try {
-                        linkTarget = await disk.readlink(abs);
+                        linkTarget = await session.readlink(abs);
                     } catch {
                         /* best effort */
                     }
@@ -393,33 +376,20 @@ export function AnyfsFileBrowser({
                 return;
             }
 
-            // Decide file vs dir. `tgt.isDir` is the truth for regular entries
-            // (from readdir d_type) and for symlinks-to-dirs whose isDir got
-            // promoted by statFollow. Two cases where isDir is stale and we
-            // need an extra stat to be sure:
-            //   - symlink whose statFollow hasn't completed yet (race)
-            //   - followSymlinks=false (rowStat uses lstat → no promotion)
-            // Without this, dblclicking a sym-to-file used to fall into the
-            // dir branch (because tgt.isSymlink was true), realpath would
-            // throw ENOTDIR, and the catch-all `navigate(tgt.id)` would set
-            // the URL hash to the symlink path — no download.
             let isEffectivelyDir = !!tgt.isDir;
-            if (tgt.isSymlink && !tgt.isDir && disk && mountPath) {
+            if (tgt.isSymlink && !tgt.isDir && session && mountPath) {
                 try {
-                    const st = await disk.statFollow(joinAbs(mountPath, tgt.id));
+                    const st = await session.statFollow(joinAbs(mountPath, tgt.id));
                     isEffectivelyDir = st.kind === 'dir';
                 } catch {
                     /* broken link or otherwise — treat as file */
                 }
             }
 
-            if (isEffectivelyDir && disk && mountPath) {
-                // followSymlinks=true: canonicalize via realpath so the breadcrumb
-                // shows the resolved target (e.g. /bin → /usr/bin).
-                // followSymlinks=false: keep the literal link path.
+            if (isEffectivelyDir && session && mountPath) {
                 if (followSymlinks && tgt.isSymlink) {
                     try {
-                        const canon = await disk.realpath(joinAbs(mountPath, tgt.id));
+                        const canon = await session.realpath(joinAbs(mountPath, tgt.id));
                         const rel = stripMount(mountPath, canon);
                         if (rel !== null) {
                             navigate(rel);
@@ -432,22 +402,25 @@ export function AnyfsFileBrowser({
                 navigate(tgt.id);
                 return;
             }
-            // Regular file, or symlink-to-file. Stream the bytes to the host.
             if (onFileActivate && mountPath) {
                 onFileActivate({ relPath: tgt.id, mountPath });
             }
         },
-        [onFileActivate, mountPath, disk, followSymlinks, navigate, superCrumb],
+        [onFileActivate, mountPath, session, followSymlinks, navigate, superCrumb],
     );
 
-    if (!disk || !mountPath) {
+    if (!session || !mountPath) {
         return <div className={className}>Loading…</div>;
     }
 
     return (
         <div
             className={className}
-            style={{ minHeight: 200, display: 'flex', flexDirection: 'column' }}
+            style={{
+                minHeight: 200,
+                display: 'flex',
+                flexDirection: 'column',
+            }}
         >
             <FileBrowser
                 files={files}
@@ -475,64 +448,6 @@ export function AnyfsFileBrowser({
 
 // ── Properties modal ─────────────────────────────────────────────────────
 
-function fmtMode(mode: number): string {
-    // POSIX mode bits: 9 perm + setuid/setgid/sticky + file type.
-    const types: Array<[number, string]> = [
-        [0o140000, 's'], // socket
-        [0o120000, 'l'], // symlink
-        [0o100000, '-'], // regular
-        [0o060000, 'b'], // block dev
-        [0o040000, 'd'], // dir
-        [0o020000, 'c'], // char dev
-        [0o010000, 'p'], // fifo
-    ];
-    let typeCh = '?';
-    for (const [m, ch] of types) {
-        if ((mode & 0o170000) === m) {
-            typeCh = ch;
-            break;
-        }
-    }
-    const perm = (bits: number, suid: boolean, gid: boolean, sticky: boolean) => {
-        const r = bits & 4 ? 'r' : '-';
-        const w = bits & 2 ? 'w' : '-';
-        let x = bits & 1 ? 'x' : '-';
-        if (suid) x = bits & 1 ? 's' : 'S';
-        if (gid) x = bits & 1 ? 's' : 'S';
-        if (sticky) x = bits & 1 ? 't' : 'T';
-        return r + w + x;
-    };
-    const u = perm((mode >> 6) & 7, !!(mode & 0o4000), false, false);
-    const g = perm((mode >> 3) & 7, false, !!(mode & 0o2000), false);
-    const o = perm(mode & 7, false, false, !!(mode & 0o1000));
-    return `${typeCh}${u}${g}${o} (0${(mode & 0o7777).toString(8)})`;
-}
-
-function fmtBytes(n: number): string {
-    if (n < 1024) return `${n} B`;
-    if (n < 1024 * 1024) return `${n} B (${(n / 1024).toFixed(1)} KiB)`;
-    if (n < 1024 * 1024 * 1024) return `${n} B (${(n / 1024 / 1024).toFixed(1)} MiB)`;
-    return `${n} B (${(n / 1024 / 1024 / 1024).toFixed(2)} GiB)`;
-}
-
-function fmtTime(sec: number): string {
-    if (!sec) return '—';
-    const d = new Date(sec * 1000);
-    return `${d
-        .toISOString()
-        .replace('T', ' ')
-        .replace(/\.\d+Z$/, ' UTC')} (epoch ${sec})`;
-}
-
-// Linux dev_t encoding: 64-bit major:minor split documented in <sys/sysmacros.h>
-// (the historic glibc split: major = (dev >> 8) & 0xfff | (dev >> 32) & 0xfffff000;
-//  minor = (dev & 0xff) | (dev >> 12) & 0xffffff00). Display "major:minor (raw)".
-function fmtDev(dev: number): string {
-    const major = ((dev >>> 8) & 0xfff) | ((Math.floor(dev / 0x100000000) >>> 0) & 0xfffff000);
-    const minor = (dev & 0xff) | ((dev >>> 12) & 0xffffff00);
-    return `${major}:${minor} (${dev})`;
-}
-
 function PropertiesModal({
     target,
     darkMode,
@@ -551,8 +466,6 @@ function PropertiesModal({
     }, [onClose]);
 
     const { stat, linkTarget } = target;
-    // Theme: caller passes darkMode for the file-tree wrapper; mirror that
-    // here so the modal blends in with the embedding app.
     const bg = darkMode ? '#18181b' : '#fff';
     const fg = darkMode ? '#e4e4e7' : '#18181b';
     const sub = darkMode ? '#a1a1aa' : '#52525b';
@@ -560,7 +473,13 @@ function PropertiesModal({
     const hdrBg = darkMode ? '#27272a' : '#f4f4f5';
 
     const Row = ({ label, value }: { label: string; value: React.ReactNode }) => (
-        <div style={{ display: 'flex', borderTop: `1px solid ${border}`, padding: '6px 0' }}>
+        <div
+            style={{
+                display: 'flex',
+                borderTop: `1px solid ${border}`,
+                padding: '6px 0',
+            }}
+        >
             <div style={{ width: 100, color: sub, fontSize: 12 }}>{label}</div>
             <div
                 style={{
@@ -573,30 +492,6 @@ function PropertiesModal({
             >
                 {value}
             </div>
-        </div>
-    );
-
-    // Show every field the kernel filled in. Optional fields (dev/uid/gid/
-    // rdev/blksize/blocks) are emitted by anyfs_ts only when the wasm side
-    // includes them — older bundles won't have them, so render conditionally.
-    const renderStat = (s: Stat) => (
-        <div>
-            <Row label="kind" value={s.kind} />
-            <Row label="mode" value={fmtMode(s.mode)} />
-            <Row label="size" value={fmtBytes(s.size)} />
-            <Row label="inode" value={String(s.ino)} />
-            <Row label="nlink" value={String(s.nlink)} />
-            {s.uid !== undefined && <Row label="uid" value={String(s.uid)} />}
-            {s.gid !== undefined && <Row label="gid" value={String(s.gid)} />}
-            {s.dev !== undefined && <Row label="dev" value={fmtDev(s.dev)} />}
-            {s.rdev !== undefined && s.rdev !== 0 && <Row label="rdev" value={fmtDev(s.rdev)} />}
-            {s.blksize !== undefined && <Row label="blksize" value={`${s.blksize} B`} />}
-            {s.blocks !== undefined && (
-                <Row label="blocks" value={`${s.blocks} (×512 B = ${s.blocks * 512} B)`} />
-            )}
-            <Row label="mtime" value={fmtTime(s.mtime)} />
-            <Row label="atime" value={fmtTime(s.atime)} />
-            <Row label="ctime" value={fmtTime(s.ctime)} />
         </div>
     );
 
@@ -642,7 +537,14 @@ function PropertiesModal({
                     }}
                 >
                     <div>
-                        <div style={{ fontSize: 14, fontWeight: 600 }}>{target.name}</div>
+                        <div
+                            style={{
+                                fontSize: 14,
+                                fontWeight: 600,
+                            }}
+                        >
+                            {target.name}
+                        </div>
                         {stat.kind === 'link' && linkTarget !== null ? (
                             <div
                                 style={{
@@ -683,7 +585,31 @@ function PropertiesModal({
                         ×
                     </button>
                 </header>
-                <div style={{ padding: '8px 16px 16px' }}>{renderStat(stat)}</div>
+                <div style={{ padding: '8px 16px 16px' }}>
+                    <Row label="kind" value={stat.kind} />
+                    <Row label="mode" value={fmtMode(stat.mode)} />
+                    <Row label="size" value={fmtBytes(stat.size)} />
+                    <Row label="inode" value={String(stat.ino)} />
+                    <Row label="nlink" value={String(stat.nlink)} />
+                    {stat.uid !== undefined && <Row label="uid" value={String(stat.uid)} />}
+                    {stat.gid !== undefined && <Row label="gid" value={String(stat.gid)} />}
+                    {stat.dev !== undefined && <Row label="dev" value={fmtDev(stat.dev)} />}
+                    {stat.rdev !== undefined && stat.rdev !== 0 && (
+                        <Row label="rdev" value={fmtDev(stat.rdev)} />
+                    )}
+                    {stat.blksize !== undefined && (
+                        <Row label="blksize" value={`${stat.blksize} B`} />
+                    )}
+                    {stat.blocks !== undefined && (
+                        <Row
+                            label="blocks"
+                            value={`${stat.blocks} (×512 B = ${stat.blocks * 512} B)`}
+                        />
+                    )}
+                    <Row label="mtime" value={fmtTime(stat.mtime)} />
+                    <Row label="atime" value={fmtTime(stat.atime)} />
+                    <Row label="ctime" value={fmtTime(stat.ctime)} />
+                </div>
             </div>
         </div>
     );
