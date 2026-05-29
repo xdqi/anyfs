@@ -1,14 +1,13 @@
 /** Node-only entry — uses NODEFS. Browser code should NOT import this. */
 import type { AnyfsModule, AnyfsModuleFactory } from './module.js';
-import type { MountOpts } from './types.js';
-import { bootModule, openDisk, haltKernel as halt } from './boot.js';
-import type { AnyfsDisk } from './disk.js';
+import type { SessionOpts } from './types.js';
+import { bootModule, openNodeSession, haltKernel as halt } from './boot.js';
 
 export async function mountNodeFile(
     hostPath: string,
     factory: AnyfsModuleFactory,
-    opts: MountOpts = {},
-): Promise<AnyfsDisk> {
+    opts: SessionOpts = {},
+) {
     const memMb = opts.memMb ?? 64;
     const loglevel = opts.loglevel ?? 0;
     const { default: path } = await import('node:path');
@@ -26,7 +25,7 @@ export async function mountNodeFile(
             },
         ],
     });
-    return openDisk(M, `/work/${base}`);
+    return openNodeSession(M, `/work/${base}`);
 }
 
 export const haltKernel = halt;

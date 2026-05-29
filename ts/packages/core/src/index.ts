@@ -10,28 +10,35 @@
  * For Node tests, import `@anyfs/core/node` instead — that entry uses NODEFS
  * directly without a worker (Node has no Atomics.wait restriction).
  */
-import type { MountOpts } from './types.js';
-import { WorkerAnyfsDisk } from './worker-client.js';
-import { NativeAnyfsDisk, getAnyfsNative } from './native-client.js';
+import type { SessionOpts } from './types.js';
+import { WasmSession } from './wasm-session.js';
+import { NativeSession, getAnyfsNative } from './native-session.js';
 import { getUrlProxyPrefix } from './electron-proxy.js';
 
-export type { WorkerAnyfsDisk as AnyfsDisk, DiskSource } from './worker-client.js';
-export { NativeAnyfsDisk, getAnyfsNative } from './native-client.js';
-export type { AnyfsNativeBridge } from './native-client.js';
+// ── Public API surface ────────────────────────────────
+
+export { WasmSession } from './wasm-session.js';
+export { NativeSession, getAnyfsNative } from './native-session.js';
+export type { AnyfsNativeBridge } from './native-session.js';
+export { NodeWasmSession } from './node-wasm-session.js';
+export type { AnyfsSession } from './session.js';
 export { applyUrlProxy, getUrlProxyPrefix } from './electron-proxy.js';
+export { fmtBytes, fmtMode, fmtTime, fmtDev, formatSize, splitExt } from './format.js';
+
+// Re-export types
 export type {
-    DiskHandle,
+    SessionHandle,
     LklFd,
-    PartInfo,
+    SessionPartInfo,
     DirEntry,
     EntryKind,
     Stat,
-    MountOpts,
-    EnterOpts,
-    DiskMeta,
+    SessionOpts,
+    SessionMeta,
+    SessionSource,
 } from './types.js';
 
-export interface BrowserMountOpts extends MountOpts {
+export interface BrowserMountOpts extends SessionOpts {
     /** URL to the worker module (the bundle output `wasm/anyfs.worker.js`).
      *  Required because the worker can't statically import siblings under
      *  arbitrary bundlers; consumers serve it from their app root. */
@@ -48,26 +55,26 @@ export interface BrowserMountOpts extends MountOpts {
 
 /** Spawn the worker and boot the LKL kernel without attaching a disk yet.
  *  Use this to pay the wasm download + kernel boot cost during your landing
- *  page; call `disk.attach(file)` once the user selects a file. */
-export async function prewarm(opts: BrowserMountOpts): Promise<WorkerAnyfsDisk> {
+ *  page; call `session.attachFile(file)` once the user selects a file. */
+export async function prewarm(opts: BrowserMountOpts): Promise<WasmSession> {
     // eslint-disable-next-line no-console
     console.log('[PREWARM] creating worker, url=', String(opts.workerUrl));
     const worker = new Worker(opts.workerUrl, { type: 'module' });
     try {
         // eslint-disable-next-line no-console
         console.log('[PREWARM] waiting for host-ready...');
-        await WorkerAnyfsDisk.waitForReady(worker);
+        await WasmSession.waitForReady(worker);
         // eslint-disable-next-line no-console
         console.log('[PREWARM] host-ready received');
     } catch (err) {
         worker.terminate();
         throw err;
     }
-    const client = new WorkerAnyfsDisk(worker);
+    const session = new WasmSession(worker);
     try {
         // eslint-disable-next-line no-console
         console.log('[PREWARM] calling boot...');
-        await client.callRaw('boot', {
+        await session.callRaw('boot', {
             memMb: opts.memMb ?? 64,
             loglevel: opts.loglevel ?? 0,
             wasmBaseUrl: opts.wasmBaseUrl ?? '/wasm/',
@@ -78,22 +85,22 @@ export async function prewarm(opts: BrowserMountOpts): Promise<WorkerAnyfsDisk> 
         });
         // eslint-disable-next-line no-console
         console.log('[PREWARM] boot complete');
-        return client;
+        return session;
     } catch (err) {
-        await client.dispose();
+        await session.close();
         throw err;
     }
 }
 
 /** Browser entry — mount a File/Blob via a worker-hosted WORKERFS.
- *  Equivalent to `prewarm(opts)` followed by `disk.attach(file)`. */
-export async function mountFile(file: File, opts: BrowserMountOpts): Promise<WorkerAnyfsDisk> {
-    const client = await prewarm(opts);
+ *  Equivalent to `prewarm(opts)` followed by `session.attachFile(file)`. */
+export async function mountFile(file: File, opts: BrowserMountOpts): Promise<WasmSession> {
+    const session = await prewarm(opts);
     try {
-        await client.attach(file);
-        return client;
+        await session.attachFile(file);
+        return session;
     } catch (err) {
-        await client.dispose();
+        await session.close();
         throw err;
     }
 }
@@ -105,24 +112,24 @@ export async function mountFile(file: File, opts: BrowserMountOpts): Promise<Wor
  *
  *  Unlike the wasm path this does NOT auto-attach a disk — File / URL
  *  sources have no in-kernel WORKERFS / URLFS analogue on the native side.
- *  Use `disk.attachPath(hostFsPath)` for a real host filesystem path
+ *  Use `session.attachPath(hostFsPath)` for a real host filesystem path
  *  (typically obtained from the renderer's dialog/main-process picker).
  *
  *  The host kernel is process-global and idempotently booted; calling
  *  `prewarmNative()` from multiple renderers / components is safe. */
 export async function prewarmNative(
-    opts: Pick<MountOpts, 'memMb' | 'loglevel'> = {},
-): Promise<NativeAnyfsDisk | null> {
+    opts: Pick<SessionOpts, 'memMb' | 'loglevel'> = {},
+): Promise<NativeSession | null> {
     const bridge = getAnyfsNative();
     if (!bridge) return null;
     const ok = await bridge.available();
     if (!ok) return null;
-    const disk = new NativeAnyfsDisk(bridge);
+    const session = new NativeSession(bridge);
     try {
-        await disk.boot(opts.memMb ?? 256, opts.loglevel ?? 0);
-        return disk;
+        await session.boot(opts.memMb ?? 256, opts.loglevel ?? 0);
+        return session;
     } catch (err) {
-        await disk.dispose();
+        await session.close();
         throw err;
     }
 }

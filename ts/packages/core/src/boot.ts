@@ -1,4 +1,4 @@
-import { AnyfsDisk } from './disk.js';
+import { NodeWasmSession } from './node-wasm-session.js';
 import type { AnyfsModule, AnyfsModuleFactory } from './module.js';
 
 let g_modulePromise: Promise<AnyfsModule> | null = null;
@@ -15,12 +15,12 @@ export async function bootModule(args: {
         const M = await args.factory({ preRun: args.preRun });
         if (!g_kernelInitialised) {
             const rc = M.ccall(
-                'anyfs_ts_init',
+                'anyfs_ts_kernel_init',
                 'number',
                 ['number', 'number'],
                 [args.memMb, args.loglevel],
             ) as number;
-            if (rc !== 0) throw new Error(`anyfs_ts_init failed: ${rc}`);
+            if (rc !== 0) throw new Error(`anyfs_ts_kernel_init failed: ${rc}`);
             g_kernelInitialised = true;
         }
         return M;
@@ -28,10 +28,13 @@ export async function bootModule(args: {
     return g_modulePromise;
 }
 
-export async function openDisk(M: AnyfsModule, fsPath: string): Promise<AnyfsDisk> {
-    const h = M.ccall('anyfs_ts_disk_open', 'number', ['string', 'number'], [fsPath, 0]) as number;
-    if (h < 0) throw new Error(`disk_open(${fsPath}) failed: ${h}`);
-    return new AnyfsDisk(M, h);
+/** Boot the kernel and open a session for the given disk image path.
+ *  NODEFS mount of the host directory must already be set up (via boot's
+ *  `preRun` hook). */
+export async function openNodeSession(M: AnyfsModule, fsPath: string): Promise<NodeWasmSession> {
+    const session = new NodeWasmSession(M);
+    await session.attachPath(fsPath);
+    return session;
 }
 
 export async function haltKernel(): Promise<void> {
