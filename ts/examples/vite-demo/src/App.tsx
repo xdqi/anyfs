@@ -2,8 +2,15 @@ import { useCallback, useEffect, useState } from 'react';
 import type { DragEvent as ReactDragEvent, ReactNode } from 'react';
 import { AnyfsProvider, useAnyfsDisk, useAnyfsDiskMaybe } from '@anyfs/react';
 import { AnyfsFileBrowser } from '@anyfs/trees';
-import type { AnyfsDisk, DiskMeta, DiskSource, NativeAnyfsDisk, PartInfo } from '@anyfs/core';
+import type {
+    AnyfsSession,
+    SessionMeta,
+    SessionSource,
+    NativeSession,
+    SessionPartInfo,
+} from '@anyfs/core';
 import { applyUrlProxy, getAnyfsNative, getUrlProxyPrefix } from '@anyfs/core';
+import { formatSize, fmtBytes } from '@anyfs/core';
 import { streamDownload } from './stream-download';
 import { SettingsDialog, SettingsProvider, useSettings } from './Settings';
 import {
@@ -35,10 +42,10 @@ function clearNavHash() {
     window.history.replaceState(null, '', window.location.pathname + window.location.search);
 }
 
-// User-facing label for a DiskSource. For files it's the on-disk filename;
+// User-facing label for a SessionSource. For files it's the on-disk filename;
 // for URLs we lift the last path segment (decoded), falling back to host or
 // the raw URL if the path is empty.
-function sourceName(s: DiskSource): string {
+function sourceName(s: SessionSource): string {
     if (s.kind === 'file') return s.file.name;
     if (s.kind === 'path') {
         if (s.name) return s.name;
@@ -64,7 +71,7 @@ interface ConfirmCfg {
 }
 
 export function App() {
-    const [source, setSource] = useState<DiskSource | null>(null);
+    const [source, setSource] = useState<SessionSource | null>(null);
 
     // CDP test hook — exposes openUrl / openPath so headless tests can
     // drive disk mounting without fighting React synthetic events.
@@ -154,7 +161,7 @@ export function App() {
                 workerUrl={WORKER_URL}
                 wasmBaseUrl="/wasm/"
                 wasmModuleName="anyfs.qemu.mjs"
-                autoMountFstype="auto"
+                autoMount="auto"
                 mountOpts={{ loglevel: 7 }}
                 prewarm
                 {...(settingsDisableNative ? { forceMode: 'wasm' as const } : {})}
@@ -610,7 +617,7 @@ function getElectronDialog(): ElectronDialog | null {
 
 // Modal SystemDrives picker. Triggered from the landing "Open system drive…"
 // link. Lists physical disks + partitions; clicking a row emits a path
-// DiskSource the native bridge will hand to the in-process LKL kernel.
+// SessionSource the native bridge will hand to the in-process LKL kernel.
 //
 // Whole-disk rows are clickable too — useful for partitionless block devices
 // (loopback, optical, removable) and for letting the user lean on the
@@ -907,7 +914,7 @@ function UrlPromptDialog({
     );
 }
 
-function FilePicker({ onSource }: { onSource: (s: DiskSource) => void }) {
+function FilePicker({ onSource }: { onSource: (s: SessionSource) => void }) {
     const [dragging, setDragging] = useState(false);
     const [errorDialog, setErrorDialog] = useState<{ title: string; message: string } | null>(null);
     const [recents, setRecents] = useState<Recent[]>([]);
@@ -930,7 +937,7 @@ function FilePicker({ onSource }: { onSource: (s: DiskSource) => void }) {
         void refreshRecents();
     }, [refreshRecents]);
 
-    // Always-on path: produce a DiskSource and stash a recents entry when we
+    // Always-on path: produce a SessionSource and stash a recents entry when we
     // have a persistable handle. The handle is optional — drops without
     // getAsFileSystemHandle (or the legacy <input> fallback on non-FSA
     // browsers) still mount, they just won't show up in Recents.
@@ -1308,18 +1315,6 @@ function UrlErrorDialog({
             </div>
         </div>
     );
-}
-
-function formatSize(n: number | undefined): string {
-    if (n === undefined || !Number.isFinite(n)) return '';
-    const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
-    let v = n;
-    let u = 0;
-    while (v >= 1024 && u < units.length - 1) {
-        v /= 1024;
-        u++;
-    }
-    return `${v < 10 && u > 0 ? v.toFixed(1) : Math.round(v)} ${units[u]}`;
 }
 
 function formatTs(ts: number): string {
@@ -1719,13 +1714,13 @@ function DiskView({
     selectedPart,
     setSelectedPart,
 }: {
-    source: DiskSource;
+    source: SessionSource;
     selectedPart: number | null;
     setSelectedPart: (n: number | null) => void;
 }) {
-    const { disk, mountPath, status, step, error } = useAnyfsDisk();
-    const [parts, setParts] = useState<PartInfo[] | null>(null);
-    const [meta, setMeta] = useState<DiskMeta | null>(null);
+    const { session, mountPath, status, step, error } = useAnyfsDisk();
+    const [parts, setParts] = useState<SessionPartInfo[] | null>(null);
+    const [meta, setMeta] = useState<SessionMeta | null>(null);
     const [onDiskSize, setOnDiskSize] = useState<number | null>(null);
     const [manualMount, setManualMount] = useState<string | null>(null);
     const [mountError, setMountError] = useState<string | null>(null);
@@ -1742,10 +1737,12 @@ function DiskView({
 
     useEffect(() => {
         if (!disk || status !== 'ready') return;
-        disk.listPartitions()
+        session
+            .listParts()
             .then(setParts)
             .catch(() => setParts([]));
-        disk.diskMeta()
+        session
+            .meta()
             .then(setMeta)
             .catch(() => setMeta(null));
     }, [disk, status]);
@@ -1782,7 +1779,7 @@ function DiskView({
         if (!disk || selectedPart === null) return;
         let cancelled = false;
         setMountError(null);
-        disk.enter(selectedPart).then(
+        session.enter(selectedPart).then(
             (mp) => {
                 if (!cancelled) setManualMount(mp);
             },
@@ -1914,7 +1911,7 @@ function DownloadingFileTree({
     mountPath,
     rootLabel,
 }: {
-    disk: AnyfsDisk | NativeAnyfsDisk;
+    disk: AnyfsSession | NativeSession;
     mountPath: string;
     rootLabel: string;
 }) {
@@ -1936,7 +1933,7 @@ function DownloadingFileTree({
             const abs = mountPath.endsWith('/')
                 ? `${mountPath}${relPath}`
                 : `${mountPath}/${relPath}`;
-            const { stream, size } = await disk.openReadable(abs);
+            const { stream, size } = await session.openReadable(abs);
             const job: DownloadJob = {
                 name: fileName,
                 size,
@@ -1971,7 +1968,7 @@ function DownloadingFileTree({
     return (
         <>
             <AnyfsFileBrowser
-                disk={disk as AnyfsDisk}
+                session={session as AnyfsSession}
                 mountPath={mountPath}
                 rootLabel={rootLabel}
                 followSymlinks={settings.followSymlinks}
@@ -2035,13 +2032,6 @@ function DownloadStatus({ job, onDismiss }: { job: DownloadJob; onDismiss: () =>
     );
 }
 
-function fmtBytes(n: number): string {
-    if (n < 1024) return `${n} B`;
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
-    if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MiB`;
-    return `${(n / 1024 / 1024 / 1024).toFixed(2)} GiB`;
-}
-
 function ptLabel(pt: string): string {
     const k = pt.toLowerCase();
     if (k === 'gpt') return 'GPT';
@@ -2059,8 +2049,8 @@ function DiskSummary({
     meta,
     onDiskSize,
 }: {
-    source: DiskSource;
-    meta: DiskMeta | null;
+    source: SessionSource;
+    meta: SessionMeta | null;
     onDiskSize: number | null;
 }) {
     const name = sourceName(source);
