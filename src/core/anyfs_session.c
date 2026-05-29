@@ -567,6 +567,36 @@ int anyfs_disk_enter(AnyfsDisk* d, unsigned int part, uint32_t flags,
 		return -1;
 	lkl_path[0] = '\0';
 
+	/* p0 = whole disk (no partition table).
+	 * Mount the entire block device as a single filesystem using cached
+	 * dev_t + fstype hint from anyfs_disk_open. */
+	if (part == 0) {
+		uint32_t dev = d->whole_dev;
+		if (dev == 0)
+			return -4;
+
+		lkl_sys_access("/dev", 0) < 0 && lkl_sys_mkdir("/dev", 0700);
+		char devpath[80];
+		snprintf(devpath, sizeof(devpath), "/dev/anyfs_d%d_whole",
+			 d->disk_id);
+		(void)lkl_sys_mknod(devpath, LKL_S_IFBLK | 0600, dev);
+
+		char name[64];
+		snprintf(name, sizeof(name), "anyfs_d%d_whole", d->disk_id);
+
+		const char* hint =
+		    d->whole_fstype_hint[0] ? d->whole_fstype_hint : NULL;
+
+		AnyfsMount mnt = {0};
+		int rc = anyfs_mount_blkdev(devpath, hint, name, flags, &mnt);
+		if (rc < 0) {
+			lkl_sys_unlink(devpath);
+			return rc;
+		}
+		snprintf(lkl_path, ANYFS_LKL_PATH_MAX, "%s", mnt.mount_point);
+		return 0;
+	}
+
 	pthread_mutex_lock(&d->lock);
 	int sid = find_slot_by_pair_locked(d, ROOT_PARENT, part);
 	if (sid < 0) {
@@ -680,6 +710,20 @@ int anyfs_disk_leave(AnyfsDisk* d, unsigned int part)
 {
 	if (!d)
 		return -1;
+
+	/* p0 = whole disk — no slot, unmount + unlink the synthetic /dev node.
+	 */
+	if (part == 0) {
+		char name[64];
+		snprintf(name, sizeof(name), "anyfs_d%d_whole", d->disk_id);
+		int rc = anyfs_umount(name);
+		char devpath[80];
+		snprintf(devpath, sizeof(devpath), "/dev/anyfs_d%d_whole",
+			 d->disk_id);
+		(void)lkl_sys_unlink(devpath);
+		return rc;
+	}
+
 	pthread_mutex_lock(&d->lock);
 	int sid = find_slot_by_pair_locked(d, ROOT_PARENT, part);
 	if (sid < 0 || d->parts[sid].state != ANYFS_PART_MOUNTED ||

@@ -85,15 +85,6 @@ int anyfs_disk_open(const char* image_path, uint32_t flags, AnyfsDisk** out);
 /* Idempotent; safe at atexit. */
 void anyfs_disk_close(AnyfsDisk* d);
 
-/* Cached superblock-probe fstype for the whole disk (no partition
- * table). Set during anyfs_disk_open; NULL if unknown. Caller does not
- * own the returned pointer. */
-const char* anyfs_disk_whole_fstype_hint(const AnyfsDisk* d);
-
-/* Cached dev_t for the whole-disk block device (e.g. for mknod).
- * Set during anyfs_disk_open; returns 0 if unknown. */
-uint32_t anyfs_disk_whole_dev(const AnyfsDisk* d);
-
 /* The display name = basename of the image (or anything the surface
  * pinned). Used in lspart-style output. */
 const char* anyfs_disk_display(const AnyfsDisk* d);
@@ -126,14 +117,20 @@ size_t anyfs_disk_nparts(AnyfsDisk* d);
 int anyfs_disk_list_children(AnyfsDisk* d, int parent_slot_id,
 			     AnyfsPartInfo* buf, size_t buf_n, size_t* got);
 
-/* Enter a top-level partition by index. Equivalent to a one-segment
- * enter_path. Idempotent. Concurrent callers serialise per-slot.
+/* Enter a partition (or the whole disk). Idempotent. Concurrent callers
+ * serialise per-slot.
  *
- * Returns 0 on success and writes the absolute LKL path into
- * `lkl_path` (e.g. "/lklmnt/anyfs_d0_p1") for KIND_FS. For container
- * kinds the call still succeeds (children become listable), but
- * `lkl_path[0] = '\0'` — there is no filesystem to mount at this
- * level. Callers that need a mount must then drill into a child. */
+ *   part = 0  — whole disk, no partition table. Mounts the entire block
+ *               device as a single filesystem using cached dev_t + fstype
+ *               hint from anyfs_disk_open. Returns 0 and writes the LKL
+ *               mount path into lkl_path (e.g. "/lklmnt/anyfs_d0_whole").
+ *   part >= 1 — top-level partition by index. Equivalent to a one-segment
+ *               enter_path.
+ *
+ * Returns 0 on success. For KIND_FS the LKL path is written to lkl_path.
+ * For container kinds the call still succeeds (children become listable),
+ * but lkl_path[0] = '\0'. Callers that need a mount must drill into a
+ * child. */
 int anyfs_disk_enter(AnyfsDisk* d, unsigned int part, uint32_t flags,
 		     char lkl_path[ANYFS_LKL_PATH_MAX]);
 
