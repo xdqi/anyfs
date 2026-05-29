@@ -11,7 +11,7 @@ interface DirState {
 const cache = new WeakMap<object, Map<string, DirEntry[]>>();
 
 export function useAnyfsDir(path: string | null): DirState {
-    const { disk, status } = useAnyfsDisk();
+    const { session, status } = useAnyfsDisk();
     const [state, setState] = useState<DirState>({
         entries: null,
         loading: false,
@@ -19,9 +19,9 @@ export function useAnyfsDir(path: string | null): DirState {
     });
 
     useEffect(() => {
-        if (!disk || status !== 'ready' || !path) return;
-        const m = cache.get(disk) ?? new Map<string, DirEntry[]>();
-        cache.set(disk, m);
+        if (!session || status !== 'ready' || !path) return;
+        const m = cache.get(session) ?? new Map<string, DirEntry[]>();
+        cache.set(session, m);
         const hit = m.get(path);
         if (hit) {
             setState({ entries: hit, loading: false, error: null });
@@ -29,7 +29,7 @@ export function useAnyfsDir(path: string | null): DirState {
         }
         let cancelled = false;
         setState({ entries: null, loading: true, error: null });
-        disk.readdir(path).then(
+        session.readdir(path).then(
             (entries) => {
                 if (cancelled) return;
                 m.set(path, entries);
@@ -47,7 +47,7 @@ export function useAnyfsDir(path: string | null): DirState {
         return () => {
             cancelled = true;
         };
-    }, [disk, status, path]);
+    }, [session, status, path]);
 
     return state;
 }

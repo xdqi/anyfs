@@ -14,7 +14,7 @@ interface FileState {
 
 /** Read a file (or range) lazily. Returns null `data` while loading. */
 export function useAnyfsFile(path: string | null, range?: FileRange): FileState {
-    const { disk, status } = useAnyfsDisk();
+    const { session, status } = useAnyfsDisk();
     const [state, setState] = useState<FileState>({
         data: null,
         size: null,
@@ -25,35 +25,35 @@ export function useAnyfsFile(path: string | null, range?: FileRange): FileState 
     const len = range?.length ?? null;
 
     useEffect(() => {
-        if (!disk || status !== 'ready' || !path) return;
+        if (!session || status !== 'ready' || !path) return;
         let cancelled = false;
         setState({ data: null, size: null, loading: true, error: null });
         (async () => {
             try {
-                const stat = await disk.stat(path);
-                const readLen = len ?? Math.max(0, stat.size - off);
+                const st = await session.stat(path);
+                const readLen = len ?? Math.max(0, st.size - off);
                 if (readLen === 0) {
                     if (!cancelled)
                         setState({
                             data: new Uint8Array(0),
-                            size: stat.size,
+                            size: st.size,
                             loading: false,
                             error: null,
                         });
                     return;
                 }
-                const fd = await disk.open(path);
+                const fd = await session.openFd(path);
                 try {
-                    const data = await disk.read(fd, off, readLen);
+                    const data = await session.readFd(fd, off, readLen);
                     if (!cancelled)
                         setState({
                             data,
-                            size: stat.size,
+                            size: st.size,
                             loading: false,
                             error: null,
                         });
                 } finally {
-                    await disk.close(fd).catch(() => {});
+                    await session.closeFd(fd).catch(() => {});
                 }
             } catch (err) {
                 if (cancelled) return;
@@ -68,7 +68,7 @@ export function useAnyfsFile(path: string | null, range?: FileRange): FileState 
         return () => {
             cancelled = true;
         };
-    }, [disk, status, path, off, len]);
+    }, [session, status, path, off, len]);
 
     return state;
 }
