@@ -18,9 +18,9 @@
  * Operating modes
  * ───────────────
  * Mode A (-o part=<path>): single-partition at FUSE root.
- *   Path is translated with LPATH() after a one-time anyfs_disk_enter at
- *   startup — identical behaviour to the old anyfs_mount code, just using
- *   the new session API.
+ *   Path is translated with fuse_path_to_lkl() after a one-time
+ *   anyfs_disk_enter at startup — identical behaviour to the old anyfs_mount
+ *   code, just using the new session API.
  *
  * Mode B (default): synthetic root listing all partitions.
  *   getattr on "/" or "/pN" or "/diskN" or "/diskN/pM" → synthesised S_IFDIR,
@@ -332,24 +332,12 @@ static int anyfs_fuse_opt_proc(void* data, const char* arg, int key,
 	}
 }
 
-/* ── Path-translation helpers ─────────────────────────────────────── */
-
 /*
- * Mode A fast path: just prepend the single LKL mount point.
- * (Identical to the old lkl_path / LPATH approach.)
+ * Buffer for building absolute LKL paths (mount-point + inner path).
+ * The longest LKL mount point is ANYFS_LKL_PATH_MAX (64) + the longest
+ * reasonable inner path; 4 KiB is more than enough for any real path.
  */
-static void lkl_path(char* buf, size_t size, const char* path)
-{
-	if (path[0] == '/')
-		path++;
-	int n = snprintf(buf, size, "%s/%s", g_mount_point, path);
-	if (n < 0 || (size_t)n >= size)
-		buf[size - 1] = '\0';
-}
-
-#define LPATH_BUF_SIZE 4096
-#define LPATH_DECL char _lpath[LPATH_BUF_SIZE]
-#define LPATH(path) (lkl_path(_lpath, sizeof(_lpath), path), _lpath)
+#define LKL_PATH_BUF 4096
 
 /*
  * Synthetic file names recognised in Mode B.
@@ -533,13 +521,33 @@ static int resolve_walk(FusePath* fp)
 	return 0;
 }
 
+/* ── Unified path-translation ─────────────────────────────────────── */
+
 /*
- * Mode B full path translation: fuse_path → LKL absolute path in out.
- * Used only for IN_PARTITION; PART_NODE / synthetic kinds handle their
- * own dispatch in the caller. Returns 0 on success, negative errno-style.
+ * Resolve a FUSE-relative path (starting with '/') to an absolute LKL path.
+ *
+ * Mode A: simply prepends g_mount_point — e.g. "/etc/passwd" →
+ *         "/lklmnt/anyfs_d0_p1/etc/passwd".
+ * Mode B: parses the path DSL, walks the partition tree, and resolves
+ *         the LKL mount point + inner path.
+ *
+ * Returns 0 on success with out filled. Returns negative errno on failure
+ * (e.g. path points at a synthetic node that has no LKL backing, or a
+ * partition that failed to mount).
  */
 static int fuse_path_to_lkl(const char* fuse_path, char* out, size_t out_len)
 {
+	if (g_mode_a) {
+		if (fuse_path[0] == '/')
+			fuse_path++;
+		int n =
+		    snprintf(out, out_len, "%s/%s", g_mount_point, fuse_path);
+		if (n < 0 || (size_t)n >= out_len)
+			out[out_len - 1] = '\0';
+		return 0;
+	}
+
+	/* Mode B: full path DSL resolution */
 	FusePath fp;
 	PathKind kind = parse_fuse_path(fuse_path, &fp);
 	int rc = -ENOENT;
@@ -624,13 +632,14 @@ static int anyfs_fuse_getattr(const char* path, fuse_stat* st,
 {
 	/* Mode A: straight passthrough */
 	if (g_mode_a) {
-		LPATH_DECL;
+		char lkl_full[LKL_PATH_BUF];
+		fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
 		struct lkl_stat lkl_stat;
 		long ret;
 		if (fi)
 			ret = lkl_sys_fstat(fi->fh, &lkl_stat);
 		else
-			ret = lkl_sys_lstat(LPATH(path), &lkl_stat);
+			ret = lkl_sys_lstat(lkl_full, &lkl_stat);
 		if (!ret)
 			xlat_stat(&lkl_stat, st);
 		return ret;
@@ -685,7 +694,7 @@ static int anyfs_fuse_getattr(const char* path, fuse_stat* st,
 			rc = -ENOENT;
 			break;
 		}
-		char lkl_full[LPATH_BUF_SIZE];
+		char lkl_full[LKL_PATH_BUF];
 		snprintf(lkl_full, sizeof(lkl_full), "%s%s", fp.lkl_mount,
 			 fp.inner);
 		struct lkl_stat lkl_stat;
@@ -710,17 +719,7 @@ static int anyfs_fuse_getattr(const char* path, fuse_stat* st,
 
 static int anyfs_fuse_readlink(const char* path, char* buf, size_t len)
 {
-	if (g_mode_a) {
-		LPATH_DECL;
-		long ret = lkl_sys_readlink(LPATH(path), buf, len);
-		if (ret < 0)
-			return ret;
-		if ((size_t)ret == len)
-			ret = len - 1;
-		buf[ret] = 0;
-		return 0;
-	}
-	char lkl_full[LPATH_BUF_SIZE];
+	char lkl_full[LKL_PATH_BUF];
 	int r = fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
 	if (r < 0)
 		return r;
@@ -735,11 +734,7 @@ static int anyfs_fuse_readlink(const char* path, char* buf, size_t len)
 
 static int anyfs_fuse_mknod(const char* path, fuse_mode_t mode, fuse_dev_t dev)
 {
-	if (g_mode_a) {
-		LPATH_DECL;
-		return lkl_sys_mknod(LPATH(path), mode, dev);
-	}
-	char lkl_full[LPATH_BUF_SIZE];
+	char lkl_full[LKL_PATH_BUF];
 	int r = fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
 	if (r < 0)
 		return r;
@@ -748,11 +743,7 @@ static int anyfs_fuse_mknod(const char* path, fuse_mode_t mode, fuse_dev_t dev)
 
 static int anyfs_fuse_mkdir(const char* path, fuse_mode_t mode)
 {
-	if (g_mode_a) {
-		LPATH_DECL;
-		return lkl_sys_mkdir(LPATH(path), mode);
-	}
-	char lkl_full[LPATH_BUF_SIZE];
+	char lkl_full[LKL_PATH_BUF];
 	int r = fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
 	if (r < 0)
 		return r;
@@ -761,11 +752,7 @@ static int anyfs_fuse_mkdir(const char* path, fuse_mode_t mode)
 
 static int anyfs_fuse_unlink(const char* path)
 {
-	if (g_mode_a) {
-		LPATH_DECL;
-		return lkl_sys_unlink(LPATH(path));
-	}
-	char lkl_full[LPATH_BUF_SIZE];
+	char lkl_full[LKL_PATH_BUF];
 	int r = fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
 	if (r < 0)
 		return r;
@@ -774,11 +761,7 @@ static int anyfs_fuse_unlink(const char* path)
 
 static int anyfs_fuse_rmdir(const char* path)
 {
-	if (g_mode_a) {
-		LPATH_DECL;
-		return lkl_sys_rmdir(LPATH(path));
-	}
-	char lkl_full[LPATH_BUF_SIZE];
+	char lkl_full[LKL_PATH_BUF];
 	int r = fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
 	if (r < 0)
 		return r;
@@ -789,12 +772,7 @@ static int anyfs_fuse_symlink(const char* oldname, const char* newname)
 {
 	/* oldname = symlink target (string, not a path — skip path translation)
 	 */
-	if (g_mode_a) {
-		char _lpath2[LPATH_BUF_SIZE];
-		lkl_path(_lpath2, sizeof(_lpath2), newname);
-		return lkl_sys_symlink(oldname, _lpath2);
-	}
-	char lkl_full[LPATH_BUF_SIZE];
+	char lkl_full[LKL_PATH_BUF];
 	int r = fuse_path_to_lkl(newname, lkl_full, sizeof(lkl_full));
 	if (r < 0)
 		return r;
@@ -804,14 +782,7 @@ static int anyfs_fuse_symlink(const char* oldname, const char* newname)
 static int anyfs_fuse_rename(const char* oldname, const char* newname,
 			     unsigned int flags)
 {
-	if (g_mode_a) {
-		LPATH_DECL;
-		char _lpath2[LPATH_BUF_SIZE];
-		lkl_path(_lpath2, sizeof(_lpath2), newname);
-		return lkl_sys_renameat2(LKL_AT_FDCWD, LPATH(oldname),
-					 LKL_AT_FDCWD, _lpath2, flags);
-	}
-	char old_full[LPATH_BUF_SIZE], new_full[LPATH_BUF_SIZE];
+	char old_full[LKL_PATH_BUF], new_full[LKL_PATH_BUF];
 	int r = fuse_path_to_lkl(oldname, old_full, sizeof(old_full));
 	if (r < 0)
 		return r;
@@ -824,13 +795,7 @@ static int anyfs_fuse_rename(const char* oldname, const char* newname,
 
 static int anyfs_fuse_link(const char* oldname, const char* newname)
 {
-	if (g_mode_a) {
-		LPATH_DECL;
-		char _lpath2[LPATH_BUF_SIZE];
-		lkl_path(_lpath2, sizeof(_lpath2), newname);
-		return lkl_sys_link(LPATH(oldname), _lpath2);
-	}
-	char old_full[LPATH_BUF_SIZE], new_full[LPATH_BUF_SIZE];
+	char old_full[LKL_PATH_BUF], new_full[LKL_PATH_BUF];
 	int r = fuse_path_to_lkl(oldname, old_full, sizeof(old_full));
 	if (r < 0)
 		return r;
@@ -843,15 +808,9 @@ static int anyfs_fuse_link(const char* oldname, const char* newname)
 static int anyfs_fuse_chmod(const char* path, fuse_mode_t mode,
 			    struct fuse_file_info* fi)
 {
-	if (g_mode_a) {
-		LPATH_DECL;
-		if (fi)
-			return lkl_sys_fchmod(fi->fh, mode);
-		return lkl_sys_fchmodat(LKL_AT_FDCWD, LPATH(path), mode);
-	}
 	if (fi)
 		return lkl_sys_fchmod(fi->fh, mode);
-	char lkl_full[LPATH_BUF_SIZE];
+	char lkl_full[LKL_PATH_BUF];
 	int r = fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
 	if (r < 0)
 		return r;
@@ -861,16 +820,9 @@ static int anyfs_fuse_chmod(const char* path, fuse_mode_t mode,
 static int anyfs_fuse_chown(const char* path, fuse_uid_t uid, fuse_gid_t gid,
 			    struct fuse_file_info* fi)
 {
-	if (g_mode_a) {
-		LPATH_DECL;
-		if (fi)
-			return lkl_sys_fchown(fi->fh, uid, gid);
-		return lkl_sys_fchownat(LKL_AT_FDCWD, LPATH(path), uid, gid,
-					LKL_AT_SYMLINK_NOFOLLOW);
-	}
 	if (fi)
 		return lkl_sys_fchown(fi->fh, uid, gid);
-	char lkl_full[LPATH_BUF_SIZE];
+	char lkl_full[LKL_PATH_BUF];
 	int r = fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
 	if (r < 0)
 		return r;
@@ -881,15 +833,9 @@ static int anyfs_fuse_chown(const char* path, fuse_uid_t uid, fuse_gid_t gid,
 static int anyfs_fuse_truncate(const char* path, fuse_off_t off,
 			       struct fuse_file_info* fi)
 {
-	if (g_mode_a) {
-		LPATH_DECL;
-		if (fi)
-			return lkl_sys_ftruncate(fi->fh, off);
-		return lkl_sys_truncate(LPATH(path), off);
-	}
 	if (fi)
 		return lkl_sys_ftruncate(fi->fh, off);
-	char lkl_full[LPATH_BUF_SIZE];
+	char lkl_full[LKL_PATH_BUF];
 	int r = fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
 	if (r < 0)
 		return r;
@@ -955,11 +901,7 @@ static int open3_lkl(const char* lkl_path_str, bool create, fuse_mode_t mode,
 static int anyfs_fuse_create(const char* path, fuse_mode_t mode,
 			     struct fuse_file_info* fi)
 {
-	if (g_mode_a) {
-		LPATH_DECL;
-		return open3_lkl(LPATH(path), true, mode, fi);
-	}
-	char lkl_full[LPATH_BUF_SIZE];
+	char lkl_full[LKL_PATH_BUF];
 	int r = fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
 	if (r < 0)
 		return r;
@@ -969,8 +911,9 @@ static int anyfs_fuse_create(const char* path, fuse_mode_t mode,
 static int anyfs_fuse_open(const char* path, struct fuse_file_info* fi)
 {
 	if (g_mode_a) {
-		LPATH_DECL;
-		return open3_lkl(LPATH(path), false, 0, fi);
+		char lkl_full[LKL_PATH_BUF];
+		fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
+		return open3_lkl(lkl_full, false, 0, fi);
 	}
 
 	/* Mode B: synthetic files (.partitions / partitions.txt) have no LKL
@@ -983,7 +926,7 @@ static int anyfs_fuse_open(const char* path, struct fuse_file_info* fi)
 		return 0;
 	}
 
-	char lkl_full[LPATH_BUF_SIZE];
+	char lkl_full[LKL_PATH_BUF];
 	int r = fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
 	if (r < 0)
 		return r;
@@ -1055,24 +998,13 @@ static int anyfs_fuse_write(const char* path, const char* buf, size_t size,
 
 static int anyfs_fuse_statfs(const char* path, fuse_statvfs* stat)
 {
-	const char* target;
-	char lkl_full[LPATH_BUF_SIZE];
-	if (g_mode_a) {
-		LPATH_DECL;
-		target = LPATH(path);
-		/* LPATH writes into _lpath on the stack; copy so we have a
-		 * stable ptr */
-		snprintf(lkl_full, sizeof(lkl_full), "%s", target);
-		target = lkl_full;
-	} else {
-		int r = fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
-		if (r < 0)
-			return r;
-		target = lkl_full;
-	}
+	char lkl_full[LKL_PATH_BUF];
+	int r = fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
+	if (r < 0)
+		return r;
 
 	struct lkl_statfs lkl_statfs;
-	long ret = lkl_sys_statfs(target, &lkl_statfs);
+	long ret = lkl_sys_statfs(lkl_full, &lkl_statfs);
 	if (ret < 0)
 		return ret;
 	memset(stat, 0, sizeof(*stat));
@@ -1117,11 +1049,7 @@ static int anyfs_fuse_fsync(const char* path, int datasync,
 static int anyfs_fuse_setxattr(const char* path, const char* name,
 			       const char* val, size_t size, int flags)
 {
-	if (g_mode_a) {
-		LPATH_DECL;
-		return lkl_sys_setxattr(LPATH(path), name, val, size, flags);
-	}
-	char lkl_full[LPATH_BUF_SIZE];
+	char lkl_full[LKL_PATH_BUF];
 	int r = fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
 	if (r < 0)
 		return r;
@@ -1131,11 +1059,7 @@ static int anyfs_fuse_setxattr(const char* path, const char* name,
 static int anyfs_fuse_getxattr(const char* path, const char* name, char* val,
 			       size_t size)
 {
-	if (g_mode_a) {
-		LPATH_DECL;
-		return lkl_sys_getxattr(LPATH(path), name, val, size);
-	}
-	char lkl_full[LPATH_BUF_SIZE];
+	char lkl_full[LKL_PATH_BUF];
 	int r = fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
 	if (r < 0)
 		return r;
@@ -1144,11 +1068,7 @@ static int anyfs_fuse_getxattr(const char* path, const char* name, char* val,
 
 static int anyfs_fuse_listxattr(const char* path, char* list, size_t size)
 {
-	if (g_mode_a) {
-		LPATH_DECL;
-		return lkl_sys_listxattr(LPATH(path), list, size);
-	}
-	char lkl_full[LPATH_BUF_SIZE];
+	char lkl_full[LKL_PATH_BUF];
 	int r = fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
 	if (r < 0)
 		return r;
@@ -1157,11 +1077,7 @@ static int anyfs_fuse_listxattr(const char* path, char* list, size_t size)
 
 static int anyfs_fuse_removexattr(const char* path, const char* name)
 {
-	if (g_mode_a) {
-		LPATH_DECL;
-		return lkl_sys_removexattr(LPATH(path), name);
-	}
-	char lkl_full[LPATH_BUF_SIZE];
+	char lkl_full[LKL_PATH_BUF];
 	int r = fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
 	if (r < 0)
 		return r;
@@ -1176,9 +1092,10 @@ static int anyfs_fuse_removexattr(const char* path, const char* name)
 static int anyfs_fuse_opendir(const char* path, struct fuse_file_info* fi)
 {
 	if (g_mode_a) {
-		LPATH_DECL;
+		char lkl_full[LKL_PATH_BUF];
+		fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
 		int err;
-		struct lkl_dir* dir = lkl_opendir(LPATH(path), &err);
+		struct lkl_dir* dir = lkl_opendir(lkl_full, &err);
 		if (!dir)
 			return err;
 		fi->fh = (uintptr_t)dir;
@@ -1225,7 +1142,7 @@ static int anyfs_fuse_opendir(const char* path, struct fuse_file_info* fi)
 			rc = -ENOENT;
 			break;
 		}
-		char lkl_full[LPATH_BUF_SIZE];
+		char lkl_full[LKL_PATH_BUF];
 		snprintf(lkl_full, sizeof(lkl_full), "%s%s", fp.lkl_mount,
 			 fp.inner);
 		int err;
@@ -1419,11 +1336,7 @@ static int anyfs_fuse_fsyncdir(const char* path, int datasync,
 
 static int anyfs_fuse_access(const char* path, int mode)
 {
-	if (g_mode_a) {
-		LPATH_DECL;
-		return lkl_sys_access(LPATH(path), mode);
-	}
-	char lkl_full[LPATH_BUF_SIZE];
+	char lkl_full[LKL_PATH_BUF];
 	int r = fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
 	if (r < 0) {
 		/* access on synthetic nodes (root, partition dirs, metadata
@@ -1450,12 +1363,7 @@ static int anyfs_fuse_utimens(const char* path, const fuse_timespec tv[2],
 	if (fi)
 		return lkl_sys_utimensat(fi->fh, NULL, ts, 0);
 
-	if (g_mode_a) {
-		LPATH_DECL;
-		return lkl_sys_utimensat(-1, LPATH(path), ts,
-					 LKL_AT_SYMLINK_NOFOLLOW);
-	}
-	char lkl_full[LPATH_BUF_SIZE];
+	char lkl_full[LKL_PATH_BUF];
 	int r = fuse_path_to_lkl(path, lkl_full, sizeof(lkl_full));
 	if (r < 0)
 		return r;
