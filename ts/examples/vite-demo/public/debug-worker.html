@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>worker debug</title></head><body>
+<h1>Worker Debug - step by step</h1>
+<div id="log" style="font-family:monospace;white-space:pre-wrap;"></div>
+<script type="module">
+const el = document.getElementById('log');
+function log(msg) {
+  console.log('[DEBUG]', msg);
+  el.textContent += msg + '\n';
+}
+
+async function testBoot(moduleName, loglevel = 7) {
+  log('');
+  log('--- testing module: ' + moduleName + ' ---');
+
+  const WORKER_URL = '/wasm/anyfs.worker.js';
+  const worker = new Worker(WORKER_URL, { type: 'module' });
+
+  worker.addEventListener('message', (e) => {
+    const m = e.data;
+    const preview = JSON.stringify(m).substring(0, 250);
+    log('worker msg: ' + preview);
+  });
+
+  worker.addEventListener('error', (e) => {
+    log('WORKER ERROR: ' + (e.message || String(e)));
+  });
+
+  const result = await new Promise((res) => {
+    const t = setTimeout(() => {
+      log('TIMEOUT: no host-ready after 15s');
+      res('timeout');
+    }, 15000);
+
+    worker.addEventListener('message', function onMsg(e) {
+      if (e.data.event === 'host-ready') {
+        clearTimeout(t);
+        log('host-ready received, sending boot...');
+        worker.postMessage({ id: 1, op: 'boot', args: {
+          memMb: 64, loglevel: loglevel,
+          wasmBaseUrl: '/wasm/',
+          wasmModuleName: moduleName,
+        }});
+        return;
+      }
+      if (e.data.id === 1) {
+        worker.removeEventListener('message', onMsg);
+        worker.terminate();
+        if (e.data.ok) {
+          log('BOOT OK!');
+          res('ok');
+        } else {
+          log('BOOT ERROR: ' + (e.data.error || 'unknown'));
+          res('error');
+        }
+      }
+    });
+  });
+
+  worker.terminate();
+  return result;
+}
+
+log('SharedArrayBuffer: ' + (typeof SharedArrayBuffer !== 'undefined' ? 'available' : 'MISSING'));
+log('crossOriginIsolated: ' + (self.crossOriginIsolated ? 'true' : 'false'));
+
+// Test if nested Worker creation works (what emscripten pthreads need)
+try {
+  const blob = new Blob(['self.postMessage("nested-ok")'], {type:'application/javascript'});
+  const url = URL.createObjectURL(blob);
+  const nested = new Worker(url);
+  nested.onmessage = (e) => {
+    log('nested Worker test: ' + e.data);
+    nested.terminate();
+    URL.revokeObjectURL(url);
+  };
+  nested.onerror = (e) => {
+    log('nested Worker ERROR: ' + (e.message || 'failed'));
+    URL.revokeObjectURL(url);
+  };
+} catch(e) {
+  log('nested Worker creation ERROR: ' + e.message);
+}
+
+log('testing worker-only module with loglevel=3...');
+const r1 = await testBoot('anyfs.workeronly.mjs', 3);
+log('non-QEMU result: ' + r1);
+
+// Wait a bit then try QEMU
+await new Promise(r => setTimeout(r, 2000));
+log('');
+log('testing QEMU module...');
+const r2 = await testBoot('anyfs.qemu.mjs');
+log('QEMU result: ' + r2);
+
+log('');
+log('ALL DONE');
+</script>
+</body></html>

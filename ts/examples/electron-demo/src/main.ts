@@ -299,6 +299,10 @@ function installDownloadIpc() {
 // null if the user cancelled.
 function installDialogIpc() {
     ipcMain.handle('dialog:openImage', async (event) => {
+        // Test hook: skip the native OS dialog when a path is pre-set.
+        // Native file dialogs can't be automated via CDP; this lets tests
+        // exercise the full IPC + addon pipeline without manual interaction.
+        if (process.env.ANYFS_TEST_LOCAL_PATH) return process.env.ANYFS_TEST_LOCAL_PATH;
         const owner = BrowserWindow.fromWebContents(event.sender);
         const result = await (owner
             ? dialog.showOpenDialog(owner, {

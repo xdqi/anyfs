@@ -34,6 +34,7 @@ async function main() {
     log(`starting for ${upstreamUrl}`);
 
     // ── HEAD probe (fetch follows redirects by default) ──────────────────
+    log(`typeof fetch=${typeof fetch} globalThis.fetch=${typeof (globalThis as any).fetch}`);
     let headResp: Response;
     try {
         headResp = await fetch(upstreamUrl, {
@@ -42,8 +43,14 @@ async function main() {
             signal: AbortSignal.timeout(15000),
         });
     } catch (err) {
-        log(`HEAD probe failed: ${(err as Error).message}`);
-        parentPort!.postMessage({ error: `HEAD probe failed: ${(err as Error).message}` });
+        const e = err as Error;
+        const cause = (e as any).cause;
+        log(
+            `HEAD probe failed: message="${e.message}" cause="${cause?.message}" code="${cause?.code}" name="${e.name}" stack="${e.stack?.substring(0, 300)}"`,
+        );
+        parentPort!.postMessage({
+            error: `HEAD probe failed: ${e.message} (cause: ${cause?.message || 'none'})`,
+        });
         process.exit(1);
         return;
     }

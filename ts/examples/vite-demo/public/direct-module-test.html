@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>direct module test</title></head><body>
+<h1>Direct Module Test</h1>
+<div id="log" style="font-family:monospace;white-space:pre-wrap;"></div>
+<script type="module">
+const el = document.getElementById('log');
+function log(msg) { console.log('[DIRECT]', msg); el.textContent += msg + '\n'; }
+
+log('importing module...');
+log('MODULE: anyfs.mjs (original, PROXY_TO_PTHREAD=1, ENV=web,worker)');
+import createAnyfsModule from '/wasm/anyfs.mjs';
+
+log('calling factory...');
+const t0 = Date.now();
+const M = await createAnyfsModule({
+  print: (m) => log('[out] ' + m),
+  printErr: (m) => log('[err] ' + m),
+});
+log('factory done in ' + (Date.now()-t0) + 'ms');
+
+log('_malloc test...');
+const p = M._malloc(16);
+log('_malloc(16) = ' + p);
+M._free(p);
+
+log('calling anyfs_ts_init...');
+const t1 = Date.now();
+try {
+  const rc = M.ccall('anyfs_ts_init', 'number', ['number', 'number'], [64, 7]);
+  log('anyfs_ts_init returned: ' + rc + ' in ' + (Date.now()-t1) + 'ms');
+} catch(e) {
+  log('ERROR: ' + e.message);
+}
+log('DONE in ' + (Date.now()-t0) + 'ms');
+</script>
+</body></html>

@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Atomics test</title></head><body>
+<h1>Atomics wait/notify across Workers</h1>
+<div id="log" style="font-family:monospace;white-space:pre-wrap;"></div>
+<script>
+const el = document.getElementById('log');
+function log(msg) {
+  console.log('[ATOMICS]', msg);
+  el.textContent += msg + '\n';
+}
+
+log('SharedArrayBuffer: ' + (typeof SharedArrayBuffer !== 'undefined' ? 'available' : 'MISSING'));
+log('Atomics: ' + (typeof Atomics !== 'undefined' ? 'available' : 'MISSING'));
+log('crossOriginIsolated: ' + (self.crossOriginIsolated ? 'true' : 'false'));
+
+// Test 1: Atomics.wait on main page, notify from classic Worker
+(async () => {
+  log('');
+  log('--- Test 1: Atomics.wait on main page ---');
+  const sab1 = new SharedArrayBuffer(4);
+  const view1 = new Int32Array(sab1);
+  const blob1 = new Blob([`
+    let sab, view;
+    self.onmessage = function(e) {
+      sab = e.data;
+      view = new Int32Array(sab);
+      setTimeout(() => {
+        Atomics.store(view, 0, 1);
+        const woken = Atomics.notify(view, 0);
+        console.log('[T1-NESTED] notify result: ' + woken);
+      }, 500);
+    };
+  `], {type:'application/javascript'});
+  const url1 = URL.createObjectURL(blob1);
+  const w1 = new Worker(url1);
+  setTimeout(() => {
+    w1.postMessage(sab1);
+    setTimeout(() => {
+      log('Test1: calling Atomics.wait...');
+      const t0 = Date.now();
+      try {
+        const r = Atomics.wait(view1, 0, 0, 3000);
+        const dt = Date.now() - t0;
+        log('Test1: Atomics.wait=' + r + ' after ' + dt + 'ms');
+      } catch(e) {
+        log('Test1: Atomics.wait THREW: ' + e.message);
+      }
+    }, 100);
+  }, 100);
+})();
+
+// Test 2: Module Worker that does Atomics.wait, notified by nested classic Worker
+setTimeout(() => {
+  log('');
+  log('--- Test 2: Atomics.wait inside module Worker ---');
+  const workerCode = `
+    const sab = new SharedArrayBuffer(4);
+    const view = new Int32Array(sab);
+    Atomics.store(view, 0, 0);
+
+    const nestedCode = \`
+      let sab, view;
+      self.onmessage = function(e) {
+        sab = e.data;
+        view = new Int32Array(sab);
+        setTimeout(() => {
+          Atomics.store(view, 0, 1);
+          const woken = Atomics.notify(view, 0);
+          console.log('[T2-NESTED] notify result: ' + woken);
+        }, 500);
+      };
+    \`;
+    const blob = new Blob([nestedCode], {type:'application/javascript'});
+    const url = URL.createObjectURL(blob);
+    const nested = new Worker(url);
+    nested.postMessage(sab);
+
+    setTimeout(() => {
+      console.log('[T2-MODULE] calling Atomics.wait...');
+      const t0 = Date.now();
+      const r = Atomics.wait(view, 0, 0, 3000);
+      const dt = Date.now() - t0;
+      console.log('[T2-MODULE] Atomics.wait=' + r + ' after ' + dt + 'ms');
+      self.postMessage('test2:' + r + ',' + dt);
+    }, 200);
+  `;
+  const blob2 = new Blob([workerCode], {type:'application/javascript'});
+  const url2 = URL.createObjectURL(blob2);
+  const w2 = new Worker(url2, {type:'module'});
+  w2.onmessage = (e) => log('Test2 result: ' + e.data);
+  w2.onerror = (e) => log('Test2 ERROR: ' + e.message);
+}, 4000);
+
+// Test 3: Module Worker that creates TWO levels of Workers, simulating
+// main-worker -> pthread(LKL kernel) -> pthread(kthread)
+// Main worker blocks in Atomics.wait, LKL pthread needs to create kthread
+setTimeout(() => {
+  log('');
+  log('--- Test 3: nested pthread creation while main blocked ---');
+
+  const mainWorkerCode = `
+    const sab = new SharedArrayBuffer(64);
+    // Layout: [0]=main_block_flag, [4]=lkl_ready, [8]=kthread_created, [12]=done
+    const view = new Int32Array(sab);
+    Atomics.store(view, 0, 0);
+
+    // Classic worker simulating "lkl_run_kernel pthread"
+    const lklCode = \`
+      let sab, view;
+      self.onmessage = function(e) {
+        sab = e.data;
+        view = new Int32Array(sab);
+        console.log('[T3-LKL] LKL thread started');
+        Atomics.store(view, 1, 1);  // lkl_ready = 1
+
+        // Now LKL thread needs to create a kthread
+        // In emscripten, this proxies to main thread via postMessage
+        // We simulate by posting a message that the main worker should
+        // process to create the kthread
+        setTimeout(() => {
+          console.log('[T3-LKL] LKL thread requesting kthread creation...');
+          // The main thread is blocked in Atomics.wait, so this message
+          // will be queued. We need it to be processed.
+          self.postMessage('need-kthread');
+        }, 200);
+      };
+    \`;
+    const lklBlob = new Blob([lklCode], {type:'application/javascript'});
+    const lklUrl = URL.createObjectURL(lklBlob);
+    const lklWorker = new Worker(lklUrl);
+    lklWorker.postMessage(sab);
+
+    // Wait for lkl_ready, then block (simulating sem_down(init_sem))
+    const checkReady = () => {
+      if (Atomics.load(view, 1) === 1) {
+        console.log('[T3-MAIN] LKL ready, blocking in Atomics.wait...');
+        // But first, check if there's a pending kthread request
+        lklWorker.onmessage = (e) => {
+          if (e.data === 'need-kthread') {
+            console.log('[T3-MAIN] got kthread request while blocked!');
+            // CANNOT process this because we're in Atomics.wait!
+
+            // In reality, we'd create the kthread worker here.
+            // But we can't because we're blocked!
+
+            // Mark that we received the request (even though we can't act on it)
+            Atomics.store(view, 2, 1);  // kthread_created = 1 (optimistically)
+            // In emscripten, spawnThread sends "run" to the kthread worker.
+            // The kthread worker runs and eventually signals done.
+            // But since main is blocked, can it process messages?
+          }
+        };
+        // Now block
+        const r = Atomics.wait(view, 0, 0, 5000);
+        console.log('[T3-MAIN] Atomics.wait returned: ' + r);
+        self.postMessage('test3-main-woke:' + r);
+      } else {
+        setTimeout(checkReady, 100);
+      }
+    };
+    checkReady();
+  `;
+  const mainBlob = new Blob([mainWorkerCode], {type:'application/javascript'});
+  const mainUrl = URL.createObjectURL(mainBlob);
+  const mainW = new Worker(mainUrl, {type:'module'});
+  mainW.onmessage = (e) => log('Test3: ' + e.data);
+  mainW.onerror = (e) => log('Test3 ERROR: ' + e.message);
+}, 9000);
+
+setTimeout(() => {
+  log('');
+  log('ALL TESTS SCHEDULED - DONE');
+}, 10000);
+</script>
+</body></html>

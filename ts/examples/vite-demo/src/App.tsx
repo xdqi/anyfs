@@ -65,6 +65,31 @@ interface ConfirmCfg {
 
 export function App() {
     const [source, setSource] = useState<DiskSource | null>(null);
+
+    // CDP test hook — exposes openUrl / openPath so headless tests can
+    // drive disk mounting without fighting React synthetic events.
+    useEffect(() => {
+        const api = {
+            openUrl: (url: string) => {
+                console.log('[APP] openUrl called with', url);
+                const name = sourceName({ kind: 'url', url });
+                console.log('[APP] openUrl setting source name=', name);
+                setSource({ kind: 'url', url, name });
+            },
+            openPath: (path: string) => {
+                const name = sourceName({ kind: 'path', path });
+                setSource({ kind: 'path', path, name });
+            },
+            /** Directly set source to a file — CDP setFileInputFiles trigger. */
+            setSourceFile: (file: File) => {
+                setSource({ kind: 'file', file });
+            },
+        };
+        (window as any).__anyfsTest = api;
+        return () => {
+            delete (window as any).__anyfsTest;
+        };
+    }, []);
     const [selectedPart, setSelectedPart] = useState<number | null>(null);
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [aboutOpen, setAboutOpen] = useState(false);
@@ -1124,17 +1149,17 @@ function FilePicker({ onSource }: { onSource: (s: DiskSource) => void }) {
                         : 'border-zinc-200 dark:border-zinc-800',
                 ].join(' ')}
             >
-                {!fsa && (
-                    <input
-                        id="anyfs-legacy-file"
-                        type="file"
-                        className="hidden"
-                        onChange={(e) => {
-                            const f = e.target.files?.[0];
-                            if (f) void acceptFile(f);
-                        }}
-                    />
-                )}
+                {/* Always in DOM so CDP tests can inject files via setFileInputFiles.
+                    FSA is the primary path when available; this is the fallback. */}
+                <input
+                    id="anyfs-legacy-file"
+                    type="file"
+                    className="hidden"
+                    onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) void acceptFile(f);
+                    }}
+                />
                 <div className="space-y-1">
                     <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
                         anyfs reader

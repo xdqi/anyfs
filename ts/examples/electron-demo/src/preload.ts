@@ -59,45 +59,50 @@ contextBridge.exposeInMainWorld('__anyfs', {
 // renderer can drive the real LKL kernel running in the main process. When
 // this object is present, @anyfs/core prefers it over the wasm path; absence
 // falls back transparently. All ops are async because IPC is.
-const anyfsNative = {
-    available: () => ipcRenderer.invoke('anyfs-native:available') as Promise<boolean>,
-    init: (memMb: number, loglevel: number) =>
-        ipcRenderer.invoke('anyfs-native:init', memMb, loglevel) as Promise<number>,
-    diskOpen: (path: string, flags: number) =>
-        ipcRenderer.invoke('anyfs-native:diskOpen', path, flags) as Promise<number>,
-    registerUrl: (url: string) =>
-        ipcRenderer.invoke('anyfs-native:registerUrl', url) as Promise<{
-            proxyUrl: string;
-            id: string;
-        }>,
-    unregisterUrl: (id: string) =>
-        ipcRenderer.invoke('anyfs-native:unregisterUrl', id) as Promise<void>,
-    diskClose: (h: number) => ipcRenderer.invoke('anyfs-native:diskClose', h) as Promise<number>,
-    diskListJson: (h: number) =>
-        ipcRenderer.invoke('anyfs-native:diskListJson', h) as Promise<string>,
-    diskMetaJson: (h: number) =>
-        ipcRenderer.invoke('anyfs-native:diskMetaJson', h) as Promise<string>,
-    diskEnter: (h: number, part: number, flags: number) =>
-        ipcRenderer.invoke('anyfs-native:diskEnter', h, part, flags) as Promise<string>,
-    mountWhole: (h: number, fstype: string, flags: number) =>
-        ipcRenderer.invoke('anyfs-native:mountWhole', h, fstype, flags) as Promise<string>,
-    readdirJson: (path: string) =>
-        ipcRenderer.invoke('anyfs-native:readdirJson', path) as Promise<string>,
-    lstatJson: (path: string) =>
-        ipcRenderer.invoke('anyfs-native:lstatJson', path) as Promise<string>,
-    statJson: (path: string) =>
-        ipcRenderer.invoke('anyfs-native:statJson', path) as Promise<string>,
-    realpath: (path: string) =>
-        ipcRenderer.invoke('anyfs-native:realpath', path) as Promise<string>,
-    readlink: (path: string) =>
-        ipcRenderer.invoke('anyfs-native:readlink', path) as Promise<string>,
-    fileOpen: (path: string, flags: number) =>
-        ipcRenderer.invoke('anyfs-native:fileOpen', path, flags) as Promise<number>,
-    pread: (fd: number, n: number, off: number) =>
-        ipcRenderer.invoke('anyfs-native:pread', fd, n, off) as Promise<{
-            rc: number;
-            data: Uint8Array;
-        }>,
-    fileClose: (fd: number) => ipcRenderer.invoke('anyfs-native:fileClose', fd) as Promise<number>,
-};
-contextBridge.exposeInMainWorld('anyfsNative', anyfsNative);
+// Skip when ANYFS_DISABLE_NATIVE=1 — tests can force the wasm path.
+if (!process.env.ANYFS_DISABLE_NATIVE) {
+    const anyfsNative = {
+        available: () => ipcRenderer.invoke('anyfs-native:available') as Promise<boolean>,
+        init: (memMb: number, loglevel: number) =>
+            ipcRenderer.invoke('anyfs-native:init', memMb, loglevel) as Promise<number>,
+        diskOpen: (path: string, flags: number) =>
+            ipcRenderer.invoke('anyfs-native:diskOpen', path, flags) as Promise<number>,
+        registerUrl: (url: string) =>
+            ipcRenderer.invoke('anyfs-native:registerUrl', url) as Promise<{
+                proxyUrl: string;
+                id: string;
+            }>,
+        unregisterUrl: (id: string) =>
+            ipcRenderer.invoke('anyfs-native:unregisterUrl', id) as Promise<void>,
+        diskClose: (h: number) =>
+            ipcRenderer.invoke('anyfs-native:diskClose', h) as Promise<number>,
+        diskListJson: (h: number) =>
+            ipcRenderer.invoke('anyfs-native:diskListJson', h) as Promise<string>,
+        diskMetaJson: (h: number) =>
+            ipcRenderer.invoke('anyfs-native:diskMetaJson', h) as Promise<string>,
+        diskEnter: (h: number, part: number, flags: number) =>
+            ipcRenderer.invoke('anyfs-native:diskEnter', h, part, flags) as Promise<string>,
+        mountWhole: (h: number, fstype: string, flags: number) =>
+            ipcRenderer.invoke('anyfs-native:mountWhole', h, fstype, flags) as Promise<string>,
+        readdirJson: (path: string) =>
+            ipcRenderer.invoke('anyfs-native:readdirJson', path) as Promise<string>,
+        lstatJson: (path: string) =>
+            ipcRenderer.invoke('anyfs-native:lstatJson', path) as Promise<string>,
+        statJson: (path: string) =>
+            ipcRenderer.invoke('anyfs-native:statJson', path) as Promise<string>,
+        realpath: (path: string) =>
+            ipcRenderer.invoke('anyfs-native:realpath', path) as Promise<string>,
+        readlink: (path: string) =>
+            ipcRenderer.invoke('anyfs-native:readlink', path) as Promise<string>,
+        fileOpen: (path: string, flags: number) =>
+            ipcRenderer.invoke('anyfs-native:fileOpen', path, flags) as Promise<number>,
+        pread: (fd: number, n: number, off: number) =>
+            ipcRenderer.invoke('anyfs-native:pread', fd, n, off) as Promise<{
+                rc: number;
+                data: Uint8Array;
+            }>,
+        fileClose: (fd: number) =>
+            ipcRenderer.invoke('anyfs-native:fileClose', fd) as Promise<number>,
+    };
+    contextBridge.exposeInMainWorld('anyfsNative', anyfsNative);
+}
