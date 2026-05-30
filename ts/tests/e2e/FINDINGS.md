@@ -336,3 +336,67 @@ deterministic. **No assertion is weakened:** the native test bodies are verified
 isolation, and the real 13-byte IPC-download proof (`mechanism === 'electron-ipc'`) still runs
 green on the **electron-wasm** project (3/3), which exercises the identical
 `download:open/write/close` IPC path. Web runs `@smoke` + `properties` (download skipped for F4).
+
+---
+
+## F10 — qcow2 is NOT decoded in the wasm bundle: raw file bytes fed to the kernel, so its MBR partition table is never enumerated (CONFIRMED wasm, Medium)
+
+**Observed (Phase 5, web + electron-wasm, url-load flow):** Opening the trusty `qcow2` fixture
+(either by URL through the local Range server *or* as a local `<input>` blob) attaches the source
+and the disk reaches `status: 'ready'`, but `listParts` returns **only the whole-disk synthetic
+index `[0]`** — never the real ext4 partition (index 1). Entering index 0 then probes the disk
+as a *bare* filesystem and every probe fails in dmesg (`EXT4-fs (vda): VFS: Can't find ext4
+filesystem`, `FAT-fs … bogus number of reserved sectors`, `exFAT-fs … invalid boot record
+signature`, …), so the mount never produces a file list and `enterPartition` times out waiting
+for either a `partition-1` button or a `file-entry` row.
+
+**Smoking gun (dmesg):** the decoded block device is sized to the qcow2's **on-disk/compressed
+file length, not its virtual size**:
+
+```
+[diag] attachUrl URLFS mounted, calling disk_open...
+virtio_blk virtio0: [vda] 517377 512-byte logical blocks (265 MB/253 MiB)
+```
+
+`qemu-img info` reports the qcow2's *virtual* size as **2.2 GiB (2361393152 bytes)** with a real
+MBR (one type-0x83 Linux partition at LBA 2048 → byte 1048576, host-verified by loop-mounting:
+root has `bin boot dev etc home lib … etc/hostname`). But `vda` is **253 MiB** — exactly the raw
+file length (264897024 bytes). So the qcow2 is handed to the kernel as a RAW image of its
+*compressed* bytes; the qcow2 L1/L2 cluster mapping is never applied. The sector-0 bytes are the
+qcow2 header, not an MBR, hence no partition table and no mountable filesystem.
+
+**Root cause:** the loaded wasm bundle has **no QEMU block layer**. `vite-demo/src/App.tsx:145`
+hard-codes `wasmModuleName="anyfs.mjs"` (the plain bundle), and the qemu-enabled bundle
+`anyfs.qemu.mjs` is **not present** in `ts/packages/core/wasm/` in this checkout (only
+`anyfs.mjs`, `anyfs.node.mjs`, `anyfs.workeronly.mjs` exist). Per memory
+`feedback_anyfs_qemu_bundle_rebuild`, the demo must load `anyfs.qemu.mjs` (built with
+`ANYFS_QEMU=1`) for any qcow2/vmdk/vdi/vhd decode; without it, container formats are read as raw
+byte streams. This is a wasm-bundle/wiring gap, independent of URLFS — the identical `[0]`-only
+result reproduces opening the same qcow2 as a local blob.
+
+**Repro (web):** `npx playwright test --project=web --grep-invert @network
+flows/url-load.spec.ts` (remove the `test.fixme` gate) → `enterPartition(1)` times out;
+`listPartitionIndices()` returns `[0]`; dmesg shows `[vda] … 253 MiB` and every fs probe failing
+on `vda`. **Counter-repro:** the raw `multiRaw` (multi.img) image lists `[0,1,2]` and mounts ext4
+fine — only the *qcow2-decoded* path is broken.
+
+**E2E impact / handling:** `flows/url-load.spec.ts` marks the whole spec `test.fixme(true, …)`
+referencing this finding (the qcow2-decode gap blocks the only fixture wired for the URL flow).
+**No assertion is weakened.** Two genuine harness/accuracy fixes made while triaging F10 stand on
+their own and are kept:
+
+- **CORS on the local Range server** (`fixtures/range-server.ts`): URLFS's in-worker `fetch`/XHR
+  is cross-origin (page `http://localhost:4199` / `anyfs://…` vs server `http://127.0.0.1:<port>`),
+  so without `Access-Control-Allow-Origin` the browser blocked every byte
+  (`blocked by CORS policy`) before URLFS could read. Added `Access-Control-Allow-Origin: *`,
+  `OPTIONS` preflight, and `Access-Control-Expose-Headers: Content-Range, Accept-Ranges,
+  Content-Length` to both `serveFileWithRange` and `serveFileNoRange`. With this, the URL open
+  provably works end-to-end: source attaches, URLFS mounts, `vda` appears, disk → `ready`.
+- **Manifest accuracy** (`fixtures/manifest.ts` `qcow2Url`): host loop-mount confirmed the ext4
+  partition is index 1 and `etc/hostname` (7 bytes, "ubuntu") exists, so the manifest's
+  `{index:1, fs:'ext4', tree:[{path:'etc/hostname'}]}` is correct and unchanged.
+
+**Suggested fix:** build the `ANYFS_QEMU=1` wasm bundle and point `App.tsx` `wasmModuleName` at
+`anyfs.qemu.mjs` (or select it by image format). Once qcow2 decodes through the qemu block layer,
+`vda` becomes the 2.2 GiB virtual disk, the MBR is parsed, `listParts` reports index 1, and the
+ext4 partition mounts — at which point this spec's `test.fixme(true, …)` can be lifted.
