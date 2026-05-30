@@ -368,22 +368,29 @@ function installDrivesIpc() {
 // whole-disk mounting is now sessionEnter(h, 0, flags)); keep this in lockstep
 // with packages/anyfs-native/src/binding.cc or every IPC handler below calls
 // an undefined function.
+//
+// Return-type convention: sync ops (lifecycle, QEMU-thread-affine) return
+// plain values; async ops (IO-heavy, moved to libuv thread pool via
+// AsyncWorker) return Promise<T>.
 type AnyfsNativeModule = {
+    // sync lifecycle
     kernelInit(memMb: number, loglevel: number): number;
     kernelHalt(): number;
     sessionOpen(imagePath: string, flags: number): number;
     sessionClose(h: number): number;
-    sessionListJson(h: number): string;
-    sessionMetaJson(h: number): string;
-    sessionEnter(h: number, part: number, flags: number): string;
-    readdirJson(path: string): string;
-    lstatJson(path: string): string;
-    statJson(path: string): string;
-    realpath(path: string): string;
-    readlink(path: string): string;
-    fileOpen(path: string, flags: number): number;
-    pread(fd: number, buf: Uint8Array, n: number, off: number): number;
-    fileClose(fd: number): number;
+    // async IO (thread pool)
+    sessionListJson(h: number): Promise<string>;
+    sessionMetaJson(h: number): Promise<string>;
+    sessionEnter(h: number, part: number, flags: number): Promise<string>;
+    readdirJson(path: string): Promise<string>;
+    lstatJson(path: string): Promise<string>;
+    statJson(path: string): Promise<string>;
+    realpath(path: string): Promise<string>;
+    readlink(path: string): Promise<string>;
+    fileOpen(path: string, flags: number): Promise<number>;
+    // pread(fd, n, off) — buffer is allocated + returned by AsyncWorker
+    pread(fd: number, n: number, off: number): Promise<{ rc: number; data: Uint8Array }>;
+    fileClose(fd: number): Promise<number>;
 };
 
 let nativeMod: AnyfsNativeModule | null = null;
@@ -533,12 +540,9 @@ function installAnyfsNativeIpc() {
     // pread returns the populated Uint8Array slice — IPC structured-cloning a
     // Uint8Array is fine, and avoids the renderer having to send a buffer of
     // its own for the kernel to fill. `got` may be < n on short reads or EOF.
-    ipcMain.handle('anyfs-native:pread', (_event, fd: number, n: number, off: number) => {
+    ipcMain.handle('anyfs-native:pread', async (_event, fd: number, n: number, off: number) => {
         const m = loadNativeAddon()!;
-        const buf = new Uint8Array(n >>> 0);
-        const got = m.pread(fd, buf, n >>> 0, off);
-        if (got < 0) return { rc: got, data: new Uint8Array(0) };
-        return { rc: got, data: got === buf.length ? buf : buf.subarray(0, got) };
+        return await m.pread(fd, n >>> 0, off);
     });
     ipcMain.handle('anyfs-native:fileClose', (_event, fd: number) =>
         loadNativeAddon()!.fileClose(fd),
@@ -568,29 +572,33 @@ void app.whenReady().then(async () => {
     // the addon loads under Electron's vendored Node ABI before the renderer
     // ever touches it.
     if (process.env.ANYFS_NATIVE_SMOKE === '1') {
-        try {
-            const m = loadNativeAddon();
-            if (!m) throw new Error('addon not loadable');
-            const rc = m.kernelInit(512, 4);
-            if (rc !== 0) throw new Error(`init rc=${rc}`);
-            nativeInitDone = true;
-            const img =
-                process.env.ANYFS_NATIVE_IMAGE ||
-                resolve(__dirname, '../../vite-demo/public/disks/multi.img');
-            const h = m.sessionOpen(img, 0);
-            if (h < 0) throw new Error(`diskOpen rc=${h}`);
-            const list = m.sessionListJson(h);
-            const out = process.env.ANYFS_NATIVE_OUT || '/tmp/anyfs-native-smoke.json';
-            const fs = await import('node:fs/promises');
-            await fs.writeFile(out, list);
-            console.log(`[native:smoke] wrote disk list for ${img} to ${out}`);
-            m.sessionClose(h);
-        } catch (e) {
-            console.error('[native:smoke] failed:', e);
+        (async () => {
+            try {
+                const m = loadNativeAddon();
+                if (!m) throw new Error('addon not loadable');
+                const rc = m.kernelInit(512, 4);
+                if (rc !== 0) throw new Error(`init rc=${rc}`);
+                nativeInitDone = true;
+                const img =
+                    process.env.ANYFS_NATIVE_IMAGE ||
+                    resolve(__dirname, '../../vite-demo/public/disks/multi.img');
+                const h = m.sessionOpen(img, 0);
+                if (h < 0) throw new Error(`diskOpen rc=${h}`);
+                const list = await m.sessionListJson(h);
+                const out = process.env.ANYFS_NATIVE_OUT || '/tmp/anyfs-native-smoke.json';
+                const fs = await import('node:fs/promises');
+                await fs.writeFile(out, list);
+                console.log(`[native:smoke] wrote disk list for ${img} to ${out}`);
+                m.sessionClose(h);
+            } catch (e) {
+                console.error('[native:smoke] failed:', e);
+                app.exit(1);
+            }
+            app.exit(0);
+        })().catch((e: Error) => {
+            console.error('[native:smoke] unhandled:', e);
             app.exit(1);
-            return;
-        }
-        app.exit(0);
+        });
         return;
     }
 
