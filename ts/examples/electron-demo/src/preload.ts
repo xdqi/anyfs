@@ -57,6 +57,11 @@ const electronFile = {
 };
 contextBridge.exposeInMainWorld('electronFile', electronFile);
 
+const electronSettings = {
+    relaunch: () => ipcRenderer.invoke('settings:relaunch'),
+};
+contextBridge.exposeInMainWorld('electronSettings', electronSettings);
+
 // Tell @anyfs/core that we can fetch http(s) URLs via the main process —
 // the anyfs-url:// privileged scheme registered in main.ts is wired to
 // net.fetch and bypasses the renderer's same-origin policy. Plain

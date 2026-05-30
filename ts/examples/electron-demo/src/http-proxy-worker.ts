@@ -157,7 +157,7 @@ async function proxyGet(req: IncomingMessage, res: ServerResponse) {
 
     let upResp: Response;
     try {
-        upResp = await fetch(upstreamUrl, {
+        upResp = await fetch(upstreamUrl!, {
             method: 'GET',
             headers,
             redirect: 'follow',

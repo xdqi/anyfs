@@ -409,6 +409,13 @@ function loadNativeAddon(): AnyfsNativeModule | null {
     }
 }
 
+function installSettingsIpc() {
+    ipcMain.handle('settings:relaunch', () => {
+        app.relaunch();
+        app.exit();
+    });
+}
+
 function installAnyfsNativeIpc() {
     // Probe at startup so the renderer's feature-detect (`anyfs-native:available`)
     // is cheap and synchronous from its POV.
@@ -591,6 +598,7 @@ void app.whenReady().then(async () => {
     // The url proxy must be live in dev too — the renderer's worker still
     // rewrites URLs through it when running against the vite dev server.
     protocol.handle('anyfs-url', handleAnyfsUrlRequest);
+    installSettingsIpc();
     installDownloadIpc();
     installDialogIpc();
     installDrivesIpc();

@@ -156,14 +156,7 @@ export function SettingsDialog({ open, onClose, nativeAvailable }: SettingsDialo
                         checked={settings.cacheChunks}
                         onChange={(v) => update('cacheChunks', v)}
                     />
-                    {nativeAvailable && (
-                        <Toggle
-                            label="Disable native module"
-                            description="Force the WASM worker path even though the native Electron addon is loaded. Changing this requires a page reload to take effect."
-                            checked={settings.disableNative}
-                            onChange={(v) => update('disableNative', v)}
-                        />
-                    )}
+                    {nativeAvailable && <DisableNativeToggle settings={settings} update={update} />}
                 </div>
             </div>
         </div>
@@ -241,5 +234,80 @@ function Toggle({ label, description, checked, onChange }: ToggleProps) {
                 </span>
             </span>
         </label>
+    );
+}
+
+interface DisableNativeToggleProps {
+    settings: Settings;
+    update: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+}
+
+function DisableNativeToggle({ settings, update }: DisableNativeToggleProps) {
+    const [pending, setPending] = useState<boolean | null>(null);
+    const [showConfirm, setShowConfirm] = useState(false);
+
+    return (
+        <>
+            <Toggle
+                label="Disable native module"
+                description="Force the WASM worker path even though the native Electron addon is loaded. Changing this requires restarting the app."
+                checked={pending ?? settings.disableNative}
+                onChange={(v) => {
+                    setPending(v);
+                    setShowConfirm(true);
+                }}
+            />
+            {showConfirm && (
+                <div
+                    className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60"
+                    onClick={() => {
+                        setShowConfirm(false);
+                        setPending(null);
+                    }}
+                >
+                    <div
+                        className="bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-lg p-6 max-w-sm mx-4 shadow-xl"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <p className="text-zinc-900 dark:text-zinc-100 text-sm font-medium">
+                            Changing this requires restarting the app. Restart now?
+                        </p>
+                        <div className="flex gap-3 mt-4 justify-end">
+                            <button
+                                className="px-3 py-1.5 text-sm text-zinc-600 dark:text-zinc-400 hover:text-zinc-900"
+                                onClick={() => {
+                                    setShowConfirm(false);
+                                    setPending(null);
+                                }}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-md hover:bg-emerald-700"
+                                onClick={() => {
+                                    update('disableNative', pending!);
+                                    try {
+                                        const raw = localStorage.getItem('anyfs.settings.v1');
+                                        const current = raw
+                                            ? (JSON.parse(raw) as Record<string, unknown>)
+                                            : {};
+                                        current.disableNative = pending!;
+                                        localStorage.setItem(
+                                            'anyfs.settings.v1',
+                                            JSON.stringify(current),
+                                        );
+                                    } catch {
+                                        /* quota / disabled */
+                                    }
+                                    (window as any).electronSettings?.relaunch?.();
+                                }}
+                            >
+                                Restart
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </>
     );
 }
