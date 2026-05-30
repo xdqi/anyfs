@@ -11,6 +11,7 @@ import { KernelStatusBar } from './components/KernelStatusBar';
 import { FilePicker } from './components/FilePicker';
 import { DropOverlay } from './components/DropOverlay';
 import { clearNavHash, sourceName, fileToSource } from './utils';
+import { TestStateBridge, e2eEnabled } from './test-bridge';
 
 const WORKER_URL = new URL('/wasm/anyfs.worker.js', window.location.href).href;
 
@@ -27,25 +28,28 @@ export function App() {
     // CDP test hook — exposes openUrl / openPath so headless tests can
     // drive disk mounting without fighting React synthetic events.
     useEffect(() => {
-        const api = {
-            openUrl: (url: string) => {
-                console.log('[APP] openUrl called with', url);
-                const name = sourceName({ kind: 'url', url });
-                console.log('[APP] openUrl setting source name=', name);
-                setSource({ kind: 'url', url, name });
-            },
-            openPath: (path: string) => {
-                const name = sourceName({ kind: 'path', path });
-                setSource({ kind: 'path', path, name });
-            },
-            /** Directly set source to a file — CDP setFileInputFiles trigger. */
-            setSourceFile: (file: File) => {
-                setSource({ kind: 'blob', blob: file });
-            },
+        if (!e2eEnabled()) return;
+        // Coexist with TestStateBridge's getState/lastError on the same object —
+        // attach only the setter keys rather than replacing __anyfsTest.
+        const api = ((window as any).__anyfsTest ??= {});
+        api.openUrl = (url: string) => {
+            console.log('[APP] openUrl called with', url);
+            const name = sourceName({ kind: 'url', url });
+            console.log('[APP] openUrl setting source name=', name);
+            setSource({ kind: 'url', url, name });
         };
-        (window as any).__anyfsTest = api;
+        api.openPath = (path: string) => {
+            const name = sourceName({ kind: 'path', path });
+            setSource({ kind: 'path', path, name });
+        };
+        /** Directly set source to a file — CDP setFileInputFiles trigger. */
+        api.setSourceFile = (file: File) => {
+            setSource({ kind: 'blob', blob: file });
+        };
         return () => {
-            delete (window as any).__anyfsTest;
+            delete api.openUrl;
+            delete api.openPath;
+            delete api.setSourceFile;
         };
     }, []);
     const [selectedPart, setSelectedPart] = useState<number | null>(null);
@@ -139,11 +143,12 @@ export function App() {
                 workerUrl={WORKER_URL}
                 wasmBaseUrl="/wasm/"
                 wasmModuleName="anyfs.mjs"
-                mountOpts={{ loglevel: 7 }}
+                mountOpts={{ loglevel: e2eEnabled() ? 7 : 3 }}
                 prewarm
                 env={env}
                 {...(settingsDisableNative ? { disableNative: true as const } : {})}
             >
+                <TestStateBridge />
                 <div className="h-screen flex flex-col">
                     <DropOverlay onDrop={onDropFile} />
                     <TopBar
