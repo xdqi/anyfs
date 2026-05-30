@@ -239,8 +239,45 @@ list are real; and the Electron **IPC download mechanism** (`electronDownload.op
 `download:open` writing to `ANYFS_TEST_DOWNLOAD_DIR`) was verified end-to-end independently
 (13 bytes "hello, world\n" written + read back, `mechanism: 'electron-ipc'`). The full
 mount→activate→download chain just can't complete in-app until F7 (and, for the picker button,
-F6) are resolved. Note: the **wasm** Electron backend is also blocked for file sources by a
-separate quirk — `utils.fileToSource` always calls `window.electronFile.pathFor(file)` (exposed
-in both modes), converting every dropped/picked File into a `{kind:'path'}` source, which the
-wasm backend rejects ("source kind 'path' is not supported by the wasm backend"). So in Electron,
-wasm can only take URL sources, not files.
+F6) are resolved. Note: the **wasm** Electron backend was also blocked for file sources by a
+separate quirk (now **F8, fixed** — see below).
+
+---
+
+## F8 — Electron **wasm** backend rejected every local file (✅ FIXED, was High — blocked all electron-wasm flow specs)
+
+**Observed (Phase 3.4, electron-wasm wire smoke):** With `ANYFS_DISABLE_NATIVE=1` (the
+`electron-wasm` project), `window.anyfsNative` is correctly absent and `getState().mode==='wasm'`,
+so `ElectronDriver.openImage` correctly takes its wasm branch and feeds the image through the
+hidden legacy `<input type=file>` (streamed from disk, like WebDriver). But the renderer then
+errored `source kind "path" is not supported by the wasm backend` and `status` went to `error`.
+
+**Root cause (two compounding bugs):**
+
+1. `examples/vite-demo/src/utils.ts` `fileToSource()` converted EVERY File to `{kind:'path'}`
+   whenever `window.electronFile.pathFor` existed — but the `electronFile` bridge is exposed by
+   preload in BOTH native and wasm modes. So even in wasm mode (native disabled), a picked/dropped
+   File became a host-path source, which the wasm backend cannot consume.
+2. `packages/core/src/dispatch.ts` `createSession('electron', …)` wasm fallback set
+   `allowedKinds = {'url'}` only (comment: "blob is not [legal] (frontend resolves File→path
+   before producing source)"). So even a `{kind:'blob'}` source would have been rejected — the
+   electron-wasm path had **no** working local-file mechanism at all (and the vite-demo never wires
+   the `pathLoopbackUrl` cap that would make `path` legal via the loopback proxy).
+
+**Repro:** electron-wasm (`ANYFS_DISABLE_NATIVE=1`) → drop/pick any local image → "source kind
+'path' is not supported by the wasm backend".
+
+**✅ FIX APPLIED:**
+
+- `utils.fileToSource` now gates the path conversion on `getAnyfsNative()` (the same
+  `window.anyfsNative` signal `App.tsx` uses to choose `env`), not on `electronFile.pathFor`
+  alone. Only the **native** backend (which can mount a host path directly) gets `{kind:'path'}`;
+  in a plain browser OR in Electron-wasm the File stays `{kind:'blob'}` for the WORKERFS path.
+- `dispatch.ts` electron-wasm `allowedKinds` now includes `'blob'` (`{'blob','url'}`, plus
+  `'path'` only with the loopback-proxy cap). `WasmSession.attachBlob` mounts a File directly —
+  exactly the web backend's path, which mounts ext4 since F1 was fixed.
+
+Rebuilt `@anyfs/core` dist (`pnpm --filter @anyfs/core build`) since vite-demo consumes
+`@anyfs/core/dist`. Verified: the electron-wasm wire smoke now opens multi.img and lists
+partitions `[0,1,2]`; web and electron-native unaffected (web has no `anyfsNative` → still `blob`;
+native doesn't use `fileToSource`). No regression in either.

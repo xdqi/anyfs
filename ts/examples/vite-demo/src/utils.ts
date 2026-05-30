@@ -1,4 +1,4 @@
-import { applyUrlProxy, getUrlProxyPrefix } from '@anyfs/core';
+import { applyUrlProxy, getAnyfsNative, getUrlProxyPrefix } from '@anyfs/core';
 import type { SessionSource } from '@anyfs/core';
 
 /** Wipe the in-disk navigation hash. */
@@ -27,16 +27,21 @@ export function sourceName(s: SessionSource): string {
 }
 
 /**
- * Convert a browser File into a SessionSource. Under Electron, if the
- * `electronFile.pathFor` bridge is available, the File is translated to
- * an absolute host path and `{kind:'path'}` is returned. Otherwise the
- * file stays as-is with `{kind:'blob'}`.
+ * Convert a browser File into a SessionSource. Under Electron *with the native
+ * backend active*, if the `electronFile.pathFor` bridge is available the File is
+ * translated to an absolute host path and `{kind:'path'}` is returned (the
+ * native LKL kernel mounts the host path directly). Otherwise — in a plain
+ * browser, OR in Electron when native is disabled (wasm fallback) — the file
+ * stays as `{kind:'blob'}` so the WORKERFS/wasm path can mount it. We gate on
+ * `getAnyfsNative()` rather than `electronFile.pathFor` alone because the
+ * `electronFile` bridge is exposed in BOTH modes, but only the native backend
+ * can consume a host path; the wasm backend rejects `{kind:'path'}`.
  */
 export async function fileToSource(file: File): Promise<SessionSource> {
     const ef = (window as any).electronFile as
         | { pathFor?: (f: File) => Promise<string> }
         | undefined;
-    if (ef?.pathFor) {
+    if (ef?.pathFor && getAnyfsNative()) {
         try {
             const p = await ef.pathFor(file);
             const name = sourceName({ kind: 'path', path: p });

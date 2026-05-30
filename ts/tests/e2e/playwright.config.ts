@@ -20,6 +20,18 @@ export default defineConfig({
             testMatch: ['flows/**/*.spec.ts'],
             use: { baseURL: `http://localhost:${WEB_PORT}` },
         },
+        // The electron projects launch their own Electron app (no page/baseURL);
+        // they run the shared flows plus electron-only specs. They ignore the
+        // global webServer below, but it still starts for the whole run — that's
+        // fine: it builds the vite-demo renderer the electron apps also serve.
+        {
+            name: 'electron-native',
+            testMatch: ['flows/**/*.spec.ts', 'electron-only/**/*.spec.ts'],
+        },
+        {
+            name: 'electron-wasm',
+            testMatch: ['flows/**/*.spec.ts', 'electron-only/**/*.spec.ts'],
+        },
     ],
     webServer: {
         command: `pnpm --filter vite-demo build && pnpm --filter vite-demo preview --port ${WEB_PORT} --strictPort`,

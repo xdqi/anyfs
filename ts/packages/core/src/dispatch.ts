@@ -61,11 +61,13 @@ export function createSession(
                 allowedKinds: new Set(['path', 'url']),
             };
         }
-        // Fall through to wasm. Under electron caps, path is legal (via
-        // loopback proxy); blob is not (frontend resolves File→path before
-        // producing source).
+        // Fall through to wasm. blob is legal — the wasm WORKERFS path mounts a
+        // File object directly (same as the web backend); when native is
+        // disabled the frontend keeps local files as {kind:'blob'} rather than
+        // resolving them to a host path. path is legal only with the loopback
+        // proxy cap (path → attachUrl(loopback)).
         const caps = opts?.electronWasmCaps ?? {};
-        const kinds = new Set<SessionSource['kind']>(['url']);
+        const kinds = new Set<SessionSource['kind']>(['blob', 'url']);
         if (caps.pathLoopbackUrl) kinds.add('path');
         return { backend: 'wasm', wasmCaps: caps, allowedKinds: kinds };
     }
