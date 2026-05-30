@@ -77,13 +77,13 @@ if (!process.env.ANYFS_DISABLE_NATIVE) {
             ipcRenderer.invoke('anyfs-native:init', memMb, loglevel) as Promise<number>,
         diskOpen: (path: string, flags: number) =>
             ipcRenderer.invoke('anyfs-native:diskOpen', path, flags) as Promise<number>,
-        registerUrl: (url: string) =>
-            ipcRenderer.invoke('anyfs-native:registerUrl', url) as Promise<{
+        startProxy: (payload: { upstreamUrl?: string; localPath?: string }) =>
+            ipcRenderer.invoke('anyfs-native:startProxy', payload) as Promise<{
                 proxyUrl: string;
                 id: string;
             }>,
-        unregisterUrl: (id: string) =>
-            ipcRenderer.invoke('anyfs-native:unregisterUrl', id) as Promise<void>,
+        stopProxy: (id: string) =>
+            ipcRenderer.invoke('anyfs-native:stopProxy', id) as Promise<void>,
         diskClose: (h: number) =>
             ipcRenderer.invoke('anyfs-native:diskClose', h) as Promise<number>,
         diskListJson: (h: number) =>
@@ -92,8 +92,7 @@ if (!process.env.ANYFS_DISABLE_NATIVE) {
             ipcRenderer.invoke('anyfs-native:diskMetaJson', h) as Promise<string>,
         diskEnter: (h: number, part: number, flags: number) =>
             ipcRenderer.invoke('anyfs-native:diskEnter', h, part, flags) as Promise<string>,
-        mountWhole: (h: number, fstype: string, flags: number) =>
-            ipcRenderer.invoke('anyfs-native:mountWhole', h, fstype, flags) as Promise<string>,
+        // mountWhole was deleted from the addon — whole-disk is now diskEnter(h, 0, flags)
         readdirJson: (path: string) =>
             ipcRenderer.invoke('anyfs-native:readdirJson', path) as Promise<string>,
         lstatJson: (path: string) =>

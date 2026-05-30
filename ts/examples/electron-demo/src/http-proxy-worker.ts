@@ -18,9 +18,13 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
+import { statSync, createReadStream } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-const { upstreamUrl } = workerData as { upstreamUrl: string };
+const { upstreamUrl, localPath } = workerData as {
+    upstreamUrl?: string;
+    localPath?: string;
+};
 
 let contentLength = 0;
 let acceptRanges = true;
@@ -31,32 +35,48 @@ function log(msg: string) {
 }
 
 async function main() {
-    log(`starting for ${upstreamUrl}`);
+    const label = upstreamUrl ?? localPath ?? '?';
+    log(`starting for ${label}`);
 
-    // ── HEAD probe (fetch follows redirects by default) ──────────────────
-    log(`typeof fetch=${typeof fetch} globalThis.fetch=${typeof (globalThis as any).fetch}`);
-    let headResp: Response;
-    try {
-        headResp = await fetch(upstreamUrl, {
-            method: 'HEAD',
-            redirect: 'follow',
-            signal: AbortSignal.timeout(15000),
-        });
-    } catch (err) {
-        const e = err as Error;
-        const cause = (e as any).cause;
-        log(
-            `HEAD probe failed: message="${e.message}" cause="${cause?.message}" code="${cause?.code}" name="${e.name}" stack="${e.stack?.substring(0, 300)}"`,
-        );
-        parentPort!.postMessage({
-            error: `HEAD probe failed: ${e.message} (cause: ${cause?.message || 'none'})`,
-        });
-        process.exit(1);
-        return;
+    if (localPath) {
+        // Local file mode: stat for size, serve with Range support.
+        try {
+            const st = statSync(localPath);
+            contentLength = st.size;
+            acceptRanges = true;
+        } catch (err) {
+            log(`stat failed: ${(err as Error).message}`);
+            parentPort!.postMessage({ error: `stat failed: ${(err as Error).message}` });
+            process.exit(1);
+            return;
+        }
+        log(`localPath OK: size=${contentLength}`);
+    } else {
+        // Remote URL mode: HEAD probe via fetch.
+        log(`typeof fetch=${typeof fetch} globalThis.fetch=${typeof (globalThis as any).fetch}`);
+        let headResp: Response;
+        try {
+            headResp = await fetch(upstreamUrl!, {
+                method: 'HEAD',
+                redirect: 'follow',
+                signal: AbortSignal.timeout(15000),
+            });
+        } catch (err) {
+            const e = err as Error;
+            const cause = (e as any).cause;
+            log(
+                `HEAD probe failed: message="${e.message}" cause="${cause?.message}" code="${cause?.code}" name="${e.name}" stack="${e.stack?.substring(0, 300)}"`,
+            );
+            parentPort!.postMessage({
+                error: `HEAD probe failed: ${e.message} (cause: ${cause?.message || 'none'})`,
+            });
+            process.exit(1);
+            return;
+        }
+        contentLength = parseInt(headResp.headers.get('content-length') ?? '0', 10);
+        acceptRanges = headResp.headers.get('accept-ranges') === 'bytes';
+        log(`HEAD probe OK: content-length=${contentLength}, accept-ranges=${acceptRanges}`);
     }
-    contentLength = parseInt(headResp.headers.get('content-length') ?? '0', 10);
-    acceptRanges = headResp.headers.get('accept-ranges') === 'bytes';
-    log(`HEAD probe OK: content-length=${contentLength}, accept-ranges=${acceptRanges}`);
 
     // ── HTTP server ──────────────────────────────────────────────────────
     const server = createServer((req, res) => {
@@ -71,6 +91,10 @@ async function main() {
             return;
         }
         if (req.method === 'GET') {
+            if (localPath) {
+                serveLocalFile(req, res);
+                return;
+            }
             proxyGet(req, res);
             return;
         }
@@ -94,6 +118,36 @@ async function main() {
             server.close();
         }
     });
+}
+
+function serveLocalFile(req: IncomingMessage, res: ServerResponse) {
+    const total = contentLength;
+    const { range } = req.headers as { range?: string };
+
+    if (range) {
+        const m = /^bytes=(\d+)-(\d*)$/.exec(range);
+        if (m) {
+            const start = parseInt(m[1], 10);
+            const end = m[2] ? parseInt(m[2], 10) : total - 1;
+            if (start >= total) {
+                res.writeHead(416, { 'Content-Range': `bytes */${total}` });
+                res.end();
+                return;
+            }
+            res.writeHead(206, {
+                'Content-Range': `bytes ${start}-${end}/${total}`,
+                'Content-Length': String(end - start + 1),
+                'Accept-Ranges': 'bytes',
+            });
+            createReadStream(localPath!, { start, end }).pipe(res);
+            return;
+        }
+    }
+    res.writeHead(200, {
+        'Content-Length': String(total),
+        'Accept-Ranges': 'bytes',
+    });
+    createReadStream(localPath!).pipe(res);
 }
 
 async function proxyGet(req: IncomingMessage, res: ServerResponse) {

@@ -10,14 +10,17 @@ export interface AnyfsNativeBridge {
     diskListJson(h: number): Promise<string>;
     diskMetaJson(h: number): Promise<string>;
     diskEnter(h: number, part: number, flags: number): Promise<string>;
-    mountWhole(h: number, fstype: string, flags: number): Promise<string>;
+    // mountWhole was deleted from the addon — whole-disk is now diskEnter(h, 0, flags)
     readdirJson(path: string): Promise<string>;
     lstatJson(path: string): Promise<string>;
     statJson(path: string): Promise<string>;
     realpath(path: string): Promise<string>;
     readlink(path: string): Promise<string>;
-    registerUrl(url: string): Promise<{ proxyUrl: string; id: string }>;
-    unregisterUrl(id: string): Promise<void>;
+    startProxy(payload: {
+        upstreamUrl?: string;
+        localPath?: string;
+    }): Promise<{ proxyUrl: string; id: string }>;
+    stopProxy(id: string): Promise<void>;
     fileOpen(path: string, flags: number): Promise<number>;
     pread(fd: number, n: number, off: number): Promise<{ rc: number; data: Uint8Array }>;
     fileClose(fd: number): Promise<number>;
@@ -87,14 +90,14 @@ export class NativeSession extends AnyfsSessionBase {
 
     async attachUrl(url: string, _name?: string): Promise<void> {
         if (this.handle >= 0) throw new Error('NativeSession: already attached');
-        const { proxyUrl, id } = await this.bridge.registerUrl(url);
+        const { proxyUrl, id } = await this.bridge.startProxy({ upstreamUrl: url });
         this.proxyId = id;
         try {
             const h = await this.chain(() => this.bridge.diskOpen(proxyUrl, 1));
             if (h < 0) throw new Error(`diskOpen(${proxyUrl}) failed: rc=${h}`);
             this.handle = h;
         } catch (err) {
-            await this.bridge.unregisterUrl(id);
+            await this.bridge.stopProxy(id);
             this.proxyId = null;
             throw err;
         }
@@ -211,7 +214,7 @@ export class NativeSession extends AnyfsSessionBase {
         }
         if (this.proxyId) {
             try {
-                await this.bridge.unregisterUrl(this.proxyId);
+                await this.bridge.stopProxy(this.proxyId);
             } catch {
                 /* best effort */
             }

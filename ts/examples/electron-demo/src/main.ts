@@ -363,15 +363,19 @@ function installDrivesIpc() {
 // the demo still launches if the .node is missing for the current platform
 // (e.g. dev on a host without it built) — renderer feature-detects via
 // `window.anyfsNative` and falls back to the wasm path.
+// Mirrors the N-API exports of anyfs_native.node. These were renamed in the
+// session-API refactor (init→kernelInit, disk*→session*, mountWhole deleted —
+// whole-disk mounting is now sessionEnter(h, 0, flags)); keep this in lockstep
+// with packages/anyfs-native/src/binding.cc or every IPC handler below calls
+// an undefined function.
 type AnyfsNativeModule = {
-    init(memMb: number, loglevel: number): number;
+    kernelInit(memMb: number, loglevel: number): number;
     kernelHalt(): number;
-    diskOpen(imagePath: string, flags: number): number;
-    diskClose(h: number): number;
-    diskListJson(h: number): string;
-    diskMetaJson(h: number): string;
-    diskEnter(h: number, part: number, flags: number): string;
-    mountWhole(h: number, fstype: string, flags: number): string;
+    sessionOpen(imagePath: string, flags: number): number;
+    sessionClose(h: number): number;
+    sessionListJson(h: number): string;
+    sessionMetaJson(h: number): string;
+    sessionEnter(h: number, part: number, flags: number): string;
     readdirJson(path: string): string;
     lstatJson(path: string): string;
     statJson(path: string): string;
@@ -421,57 +425,62 @@ function installAnyfsNativeIpc() {
         const m = loadNativeAddon();
         if (!m) throw new Error('anyfs-native addon not loadable');
         if (nativeInitDone) return 0; // idempotent — kernel is global
-        const rc = m.init(memMb >>> 0, loglevel >>> 0);
+        const rc = m.kernelInit(memMb >>> 0, loglevel >>> 0);
         if (rc === 0) nativeInitDone = true;
         return rc;
     });
 
     ipcMain.handle('anyfs-native:diskOpen', (_event, path: string, flags: number) => {
         const m = loadNativeAddon()!;
-        return m.diskOpen(path, flags >>> 0);
+        return m.sessionOpen(path, flags >>> 0);
     });
 
-    // URL proxy: each disk gets its own Worker thread running an HTTP server
-    // on a random port. The addon calls block the main thread's event loop
-    // (synchronous C → QEMU → libcurl), so the proxy MUST be on a separate
-    // thread with its own libuv loop.
-    ipcMain.handle('anyfs-native:registerUrl', async (_event, url: string) => {
-        const workerPath = join(__dirname, 'http-proxy-worker.cjs');
-        console.log(`[anyfs-native] spawning proxy worker for ${url}`);
-        const worker = new Worker(workerPath, {
-            workerData: { upstreamUrl: url },
-        });
-        worker.on('exit', (code) => {
-            console.log(`[anyfs-native] proxy worker exited with code=${code}`);
-        });
-        worker.on('error', (err) => {
-            console.error(`[anyfs-native] proxy worker error: ${err.message}`);
-        });
-        const result = await new Promise<{ port: number } | { error: string }>(
-            (resolve, reject) => {
-                const timer = setTimeout(() => {
-                    reject(new Error('proxy worker startup timed out after 20s'));
-                }, 20000);
-                worker.once('message', (msg) => {
-                    clearTimeout(timer);
-                    resolve(msg);
-                });
-                worker.once('error', (err) => {
-                    clearTimeout(timer);
-                    reject(err);
-                });
-            },
-        );
-        if ('error' in result) {
-            throw new Error(`proxy worker failed: ${result.error}`);
-        }
-        const { port } = result;
-        console.log(`[anyfs-native] proxy worker listening on 127.0.0.1:${port}`);
-        const id = `proxy-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-        diskProxies.set(id, { worker, port });
-        return { proxyUrl: `http://127.0.0.1:${port}/`, id };
-    });
-    ipcMain.handle('anyfs-native:unregisterUrl', async (_event, id: string) => {
+    // Unified per-disk HTTP proxy: each disk gets its own Worker thread
+    // running an HTTP server on a random port. Handles both remote URLs
+    // (fetch + proxy) and local file paths (fs.createReadStream + Range).
+    // The addon calls block the main thread's event loop, so the proxy MUST
+    // live on a separate thread with its own libuv loop.
+    ipcMain.handle(
+        'anyfs-native:startProxy',
+        async (_event, payload: { upstreamUrl?: string; localPath?: string }) => {
+            const workerPath = join(__dirname, 'http-proxy-worker.cjs');
+            const label = payload.upstreamUrl ?? payload.localPath ?? '?';
+            console.log(`[anyfs-native] spawning proxy worker for ${label}`);
+            const worker = new Worker(workerPath, {
+                workerData: payload,
+            });
+            worker.on('exit', (code) => {
+                console.log(`[anyfs-native] proxy worker exited with code=${code}`);
+            });
+            worker.on('error', (err) => {
+                console.error(`[anyfs-native] proxy worker error: ${err.message}`);
+            });
+            const result = await new Promise<{ port: number } | { error: string }>(
+                (resolve, reject) => {
+                    const timer = setTimeout(() => {
+                        reject(new Error('proxy worker startup timed out after 20s'));
+                    }, 20000);
+                    worker.once('message', (msg) => {
+                        clearTimeout(timer);
+                        resolve(msg);
+                    });
+                    worker.once('error', (err) => {
+                        clearTimeout(timer);
+                        reject(err);
+                    });
+                },
+            );
+            if ('error' in result) {
+                throw new Error(`proxy worker failed: ${result.error}`);
+            }
+            const { port } = result;
+            console.log(`[anyfs-native] proxy worker listening on 127.0.0.1:${port}`);
+            const id = `proxy-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+            diskProxies.set(id, { worker, port });
+            return { proxyUrl: `http://127.0.0.1:${port}/`, id };
+        },
+    );
+    ipcMain.handle('anyfs-native:stopProxy', async (_event, id: string) => {
         const entry = diskProxies.get(id);
         if (entry) {
             entry.worker.postMessage('stop');
@@ -479,20 +488,21 @@ function installAnyfsNativeIpc() {
         }
     });
     ipcMain.handle('anyfs-native:diskClose', (_event, h: number) =>
-        loadNativeAddon()!.diskClose(h),
+        loadNativeAddon()!.sessionClose(h),
     );
     ipcMain.handle('anyfs-native:diskListJson', (_event, h: number) =>
-        loadNativeAddon()!.diskListJson(h),
+        loadNativeAddon()!.sessionListJson(h),
     );
     ipcMain.handle('anyfs-native:diskMetaJson', (_event, h: number) =>
-        loadNativeAddon()!.diskMetaJson(h),
+        loadNativeAddon()!.sessionMetaJson(h),
     );
     ipcMain.handle('anyfs-native:diskEnter', (_event, h: number, part: number, flags: number) =>
-        loadNativeAddon()!.diskEnter(h, part >>> 0, flags >>> 0),
+        loadNativeAddon()!.sessionEnter(h, part >>> 0, flags >>> 0),
     );
-    ipcMain.handle('anyfs-native:mountWhole', (_event, h: number, fstype: string, flags: number) =>
-        loadNativeAddon()!.mountWhole(h, fstype, flags >>> 0),
-    );
+    // `mountWhole` was deleted in the session-API refactor — whole-disk
+    // mounting is now diskEnter(h, 0, flags). The preload still exposes a
+    // mountWhole bridge method for back-compat, but nothing in the renderer
+    // calls it, so no IPC handler is registered here.
 
     ipcMain.handle('anyfs-native:readdirJson', (_event, path: string) =>
         loadNativeAddon()!.readdirJson(path),
@@ -554,20 +564,20 @@ void app.whenReady().then(async () => {
         try {
             const m = loadNativeAddon();
             if (!m) throw new Error('addon not loadable');
-            const rc = m.init(512, 4);
+            const rc = m.kernelInit(512, 4);
             if (rc !== 0) throw new Error(`init rc=${rc}`);
             nativeInitDone = true;
             const img =
                 process.env.ANYFS_NATIVE_IMAGE ||
                 resolve(__dirname, '../../vite-demo/public/disks/multi.img');
-            const h = m.diskOpen(img, 0);
+            const h = m.sessionOpen(img, 0);
             if (h < 0) throw new Error(`diskOpen rc=${h}`);
-            const list = m.diskListJson(h);
+            const list = m.sessionListJson(h);
             const out = process.env.ANYFS_NATIVE_OUT || '/tmp/anyfs-native-smoke.json';
             const fs = await import('node:fs/promises');
             await fs.writeFile(out, list);
             console.log(`[native:smoke] wrote disk list for ${img} to ${out}`);
-            m.diskClose(h);
+            m.sessionClose(h);
         } catch (e) {
             console.error('[native:smoke] failed:', e);
             app.exit(1);
