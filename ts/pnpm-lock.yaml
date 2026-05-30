@@ -179,6 +179,9 @@ importers:
       '@playwright/test':
         specifier: ^1.60.0
         version: 1.60.0
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.19
 
 packages:
 

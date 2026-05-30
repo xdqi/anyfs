@@ -12,6 +12,7 @@
     },
     "devDependencies": {
         "@playwright/test": "^1.60.0",
-        "@anyfs/core": "workspace:*"
+        "@anyfs/core": "workspace:*",
+        "@types/node": "^22.0.0"
     }
 }
