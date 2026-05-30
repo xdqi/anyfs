@@ -416,3 +416,38 @@ their own and are kept:
 `anyfs.qemu.mjs` (or select it by image format). Once qcow2 decodes through the qemu block layer,
 `vda` becomes the 2.2 GiB virtual disk, the MBR is parsed, `listParts` reports index 1, and the
 ext4 partition mounts — at which point this spec's `test.fixme(true, …)` can be lifted.
+
+---
+
+## Phase 7 — error / edge-case flow: NO new defects (graceful failure CONFIRMED on web + electron-wasm)
+
+`flows/errors.spec.ts` exercises two failure paths and asserts the app surfaces an error rather
+than hanging or crashing. Both fail **gracefully** on web and electron-wasm — no `test.fixme`
+weakening, no F11. Recorded here for the record (and so a future regression to a *hang* is
+recognised as the loss it would be):
+
+- **Corrupt image (1 MiB of zeros, `fixtures/bad-image.ts`):** the partition scanner offers only
+  the synthetic whole-disk index `[0]` (no PT, as expected). Entering it probes the bare bytes,
+  finds no filesystem, and surfaces the inline DiskView **"Can't mount partition #N"** error —
+  `enterPartition(0)` never resolves into a file list (no bogus rows). Notably the global
+  `getState().status` stays `'ready'` (the whole-disk *attach* succeeded; the per-partition mount
+  failure renders inline in DiskView, it does NOT flip the session status to `'error'`), so the
+  surface that fires is the "Can't mount partition #" text, not `status==='error'` and not the
+  url-error-dialog. `driver.expectError('mount-failed')` catches it via that text arm. This is the
+  clean behaviour F2 introduced (the wasm no-FS hang is gone). No hang on web or electron-wasm.
+
+- **URL without Range support (`serveFileNoRange`):** the in-worker URLFS does a HEAD (no
+  `Accept-Ranges`), then a probe `Range: bytes=0-0` GET; the server answers **200** (ignoring
+  Range) instead of 206, so `url-fs.ts probeUrl` throws
+  `URLFS: server lacks Accept-Ranges: bytes (got status 200 for probe range)` during mount. The
+  worker rejects, the renderer goes to `getState().status === 'error'` (error.message carries the
+  URLFS throw), and `driver.expectError('no-range')` catches it via the `status==='error'` arm.
+  No url-error-dialog on the programmatic `openUrl` path (that dialog is the FilePicker's
+  submit-time validator), and — importantly — **no hang**: URLFS detects no-range up front rather
+  than wedging on a non-seekable stream. Confirmed on web AND electron-wasm (electron-wasm runs the
+  same in-worker URLFS, native disabled, so no main-process proxy masks it).
+
+**Backend matrix:** web 2/2 pass · electron-wasm 2/2 pass · electron-native 2/2 skipped (F9-gated
+in a `beforeEach`, consistent with the other flow specs; these cases don't mount successfully so
+F9 likely wouldn't fire, but native is gated off to never risk the 2-min `app.close()` hang — the
+error behaviour is fully covered by web + electron-wasm).
