@@ -95,9 +95,10 @@ interface Driver {
   then drives partition selection, tree navigation, Properties, and download through the DOM.
   `download()` asserts the Service-Worker mechanism and captures bytes via
   `page.waitForEvent('download')`.
-- `ElectronDriver` feeds the image without a native dialog via `ANYFS_TEST_LOCAL_PATH` /
-  `__anyfsTest.openPath`, drives the same renderer DOM, and `download()` asserts the Electron IPC
-  path (`electronDownload.open/write/close`) by writing to a temp dir the test reads back.
+- `ElectronDriver` feeds the image without a native OS dialog, drives the same renderer DOM, and
+  `download()` asserts the Electron IPC path (`electronDownload.open/write/close`) by writing to a
+  temp dir the test reads back. It has **two source-injection seams with different fidelity**
+  (see below) and uses the more faithful one by default.
 
 ### Debug-hook policy (`__anyfsTest`)
 
@@ -122,16 +123,66 @@ Changes to the app under test (`ts/examples/vite-demo/src/App.tsx`):
    - `__anyfsTest.lastError` → the last surfaced error, so the error-flow specs assert failure
      deterministically rather than scraping dialog text.
 3. **Gate the hook behind a flag** — today `__anyfsTest` is attached unconditionally on every
-   page load. Change it to attach only under `import.meta.env.DEV` or an explicit opt-in
-   (`?e2e=1` / `window.__ANYFS_E2E`), so the debug surface is not live in production builds. This
-   is a small production-hygiene cleanup done as part of this work.
+   page load. Change it to attach only when `import.meta.env.DEV || (URL has ?e2e=1)` (see
+   "Gating mechanism" below), so the debug surface is not live in normal production sessions.
 
 Explicitly **rejected**: rich action hooks (`listParts`/`enterPart`/`readdir`/`stat`/
 `openReadable`) that bypass the UI — they would make the suite fast and stable but no longer
 E2E (a broken Chonky row click or download button would pass). Actions stay on the DOM.
 
-The Electron side already has `ANYFS_TEST_LOCAL_PATH` (main process) for headless source
-injection and needs no new debug surface beyond reusing `__anyfsTest` in the renderer.
+### Electron source-injection seams: `ANYFS_TEST_LOCAL_PATH` vs `__anyfsTest.openPath`
+
+The Electron native-open path is `electronDialog.openImage()` → `dialog:openImage` IPC →
+**native OS file dialog** ([main.ts:301-338](../../../ts/examples/electron-demo/src/main.ts)). A
+native dialog is an OS window with no DOM — Playwright/CDP cannot drive it. The two seams differ:
+
+| Seam | Drives | Fidelity |
+|---|---|---|
+| `ANYFS_TEST_LOCAL_PATH=<p>` (env, main proc) | the **real `dialog:openImage` IPC handler** returns `<p>` instead of popping the dialog | high — exercises the full dialog→IPC→`attachPath` native pipeline |
+| `__anyfsTest.openPath(<p>)` (renderer) | sets the React `source` directly | lower — skips the dialog→IPC handshake |
+
+`ANYFS_TEST_LOCAL_PATH` is therefore **necessary** (not redundant with `openPath`): it is the
+only way to cover the real native-open IPC pipeline headlessly. Driver policy:
+
+- **open-browse-download / formats** on Electron → use `ANYFS_TEST_LOCAL_PATH` (faithful path).
+- **switch flow** post-relaunch wasm launch, and any case that deliberately bypasses the dialog →
+  use `__anyfsTest.openPath`.
+
+### Gating mechanism (web vs Electron — different runtimes, each idiomatic)
+
+The browser renderer has no `process.env`; the Electron main process has no `import.meta.env`.
+So a single mechanism cannot cleanly span both. Each layer uses its idiomatic gate:
+
+- **Web renderer** (`__anyfsTest`, `loglevel` — see cleanups): attach/verbose **iff**
+  `import.meta.env.DEV` (Vite build-time dev flag, true under `vite dev`) **OR** the page URL
+  carries `?e2e=1` (our own runtime opt-in param — *not* a Playwright built-in; the app reads
+  `URLSearchParams` itself). The `?e2e=1` path is what lets Playwright opt the hook on against the
+  **production `vite preview` build** (where `import.meta.env.DEV` is `false`), preserving
+  prod-bundle fidelity. The driver navigates to `/?e2e=1`. **`window.__ANYFS_E2E` is dropped** —
+  `?e2e=1` is the single web opt-in.
+- **Electron main** (`ANYFS_TEST_LOCAL_PATH`, the SMOKE vars): keep `process.env` — the
+  established convention in this file; the main process has no `import.meta.env`.
+
+### Debug-infrastructure inventory + cleanups
+
+Full audit of debug/test-only infrastructure currently in both apps (verified 2026-05-30):
+
+**Electron** — `ANYFS_TEST_LOCAL_PATH` (main.ts:305), `ANYFS_DRIVES_SMOKE`/`ANYFS_DRIVES_OUT`
+(556-559), `ANYFS_NATIVE_SMOKE`/`ANYFS_NATIVE_IMAGE`/`ANYFS_NATIVE_OUT` (574-588),
+`ANYFS_DISABLE_NATIVE` (preload.ts:78, also a real user setting), `ELECTRON_DEV` (22). These stay
+as-is — they are env-gated and not shipped-on by default.
+
+**Web** — three items currently leak into the production build and are cleaned up as part of this
+work (user-approved):
+
+1. **`__anyfsTest` attached unconditionally** (App.tsx:46) → gate per the mechanism above.
+2. **`mountOpts={{ loglevel: 7 }}` hardcoded** (App.tsx:142) → max kernel log verbosity shipped to
+   prod. Gate the same way: verbose (7) under DEV/`?e2e=1`, a quieter default in normal prod.
+3. **8 orphaned debug/probe HTML pages shipped in `dist/`** — `debug.html`, `debug-api.html`,
+   `debug-atomics.html`, `debug-worker.html`, `debug-stream.html`, `direct-module-test.html`,
+   `probe.html`, `probe2.html` (in `public/`, not linked from the app, but bundled into prod) →
+   exclude from the production build (move out of `public/`, or a Vite build exclude). They remain
+   available for manual debugging in dev.
 
 ## Backend wiring
 
