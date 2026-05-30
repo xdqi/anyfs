@@ -55,7 +55,7 @@ export interface BrowserMountOpts extends SessionOpts {
 
 /** Spawn the worker and boot the LKL kernel without attaching a disk yet.
  *  Use this to pay the wasm download + kernel boot cost during your landing
- *  page; call `session.attachFile(file)` once the user selects a file. */
+ *  page; call `session.attachBlob(blob)` once the user selects a file. */
 export async function prewarm(opts: BrowserMountOpts): Promise<WasmSession> {
     // eslint-disable-next-line no-console
     console.log('[PREWARM] creating worker, url=', String(opts.workerUrl));
@@ -92,12 +92,12 @@ export async function prewarm(opts: BrowserMountOpts): Promise<WasmSession> {
     }
 }
 
-/** Browser entry — mount a File/Blob via a worker-hosted WORKERFS.
- *  Equivalent to `prewarm(opts)` followed by `session.attachFile(file)`. */
-export async function mountFile(file: File, opts: BrowserMountOpts): Promise<WasmSession> {
+/** Browser entry — mount a Blob via a worker-hosted WORKERFS.
+ *  Equivalent to `prewarm(opts)` followed by `session.attachBlob(blob)`. */
+export async function mountBlob(blob: Blob, opts: BrowserMountOpts): Promise<WasmSession> {
     const session = await prewarm(opts);
     try {
-        await session.attachFile(file);
+        await session.attachBlob(blob);
         return session;
     } catch (err) {
         await session.close();

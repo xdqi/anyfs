@@ -126,8 +126,8 @@ export class WasmSession extends AnyfsSessionBase {
 
     // ── Attach ─────────────────────────────────────────
 
-    async attachFile(file: File): Promise<void> {
-        await this.call('attach', { file });
+    async attachBlob(blob: Blob): Promise<void> {
+        await this.call('attach', { blob });
     }
 
     async attachUrl(url: string, name?: string): Promise<void> {

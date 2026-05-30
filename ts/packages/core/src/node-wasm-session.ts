@@ -83,8 +83,8 @@ export class NodeWasmSession extends AnyfsSessionBase {
         this.handle = h;
     }
 
-    async attachFile(_file: File): Promise<void> {
-        throw new Error('NodeWasmSession: attachFile(File) not supported; use attachPath(string)');
+    async attachBlob(_blob: Blob): Promise<void> {
+        throw new Error('NodeWasmSession: attachBlob(Blob) not supported; use attachPath(string)');
     }
 
     async attachUrl(_url: string, _name?: string): Promise<void> {

@@ -89,7 +89,7 @@ type BootArgs = {
     wasmModuleName?: string;
     urlProxyPrefix?: string;
 };
-type AttachArgs = { file: File };
+type AttachArgs = { blob: Blob };
 type AttachUrlArgs = { url: string; name: string };
 type MountArgs = BootArgs & AttachArgs;
 
@@ -165,14 +165,17 @@ const ops: Record<string, (a: any) => unknown> = {
     async attach(a: AttachArgs) {
         if (!M) throw new Error('attach: kernel not booted (call boot first)');
         if (diskHandle >= 0) throw new Error('attach: already attached');
-        const fsPath = `/work/${a.file.name || 'image'}`;
+        // a.blob is typed as Blob but in browser workers it's always a File
+        // (File extends Blob, adds .name). Cast so we can access .name.
+        const file = a.blob as File;
+        const fsPath = `/work/${file.name || 'image'}`;
         send({ event: 'progress', step: 'attaching disk image' });
         if (!M.WORKERFS) throw new Error('WORKERFS missing');
         M.FS.mkdir('/work');
         M.FS.mount(
             M.WORKERFS,
             {
-                blobs: [{ name: a.file.name || 'image', data: a.file }],
+                blobs: [{ name: file.name || 'image', data: file }],
             },
             '/work',
         );
@@ -213,7 +216,7 @@ const ops: Record<string, (a: any) => unknown> = {
     async mount(a: MountArgs) {
         const bootRet = (await ops.boot(a)) as { ok?: boolean; alreadyBooted?: boolean };
         if (!bootRet?.ok && !bootRet?.alreadyBooted) throw new Error('boot failed');
-        return await ops.attach({ file: a.file });
+        return await ops.attach({ blob: a.blob });
     },
 
     listParts() {

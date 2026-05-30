@@ -12,7 +12,7 @@ export abstract class AnyfsSessionBase implements AnyfsSession {
 
     // ── Subclass contract ─────────────────────────────
 
-    abstract attachFile(file: File): Promise<void>;
+    abstract attachBlob(blob: Blob): Promise<void>;
     abstract attachUrl(url: string, name?: string): Promise<void>;
     abstract attachPath(path: string): Promise<void>;
     abstract enter(part: number, flags?: number): Promise<string>;

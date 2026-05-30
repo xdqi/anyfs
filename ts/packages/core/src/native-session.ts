@@ -79,9 +79,9 @@ export class NativeSession extends AnyfsSessionBase {
         this.handle = h;
     }
 
-    async attachFile(_file: File): Promise<void> {
+    async attachBlob(_blob: Blob): Promise<void> {
         throw new Error(
-            'NativeSession: attachFile(File) not supported in native mode; use attachPath(string) or fall back to the wasm worker.',
+            'NativeSession: attachBlob(Blob) not supported in native mode; use attachPath(string) or fall back to the wasm worker.',
         );
     }
 
