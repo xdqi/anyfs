@@ -50,8 +50,8 @@ export function DiskView({
     // For native host paths we'd need an IPC stat — not wired yet; the
     // disk's logical_size is shown alone in that case.
     useEffect(() => {
-        if (source.kind === 'file') {
-            setOnDiskSize(source.file.size);
+        if (source.kind === 'blob') {
+            setOnDiskSize(source.blob.size);
             return;
         }
         if (source.kind === 'path') {

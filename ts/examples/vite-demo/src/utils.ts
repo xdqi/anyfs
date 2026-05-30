@@ -10,7 +10,7 @@ export function clearNavHash() {
 
 /** User-facing label for a SessionSource. */
 export function sourceName(s: SessionSource): string {
-    if (s.kind === 'file') return s.file.name;
+    if (s.kind === 'blob') return (s.blob as File).name;
     if (s.kind === 'path') {
         if (s.name) return s.name;
         const parts = s.path.split(/[\\/]/).filter(Boolean);

@@ -39,7 +39,7 @@ export function App() {
             },
             /** Directly set source to a file — CDP setFileInputFiles trigger. */
             setSourceFile: (file: File) => {
-                setSource({ kind: 'file', file });
+                setSource({ kind: 'blob', blob: file });
             },
         };
         (window as any).__anyfsTest = api;
@@ -91,9 +91,11 @@ export function App() {
     const onHomeClick = source ? askCloseDisk : undefined;
     const onImageClick = source && selectedPart !== null ? askBackToParts : undefined;
 
-    // Read disableNative from localStorage so we can feed it as forceMode to
-    // AnyfsProvider before SettingsProvider mounts (useSettings isn't available
-    // until SettingsProvider is in the tree).
+    // Detect env at render time. SettingsProvider isn't ready yet so we
+    // read disableNative directly from localStorage — it's cheap and the
+    // provider snapshots it at mount anyway (Settings change requires
+    // a page reload to take effect).
+    const env = getAnyfsNative() ? ('electron' as const) : ('web' as const);
     const settingsDisableNative = (() => {
         try {
             if (typeof localStorage !== 'undefined') {
@@ -111,10 +113,10 @@ export function App() {
                 workerUrl={WORKER_URL}
                 wasmBaseUrl="/wasm/"
                 wasmModuleName="anyfs.mjs"
-                autoMount
                 mountOpts={{ loglevel: 7 }}
                 prewarm
-                {...(settingsDisableNative ? { forceMode: 'wasm' as const } : {})}
+                env={env}
+                {...(settingsDisableNative ? { disableNative: true as const } : {})}
             >
                 <div className="h-screen flex flex-col">
                     <TopBar

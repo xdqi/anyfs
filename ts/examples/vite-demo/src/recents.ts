@@ -280,7 +280,7 @@ export async function tryReopen(r: Recent): Promise<ReopenResult> {
         const file = await r.handle.getFile();
         // Re-write the entry with the freshest name/size + bumped ts.
         await addRecentFile(r.handle, file.name, file.size);
-        return { kind: 'ok', source: { kind: 'file', file } };
+        return { kind: 'ok', source: { kind: 'blob', blob: file } };
     } catch (e) {
         const err = e as DOMException;
         if (err?.name === 'NotFoundError') return { kind: 'missing' };
