@@ -243,8 +243,17 @@ function installDownloadIpc() {
     } catch {}
 
     ipcMain.handle('download:open', async (event, fileName: string) => {
-        const owner = BrowserWindow.fromWebContents(event.sender);
         const suggested = fileName || 'download.bin';
+        // Test hook: native save dialogs can't be driven by Playwright. When a
+        // target dir is pre-set, write there and skip the dialog entirely.
+        if (process.env.ANYFS_TEST_DOWNLOAD_DIR) {
+            const filePath = join(process.env.ANYFS_TEST_DOWNLOAD_DIR, suggested);
+            const id = `dl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+            const ws = createWriteStream(filePath);
+            downloads.set(id, { stream: ws, path: filePath });
+            return { id, path: filePath };
+        }
+        const owner = BrowserWindow.fromWebContents(event.sender);
         const result = await (owner
             ? dialog.showSaveDialog(owner, { defaultPath: join(downloadsDir, suggested) })
             : dialog.showSaveDialog({ defaultPath: join(downloadsDir, suggested) }));
