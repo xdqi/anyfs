@@ -112,28 +112,12 @@ export function DiskView({
         );
     if (status !== 'ready') return null;
 
-    // Whole-disk: AnyfsProvider already mounted under mountPath.
-    if (mountPath && session) {
-        return (
-            <section className="flex-1 flex flex-col min-h-0 p-3">
-                <DownloadingFileTree disk={session} mountPath={mountPath} rootLabel="" />
-            </section>
-        );
-    }
-
     if (parts === null)
         return (
             <div className="flex-1 flex items-center justify-center text-base text-zinc-600 dark:text-zinc-400">
                 Reading partition table…
             </div>
         );
-    if (parts.length === 0)
-        return (
-            <div className="flex-1 flex items-center justify-center text-base text-zinc-600 dark:text-zinc-400">
-                No partition table and no auto-mount fstype matched.
-            </div>
-        );
-
     if (selectedPart === null) {
         return (
             <section className="flex-1 flex flex-col items-center justify-center p-6">
@@ -142,6 +126,25 @@ export function DiskView({
                 </h2>
                 <DiskSummary source={source} meta={meta} onDiskSize={onDiskSize} />
                 <ul className="space-y-1.5 w-full max-w-lg mt-4">
+                    <li key="whole">
+                        <button
+                            className="w-full text-left text-base px-4 py-3 rounded-lg bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700"
+                            onClick={() => setSelectedPart(0)}
+                        >
+                            <span className="font-mono text-emerald-600 dark:text-emerald-400">
+                                #0
+                            </span>
+                            {'  '}
+                            <span className="text-zinc-600 dark:text-zinc-400">
+                                {meta
+                                    ? `${(meta.logical_size / (1 << 20)).toFixed(1)} MiB`
+                                    : 'Whole disk'}
+                            </span>
+                            <span className="ml-2 text-zinc-800 dark:text-zinc-300">
+                                Whole disk
+                            </span>
+                        </button>
+                    </li>
                     {parts.map((p) => (
                         <li key={p.slot_id}>
                             <button
