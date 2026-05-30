@@ -19,7 +19,7 @@
  * manifest (manifest.ts) can be reconciled against generated reality.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
@@ -151,6 +151,7 @@ function buildMultiRaw() {
     let loop;
     let mpExt;
     let mpFat;
+    let ok = false;
     try {
         // GPT: p1 +32M type 8300 (Linux fs), p2 rest type 0700 (Microsoft basic data).
         sudoSh(
@@ -171,7 +172,9 @@ function buildMultiRaw() {
         writeFile(mpExt, 'hello.txt', 'hello, world\n', 'multi.hello.txt');
         mkdirIn(mpExt, 'dir');
         sudoSh(`head -c 4096 /dev/zero > "${mpExt}/dir/nested.bin"`);
-        recorded['multi.dir/nested.bin'] = 4096;
+        recorded['multi.dir/nested.bin'] = Number(
+            capture('sudo', ['-n', 'stat', '-c', '%s', `${mpExt}/dir/nested.bin`]).trim(),
+        );
         mkdirIn(mpExt, 'empty');
         sudo(['ln', '-s', 'hello.txt', `${mpExt}/link`]);
         sudo(['sync']);
@@ -184,12 +187,19 @@ function buildMultiRaw() {
         sudo(['sync']);
         umount(mpFat);
         mpFat = undefined;
+        ok = true;
     } finally {
         umount(mpExt);
         rmdir(mpExt);
         umount(mpFat);
         rmdir(mpFat);
         loopDetach(loop);
+        // A failed build must not leave a half-built image that existsSync would
+        // later treat as a complete skip. The .img is user-owned (truncate), so a
+        // plain rmSync suffices.
+        if (!ok) {
+            rmSync(img, { force: true });
+        }
     }
     console.log(`[multi.img] done`);
 }
@@ -209,6 +219,7 @@ function buildMbrExtended() {
 
     let loop;
     const mounts = [];
+    let ok = false;
     try {
         // sfdisk DOS script. Sizes in 512-byte sectors. Layout:
         //   p1 primary ext4  (type 83)  16 MiB
@@ -255,12 +266,19 @@ function buildMbrExtended() {
         writeOne(p2, [], 'p2', 'P2.TXT', 'p2\n', 'mbr.P2.TXT');
         writeOne(p5, [], 'p5', 'l5.txt', 'l5\n', 'mbr.l5.txt');
         writeOne(p6, [], 'p6', 'l6.txt', 'l6\n', 'mbr.l6.txt');
+        ok = true;
     } finally {
         for (const mp of mounts) {
             umount(mp);
             rmdir(mp);
         }
         loopDetach(loop);
+        // A failed build must not leave a half-built image that existsSync would
+        // later treat as a complete skip. The .img is user-owned (truncate), so a
+        // plain rmSync suffices.
+        if (!ok) {
+            rmSync(img, { force: true });
+        }
     }
     console.log(`[mbr-extended.img] done`);
 }
