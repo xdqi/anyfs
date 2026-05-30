@@ -12,7 +12,7 @@ Status legend: OPEN (unconfirmed root cause) · CONFIRMED · FIXED
 > **Native-vs-wasm spike (Phase 3.2 follow-up):** A diagnostic spike drove the **native** LKL
 > addon directly against the same fixtures. Result: **native mounts ext4 and btrfs fine**
 > (ext4 → hello.txt/dir/empty/link/lost+found; btrfs-in-a-partition → whole.txt/sub). So
-> **F1, F2, F3 were wasm-specific** — the Electron *native* backend does not hang.
+> **F1, F2, F3 were wasm-specific** — the Electron _native_ backend does not hang.
 >
 > **✅ FIXED (commit 03c1591):** Root cause was a kthread-spawn-while-blocked deadlock in the
 > wasm worker — `session_enter` ran synchronously on the Module-owning Worker, which blocked in
@@ -108,3 +108,93 @@ whole-disk hint detection in `anyfs_session.c`. Cleanly errors today, so low urg
 **E2E impact:** the `btrfsVmdk` fixture's whole-disk index-0 mount will be a `test.fixme` on
 BOTH backends (wasm hangs F3 / native errors F5). Tests should use btrfs-in-a-partition if a
 passing native btrfs case is wanted later.
+
+---
+
+## F6 — IndexedDB never settles on the `anyfs://` origin → "Open file…" / "Open URL…" hang in packaged Electron (CONFIRMED, High)
+
+**Observed (Phase 3.3, Electron prod renderer over `anyfs://app`):** `indexedDB.open(...)` on the
+`anyfs://app` origin fires **neither** `onsuccess`, `onerror`, **nor** `onblocked` — the request
+hangs forever (`typeof indexedDB === 'object'`, so the API is present; the open just never
+settles). Because `recents.ts`'s `openDb()` awaits that request, every recents write hangs too.
+The killer is `FilePicker.onOpenFile`: in native mode it does
+`const p = await electronDialog.openImage(); … await addRecentPath(p, name); onSource(...)`. The
+`dialog:openImage` IPC returns the path correctly (verified: returns the real
+`ANYFS_TEST_LOCAL_PATH`), but `addRecentPath` → `openDb()` hangs, so **`onSource` is never
+reached** and the disk never loads. The picker just sits there with no error. `onSubmitUrl`
+(addRecentUrl) and drops (addRecentFile) hit the same wall.
+
+`listRecents()` also calls `openDb()` but wraps it in try/catch with no timeout, so on mount it
+hangs silently in the background (fire-and-forget useEffect) and the picker still renders — only
+the _await-in-critical-path_ writes are fatal.
+
+**Repro (Electron):** launch the packaged/prod renderer (`anyfs://app`, not the Vite dev server)
+→ click "Open file…" (native dialog auto-answered via `ANYFS_TEST_LOCAL_PATH`) → the path comes
+back but the picker never transitions to the disk view. Driver-side repro:
+`win.evaluate(() => new Promise(r => { const q = indexedDB.open('x',1); q.onsuccess=()=>r('ok'); q.onerror=()=>r('err'); setTimeout(()=>r('TIMEOUT'),8000); }))`
+→ resolves `TIMEOUT` on `anyfs://app`.
+
+**Suspected area:** IndexedDB backing store for the privileged `anyfs://` custom scheme in
+Electron 42's Chromium. The main process even logs
+`service_worker_storage.cc … Failed to delete the database: Database IO error` at startup, which
+points at storage-partition trouble for this origin. Likely the custom scheme isn't getting a
+usable quota/storage partition, or the registration is missing a privilege. Either register the
+scheme with whatever storage privilege IDB needs, serve the renderer from an `http(s)`-backed
+origin, or make `recents.ts` time-box/guard `openDb()` so a dead IDB degrades to "no recents"
+(as `listRecents` already does) instead of wedging the open flow.
+
+**E2E impact / driver workaround:** `ElectronDriver.openImage` does **not** click the open
+button. It calls the `__anyfsTest.openPath(path)` bridge (App.tsx), which sets the **same**
+`{kind:'path', path}` source the button would (`path === ANYFS_TEST_LOCAL_PATH`) but skips the
+broken recents write. This still drives the **real** native attachPath/listParts pipeline — only
+the IndexedDB recents bookkeeping is bypassed. The native disk attach + partition listing was
+verified real this way (multi.img → partitions `[0,1,2]`, `backendMode==='native'`).
+
+---
+
+## F7 — native `sessionEnter` (partition mount) hangs in the Electron main process — but NOT under plain Node (CONFIRMED, High)
+
+**Observed (Phase 3.3, Electron native backend):** With the native addon active in Electron,
+`sessionOpen` + `sessionListJson` work (multi.img → `vda: vda1 vda2`, partitions `[0,1,2]`
+listed, `mode==='native'`), but selecting **any** partition wedges. DiskView shows
+"mounting partition #N…" indefinitely; `session.enter(N)` (IPC `anyfs-native:diskEnter` →
+addon `sessionEnter` AsyncWorker) **never resolves or rejects**. `getState().mountPath` stays
+null forever and no mount-error surfaces. The LKL kernel log shows **no** `EXT4-fs (vda1):
+mounted` line at all after the enter — the mount stalls before completion. Reproduced for
+partition #1 (ext4) and partition #2 (vfat) → it's not fs-specific; it's the enter/mount op
+itself.
+
+**Critical isolation:** the **same** addon `.node` source, driven directly under **plain Node**
+(`kernelInit; sessionOpen; await sessionListJson; await sessionEnter(h,1,1); await readdirJson`),
+mounts ext4 **cleanly**: `EXT4-fs (vda1): mounted filesystem … ro without journal`,
+mountPath `/lklmnt/anyfs_d0_p1`, readdir lists `empty/dir/lost+found/hello.txt/link`. So the
+AsyncWorker enter path is correct in isolation — the deadlock is **specific to the Electron main
+process**, where libuv's thread pool is integrated with Chromium's message loop. The mount op
+runs on a libuv worker thread and the LKL mount needs to spawn an in-kernel kthread (a real
+host thread); that spawn never makes progress under Electron's loop integration, so the
+AsyncWorker hangs holding the addon mutex. This is the native analog of the (now-fixed) wasm F1
+kthread-spawn-while-blocked deadlock, and it landed with the recent AsyncWorker conversion
+(`3388c5b` "convert IO-heavy ops to AsyncWorker"): `sessionEnter` moved off the main thread.
+
+**Repro (Electron):** native backend → open multi.img → click partition #1 or #2 → hangs on
+"mounting…", forever, no error. **Counter-repro (Node, passes):** see
+`packages/anyfs-native/test/` pattern — init/open/listJson/**enter**/readdir all resolve.
+
+**Suspected fix area:** `packages/anyfs-native/src/binding.cc` `sessionEnter` AsyncWorker vs.
+Electron's libuv/Chromium loop. Options mirror the wasm fix: run the enter/mount on a dedicated
+host thread that keeps an event loop free to service the kthread spawn, or revert `sessionEnter`
+to a synchronous op on the QEMU-affine thread (it was sync pre-`3388c5b`). Whole-disk enter(0)
+likely hits the same wall.
+
+**E2E impact:** the **native** Electron backend can attach a disk and list partitions but cannot
+mount any partition today, so native `enterPartition`/`listRows`/`download`-of-real-bytes are
+`test.fixme` until this is fixed. The driver itself is verified correct: native attach + partition
+list are real; and the Electron **IPC download mechanism** (`electronDownload.open/write/close` →
+`download:open` writing to `ANYFS_TEST_DOWNLOAD_DIR`) was verified end-to-end independently
+(13 bytes "hello, world\n" written + read back, `mechanism: 'electron-ipc'`). The full
+mount→activate→download chain just can't complete in-app until F7 (and, for the picker button,
+F6) are resolved. Note: the **wasm** Electron backend is also blocked for file sources by a
+separate quirk — `utils.fileToSource` always calls `window.electronFile.pathFor(file)` (exposed
+in both modes), converting every dropped/picked File into a `{kind:'path'}` source, which the
+wasm backend rejects ("source kind 'path' is not supported by the wasm backend"). So in Electron,
+wasm can only take URL sources, not files.

@@ -218,11 +218,17 @@ function createWindow(): void {
         },
     });
 
+    // E2E hook: the built renderer only installs window.__anyfsTest when
+    // e2eEnabled() is true, which (outside Vite dev) requires `?e2e=1` in the
+    // page URL. Append it when ANYFS_E2E is set so Playwright can drive the app
+    // through the same test bridge the web suite uses. Gated entirely behind
+    // the env var, so production launches are unaffected.
+    const e2eQuery = process.env.ANYFS_E2E ? '?e2e=1' : '';
     if (isDev) {
-        void win.loadURL('http://localhost:5173/');
+        void win.loadURL(`http://localhost:5173/${e2eQuery}`);
         win.webContents.openDevTools({ mode: 'detach' });
     } else {
-        void win.loadURL('anyfs://app/');
+        void win.loadURL(`anyfs://app/${e2eQuery}`);
     }
 }
 
