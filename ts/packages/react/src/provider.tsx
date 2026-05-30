@@ -46,7 +46,7 @@ export interface AnyfsState {
 const Ctx = createContext<AnyfsState | null>(null);
 
 export interface AnyfsProviderProps {
-    /** The image to mount. Pass `{kind:'file',file}` for a local Blob,
+    /** The image to mount. Pass `{kind:'blob',blob}` for a local Blob,
      *  `{kind:'url',url,name?}` for an HTTP image with Range support, or
      *  `{kind:'path',path}` for a host filesystem path (Electron only).
      *  Switching this prop (by referential identity) remounts. */
@@ -257,14 +257,14 @@ export function AnyfsProvider({
             console.log('[PROVIDER] startPrewarm returned', d ? 'promise' : 'null');
             const session = await (d ?? Promise.reject(new Error('no prewarm slot')));
             console.log('[PROVIDER] got session, calling attach...');
-            if (source.kind === 'file') {
+            if (source.kind === 'blob') {
                 if (session instanceof NativeSession) {
                     throw new Error(
                         'native backend cannot mount a File object — use {kind:"path"} ' +
                             'with an absolute host path instead',
                     );
                 }
-                await session.attachFile(source.file);
+                await session.attachBlob(source.blob);
             } else if (source.kind === 'url') {
                 console.log('[PROVIDER] calling session.attachUrl', source.url, source.name);
                 await session.attachUrl(source.url, source.name);
@@ -274,7 +274,7 @@ export function AnyfsProvider({
                 if (!(session instanceof NativeSession)) {
                     throw new Error(
                         'host paths can only be opened in native mode (Electron); ' +
-                            'use {kind:"file"} or {kind:"url"} in the browser',
+                            'use {kind:"blob"} or {kind:"url"} in the browser',
                     );
                 }
                 await session.attachPath(source.path);

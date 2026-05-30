@@ -49,7 +49,7 @@ export function FilePicker({ onSource }: { onSource: (s: SessionSource) => void 
     // have a persistable handle. The handle is optional — drops without
     // getAsFileSystemHandle (or the legacy <input> fallback on non-FSA
     // browsers) still mount, they just won't show up in Recents.
-    const acceptFile = useCallback(
+    const acceptBlob = useCallback(
         async (file: File, handle?: FileSystemFileHandle) => {
             if (handle) {
                 try {
@@ -57,7 +57,7 @@ export function FilePicker({ onSource }: { onSource: (s: SessionSource) => void 
                 } catch {}
                 void refreshRecents();
             }
-            onSource({ kind: 'file', file });
+            onSource({ kind: 'blob', blob: file });
         },
         [onSource, refreshRecents],
     );
@@ -93,7 +93,7 @@ export function FilePicker({ onSource }: { onSource: (s: SessionSource) => void 
                         if (h && h.kind === 'file') {
                             const fh = h as FileSystemFileHandle;
                             const f = await fh.getFile();
-                            await acceptFile(f, fh);
+                            await acceptBlob(f, fh);
                             return;
                         }
                     } catch {}
@@ -101,7 +101,7 @@ export function FilePicker({ onSource }: { onSource: (s: SessionSource) => void 
             }
         }
         const f = e.dataTransfer.files[0];
-        if (f) await acceptFile(f);
+        if (f) await acceptBlob(f);
     };
 
     // Native picker. In Electron we always go through dialog:openImage so we
@@ -124,7 +124,7 @@ export function FilePicker({ onSource }: { onSource: (s: SessionSource) => void 
             if (fsa) {
                 const picked = await pickFile();
                 if (!picked) return;
-                await acceptFile(picked.file, picked.handle);
+                await acceptBlob(picked.file, picked.handle);
                 return;
             }
             // Non-FSA fallback: trigger the hidden <input>.
@@ -197,7 +197,7 @@ export function FilePicker({ onSource }: { onSource: (s: SessionSource) => void 
                             return;
                         }
                     }
-                } else if (src.kind === 'file' && nativeMode) {
+                } else if (src.kind === 'blob' && nativeMode) {
                     // We're in native mode but the recent is a browser File
                     // (saved before the user switched to Electron, or by a
                     // mixed build). Force-fail rather than letting the worker
@@ -272,7 +272,7 @@ export function FilePicker({ onSource }: { onSource: (s: SessionSource) => void 
                     className="hidden"
                     onChange={(e) => {
                         const f = e.target.files?.[0];
-                        if (f) void acceptFile(f);
+                        if (f) void acceptBlob(f);
                     }}
                 />
                 <div className="space-y-1">
