@@ -12,11 +12,18 @@ Status legend: OPEN (unconfirmed root cause) · CONFIRMED · FIXED
 > **Native-vs-wasm spike (Phase 3.2 follow-up):** A diagnostic spike drove the **native** LKL
 > addon directly against the same fixtures. Result: **native mounts ext4 and btrfs fine**
 > (ext4 → hello.txt/dir/empty/link/lost+found; btrfs-in-a-partition → whole.txt/sub). So
-> **F1, F2, F3 are wasm-specific** — the Electron *native* backend does not hang. One new
-> native finding (F5) was discovered. This means: Electron-native flow tests should largely
-> PASS; web/wasm flow tests will `test.fixme` on ext4/btrfs.
+> **F1, F2, F3 were wasm-specific** — the Electron *native* backend does not hang.
+>
+> **✅ FIXED (commit 03c1591):** Root cause was a kthread-spawn-while-blocked deadlock in the
+> wasm worker — `session_enter` ran synchronously on the Module-owning Worker, which blocked in
+> `Atomics.wait`, so the jbd2 (ext4) / worker (btrfs) kthread's `new Worker()` could never be
+> created. Fix mirrors the existing boot-async pattern: `anyfs_ts_session_enter_async` runs the
+> mount on a dedicated pthread while `worker.ts` polls + yields, keeping the Worker's event loop
+> free to spawn the kthread. Verified in-browser: **ext4 now mounts** (lists
+> dir/empty/hello.txt/link/lost+found); **F1, F2, F3 resolved.** F5 (below) is separate and
+> remains. See memory `project_wasm_mount_kthread_deadlock`.
 
-## F1 — ext4 partition mount hangs in the wasm backend (CONFIRMED wasm-only, High)
+## F1 — ext4 partition mount hangs in the wasm backend (✅ FIXED 03c1591, was High)
 
 **Observed (Phase 3.2, web/wasm):** Opening `multiRaw` (multi.img), `session.enter(1)` on the
 ext4 partition dispatches `op=enter`, EXT4 probes run (`couldn't mount as ext3/ext2` — normal
@@ -33,7 +40,7 @@ the ext4 driver or core session logic.
 
 ---
 
-## F2 — whole-disk #0 (no filesystem) hangs instead of erroring [wasm] (CONFIRMED wasm-only, High)
+## F2 — whole-disk #0 (no filesystem) hangs instead of erroring [wasm] (✅ FIXED 03c1591 — now errors cleanly, was High)
 
 **Observed:** Entering partition #0 (the whole disk, which has no filesystem on multi.img) —
 all FS probes correctly fail to find a filesystem, but instead of surfacing a mount error, the
@@ -47,7 +54,7 @@ detected (should reject, not hang).
 
 ---
 
-## F3 — btrfs whole-disk mount hangs in the wasm backend (CONFIRMED wasm-only, High)
+## F3 — btrfs mount hangs in the wasm backend (✅ FIXED 03c1591 — no longer hangs; whole-disk btrfs still hits F5, was High)
 
 **Observed:** Opening `btrfsVmdk` (whole-disk btrfs, no PT). dmesg shows `Btrfs loaded`, then
 the app is stuck on "mounting…", no rows render, no error. `enter` never settles. Same shape
