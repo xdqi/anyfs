@@ -47,6 +47,16 @@ const electronDialog = {
 };
 contextBridge.exposeInMainWorld('electronDialog', electronDialog);
 
+// Translate a dropped/picked File object to an absolute host path.
+// Electron 42 removed File.path; webUtils.getPathForFile is the replacement.
+const electronFile = {
+    pathFor: (file: File) => {
+        const { webUtils } = require('electron') as typeof import('electron');
+        return webUtils.getPathForFile(file);
+    },
+};
+contextBridge.exposeInMainWorld('electronFile', electronFile);
+
 // Tell @anyfs/core that we can fetch http(s) URLs via the main process —
 // the anyfs-url:// privileged scheme registered in main.ts is wired to
 // net.fetch and bypasses the renderer's same-origin policy. Plain
