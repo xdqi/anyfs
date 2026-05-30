@@ -130,6 +130,7 @@ export function DiskView({
                         <button
                             className="w-full text-left text-base px-4 py-3 rounded-lg bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700"
                             onClick={() => setSelectedPart(0)}
+                            data-testid="partition-0"
                         >
                             <span className="font-mono text-emerald-600 dark:text-emerald-400">
                                 #0
@@ -150,6 +151,7 @@ export function DiskView({
                             <button
                                 className="w-full text-left text-base px-4 py-3 rounded-lg bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700"
                                 onClick={() => setSelectedPart(p.index)}
+                                data-testid={`partition-${p.index}`}
                             >
                                 <span className="font-mono text-emerald-600 dark:text-emerald-400">
                                     #{p.index}

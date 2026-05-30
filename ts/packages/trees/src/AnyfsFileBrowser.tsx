@@ -472,7 +472,15 @@ function PropertiesModal({
     const border = darkMode ? '#3f3f46' : '#d4d4d8';
     const hdrBg = darkMode ? '#27272a' : '#f4f4f5';
 
-    const Row = ({ label, value }: { label: string; value: React.ReactNode }) => (
+    const Row = ({
+        label,
+        value,
+        testid,
+    }: {
+        label: string;
+        value: React.ReactNode;
+        testid?: string;
+    }) => (
         <div
             style={{
                 display: 'flex',
@@ -489,6 +497,7 @@ function PropertiesModal({
                     fontFamily: 'ui-monospace, monospace',
                     wordBreak: 'break-all',
                 }}
+                data-testid={testid}
             >
                 {value}
             </div>
@@ -509,6 +518,7 @@ function PropertiesModal({
             }}
             role="dialog"
             aria-modal="true"
+            data-testid="properties-modal"
         >
             <div
                 onClick={(e) => e.stopPropagation()}
@@ -586,9 +596,9 @@ function PropertiesModal({
                     </button>
                 </header>
                 <div style={{ padding: '8px 16px 16px' }}>
-                    <Row label="kind" value={stat.kind} />
+                    <Row label="kind" value={stat.kind} testid="properties-kind" />
                     <Row label="mode" value={fmtMode(stat.mode)} />
-                    <Row label="size" value={fmtBytes(stat.size)} />
+                    <Row label="size" value={fmtBytes(stat.size)} testid="properties-size" />
                     <Row label="inode" value={String(stat.ino)} />
                     <Row label="nlink" value={String(stat.nlink)} />
                     {stat.uid !== undefined && <Row label="uid" value={String(stat.uid)} />}

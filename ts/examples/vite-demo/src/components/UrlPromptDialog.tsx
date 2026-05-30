@@ -89,6 +89,7 @@ export function UrlPromptDialog({
                     <button
                         className="rounded-lg border border-zinc-300 dark:border-zinc-700 px-4 py-2 text-sm font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800"
                         onClick={onClose}
+                        data-testid="url-dialog-cancel"
                     >
                         Cancel
                     </button>
@@ -96,6 +97,7 @@ export function UrlPromptDialog({
                         className="rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-300 disabled:text-zinc-500 dark:disabled:bg-zinc-700 dark:disabled:text-zinc-500 px-4 py-2 text-sm font-medium text-white"
                         onClick={() => void submit()}
                         disabled={url.trim().length === 0 || probing}
+                        data-testid="url-dialog-submit"
                     >
                         {probing ? 'Probing…' : 'Open'}
                     </button>

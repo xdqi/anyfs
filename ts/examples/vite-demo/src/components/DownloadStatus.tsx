@@ -4,13 +4,24 @@ import type { DownloadJob } from './DownloadingFileTree';
 export function DownloadStatus({ job, onDismiss }: { job: DownloadJob; onDismiss: () => void }) {
     const pct = job.size > 0 ? Math.min(100, (job.written / job.size) * 100) : 0;
     return (
-        <div className="rounded-md bg-zinc-100 dark:bg-zinc-800 px-4 py-3 text-base flex items-center gap-3 text-zinc-900 dark:text-zinc-100">
+        <div
+            className="rounded-md bg-zinc-100 dark:bg-zinc-800 px-4 py-3 text-base flex items-center gap-3 text-zinc-900 dark:text-zinc-100"
+            data-testid="download-status"
+        >
             <div className="flex-1 min-w-0">
                 <div className="truncate">{job.name}</div>
                 {job.error ? (
-                    <div className="text-red-500 dark:text-red-400 text-sm mt-1">{job.error}</div>
+                    <div
+                        className="text-red-500 dark:text-red-400 text-sm mt-1"
+                        data-testid="download-error"
+                    >
+                        {job.error}
+                    </div>
                 ) : (
-                    <div className="text-zinc-600 dark:text-zinc-400 text-sm mt-1">
+                    <div
+                        className="text-zinc-600 dark:text-zinc-400 text-sm mt-1"
+                        data-testid="download-progress"
+                    >
                         {fmtBytes(job.written)} / {fmtBytes(job.size)} ({pct.toFixed(1)}%)
                     </div>
                 )}
@@ -24,6 +35,7 @@ export function DownloadStatus({ job, onDismiss }: { job: DownloadJob; onDismiss
                 <button
                     className="text-zinc-700 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-white text-sm"
                     onClick={onDismiss}
+                    data-testid="download-dismiss"
                 >
                     ×
                 </button>
@@ -34,6 +46,7 @@ export function DownloadStatus({ job, onDismiss }: { job: DownloadJob; onDismiss
                         job.cancel();
                         onDismiss();
                     }}
+                    data-testid="download-cancel"
                 >
                     cancel
                 </button>

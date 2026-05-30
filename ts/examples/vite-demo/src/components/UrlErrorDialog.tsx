@@ -26,6 +26,7 @@ export function UrlErrorDialog({
                 onClick={(e) => e.stopPropagation()}
                 role="alertdialog"
                 aria-modal="true"
+                data-testid="url-error-dialog"
             >
                 <header className="px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between">
                     <h2 className="text-zinc-900 dark:text-zinc-100 text-base font-medium">
@@ -39,7 +40,10 @@ export function UrlErrorDialog({
                         ×
                     </button>
                 </header>
-                <div className="p-4 text-sm text-zinc-700 dark:text-zinc-300 leading-relaxed">
+                <div
+                    className="p-4 text-sm text-zinc-700 dark:text-zinc-300 leading-relaxed"
+                    data-testid="url-error-message"
+                >
                     {message}
                 </div>
                 <div className="px-4 py-3 border-t border-zinc-200 dark:border-zinc-800 flex justify-end">

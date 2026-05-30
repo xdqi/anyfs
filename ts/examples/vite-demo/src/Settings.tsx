@@ -216,9 +216,10 @@ interface ToggleProps {
     description: string;
     checked: boolean;
     onChange: (v: boolean) => void;
+    testid?: string;
 }
 
-function Toggle({ label, description, checked, onChange }: ToggleProps) {
+function Toggle({ label, description, checked, onChange, testid }: ToggleProps) {
     return (
         <label className="flex items-start gap-3 cursor-pointer select-none">
             <input
@@ -226,6 +227,7 @@ function Toggle({ label, description, checked, onChange }: ToggleProps) {
                 checked={checked}
                 onChange={(e) => onChange(e.target.checked)}
                 className="mt-1 h-4 w-4 accent-emerald-500"
+                data-testid={testid}
             />
             <span>
                 <span className="block text-zinc-900 dark:text-zinc-100 text-sm">{label}</span>
@@ -256,6 +258,7 @@ function DisableNativeToggle({ settings, update }: DisableNativeToggleProps) {
                     setPending(v);
                     setShowConfirm(true);
                 }}
+                testid="disable-native-toggle"
             />
             {showConfirm && (
                 <div
@@ -279,11 +282,13 @@ function DisableNativeToggle({ settings, update }: DisableNativeToggleProps) {
                                     setShowConfirm(false);
                                     setPending(null);
                                 }}
+                                data-testid="disable-native-cancel"
                             >
                                 Cancel
                             </button>
                             <button
                                 className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-md hover:bg-emerald-700"
+                                data-testid="disable-native-restart"
                                 onClick={() => {
                                     update('disableNative', pending!);
                                     try {
