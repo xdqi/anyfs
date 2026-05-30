@@ -86,19 +86,64 @@ export function recentsSupported(): boolean {
     return fsaSupported() || isNativeMode();
 }
 
-let dbPromise: Promise<IDBDatabase> | null = null;
-function openDb(): Promise<IDBDatabase> {
+// How long we wait for indexedDB.open before giving up. On a healthy origin
+// the request settles in single-digit ms; on the packaged Electron anyfs://
+// origin it can hang forever (neither onsuccess/onerror/onblocked ever fire —
+// FINDING F6), which would wedge every recents caller and, fatally, the
+// "Open file…" flow that awaits a recents write before reaching onSource. We
+// cap the wait so a dead IDB degrades to "no recents" instead of hanging.
+const OPEN_DB_TIMEOUT_MS = 1500;
+
+// A SETTLED null cache means "IDB is broken/timed out — stop retrying and
+// degrade silently". A successful open caches the live db. A pending open is
+// shared. We never cache a hung promise: the timeout always resolves it (to
+// null), so callers are guaranteed to proceed.
+let dbPromise: Promise<IDBDatabase | null> | null = null;
+
+function openDb(): Promise<IDBDatabase | null> {
     if (dbPromise) return dbPromise;
-    dbPromise = new Promise((resolve, reject) => {
-        const req = indexedDB.open(DB_NAME, DB_VERSION);
-        req.onupgradeneeded = () => {
-            const db = req.result;
-            if (!db.objectStoreNames.contains(STORE)) {
-                db.createObjectStore(STORE, { keyPath: 'id' });
-            }
+    dbPromise = new Promise<IDBDatabase | null>((resolve) => {
+        let settled = false;
+        const done = (db: IDBDatabase | null) => {
+            if (settled) return;
+            settled = true;
+            resolve(db);
         };
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error ?? new Error('indexedDB open failed'));
+        // Time-box: if the open never settles (F6), give up and degrade.
+        const timer = setTimeout(() => done(null), OPEN_DB_TIMEOUT_MS);
+        try {
+            const req = indexedDB.open(DB_NAME, DB_VERSION);
+            req.onupgradeneeded = () => {
+                const db = req.result;
+                if (!db.objectStoreNames.contains(STORE)) {
+                    db.createObjectStore(STORE, { keyPath: 'id' });
+                }
+            };
+            req.onsuccess = () => {
+                clearTimeout(timer);
+                done(req.result);
+            };
+            // onerror / onblocked must resolve too (never hang). We degrade to
+            // null rather than rejecting so callers don't need a try/catch.
+            req.onerror = () => {
+                clearTimeout(timer);
+                done(null);
+            };
+            req.onblocked = () => {
+                clearTimeout(timer);
+                done(null);
+            };
+        } catch {
+            // Synchronous throw (e.g. SecurityError in some sandboxes).
+            clearTimeout(timer);
+            done(null);
+        }
+    }).then((db) => {
+        // Don't cache a failed/timed-out open: clear the shared promise so a
+        // later call may retry (the IDB might recover). A successful open is
+        // kept cached for reuse.
+        if (!db) dbPromise = null;
+        return db;
     });
     return dbPromise;
 }
@@ -118,6 +163,7 @@ export async function listRecents(): Promise<Recent[]> {
     if (!recentsSupported()) return [];
     try {
         const db = await openDb();
+        if (!db) return []; // IDB timed out / unavailable (F6) — no recents.
         const all = (await awaitReq(tx(db, 'readonly').getAll())) as Recent[];
         return all.sort((a, b) => b.ts - a.ts);
     } catch {
@@ -158,86 +204,112 @@ async function trim(db: IDBDatabase): Promise<void> {
     });
 }
 
+// Recents WRITES are best-effort bookkeeping — they must NEVER throw or hang a
+// caller. The picker's "Open file…" / "Open URL…" / drop handlers await these
+// before reaching onSource(); a dead IDB (F6) must degrade to "no recents
+// persisted", not wedge the open flow. So each write: bails on a null db
+// (timed-out open), and swallows any internal IDB error.
 export async function addRecentFile(
     handle: FileSystemFileHandle,
     name: string,
     size?: number,
 ): Promise<void> {
     if (!recentsSupported()) return;
-    const db = await openDb();
-    // Dedupe: find existing entry for the same file via isSameEntry. Done
-    // OUTSIDE any tx because isSameEntry is async and would drop one.
-    const all = await readAll(db);
-    let match: RecentFile | null = null;
-    for (const r of all) {
-        if (r.kind !== 'file') continue;
-        try {
-            if (await r.handle.isSameEntry(handle)) {
-                match = r;
-                break;
+    try {
+        const db = await openDb();
+        if (!db) return; // IDB timed out / unavailable (F6) — skip persist.
+        // Dedupe: find existing entry for the same file via isSameEntry. Done
+        // OUTSIDE any tx because isSameEntry is async and would drop one.
+        const all = await readAll(db);
+        let match: RecentFile | null = null;
+        for (const r of all) {
+            if (r.kind !== 'file') continue;
+            try {
+                if (await r.handle.isSameEntry(handle)) {
+                    match = r;
+                    break;
+                }
+            } catch {
+                // Stale handle (backing file moved/deleted) — treat as miss.
             }
-        } catch {
-            // Stale handle (backing file moved/deleted) — treat as miss.
         }
+        const rec: RecentFile = match
+            ? { ...match, name, ts: Date.now(), ...(size !== undefined ? { size } : {}) }
+            : {
+                  id: newId(),
+                  kind: 'file',
+                  handle,
+                  name,
+                  ts: Date.now(),
+                  ...(size !== undefined ? { size } : {}),
+              };
+        await putOne(db, rec);
+        if (!match) await trim(db);
+    } catch {
+        // Non-fatal: persist failed, caller still proceeds to open the disk.
     }
-    const rec: RecentFile = match
-        ? { ...match, name, ts: Date.now(), ...(size !== undefined ? { size } : {}) }
-        : {
-              id: newId(),
-              kind: 'file',
-              handle,
-              name,
-              ts: Date.now(),
-              ...(size !== undefined ? { size } : {}),
-          };
-    await putOne(db, rec);
-    if (!match) await trim(db);
 }
 
 export async function addRecentUrl(url: string, name: string, size?: number): Promise<void> {
     if (!recentsSupported()) return;
-    const db = await openDb();
-    const all = await readAll(db);
-    const match = all.find((r): r is RecentUrl => r.kind === 'url' && r.url === url) ?? null;
-    const rec: RecentUrl = match
-        ? { ...match, name, ts: Date.now(), ...(size !== undefined ? { size } : {}) }
-        : {
-              id: newId(),
-              kind: 'url',
-              url,
-              name,
-              ts: Date.now(),
-              ...(size !== undefined ? { size } : {}),
-          };
-    await putOne(db, rec);
-    if (!match) await trim(db);
+    try {
+        const db = await openDb();
+        if (!db) return; // IDB timed out / unavailable (F6) — skip persist.
+        const all = await readAll(db);
+        const match = all.find((r): r is RecentUrl => r.kind === 'url' && r.url === url) ?? null;
+        const rec: RecentUrl = match
+            ? { ...match, name, ts: Date.now(), ...(size !== undefined ? { size } : {}) }
+            : {
+                  id: newId(),
+                  kind: 'url',
+                  url,
+                  name,
+                  ts: Date.now(),
+                  ...(size !== undefined ? { size } : {}),
+              };
+        await putOne(db, rec);
+        if (!match) await trim(db);
+    } catch {
+        // Non-fatal: persist failed, caller still proceeds to open the URL.
+    }
 }
 
 /** Native-mode recent: a host filesystem path (or block device node) we hand
  *  straight to the LKL kernel. Deduped by path string. */
 export async function addRecentPath(path: string, name: string, size?: number): Promise<void> {
     if (!recentsSupported()) return;
-    const db = await openDb();
-    const all = await readAll(db);
-    const match = all.find((r): r is RecentPath => r.kind === 'path' && r.path === path) ?? null;
-    const rec: RecentPath = match
-        ? { ...match, name, ts: Date.now(), ...(size !== undefined ? { size } : {}) }
-        : {
-              id: newId(),
-              kind: 'path',
-              path,
-              name,
-              ts: Date.now(),
-              ...(size !== undefined ? { size } : {}),
-          };
-    await putOne(db, rec);
-    if (!match) await trim(db);
+    try {
+        const db = await openDb();
+        if (!db) return; // IDB timed out / unavailable (F6) — skip persist.
+        const all = await readAll(db);
+        const match =
+            all.find((r): r is RecentPath => r.kind === 'path' && r.path === path) ?? null;
+        const rec: RecentPath = match
+            ? { ...match, name, ts: Date.now(), ...(size !== undefined ? { size } : {}) }
+            : {
+                  id: newId(),
+                  kind: 'path',
+                  path,
+                  name,
+                  ts: Date.now(),
+                  ...(size !== undefined ? { size } : {}),
+              };
+        await putOne(db, rec);
+        if (!match) await trim(db);
+    } catch {
+        // Non-fatal: persist failed, caller still proceeds to open the path.
+    }
 }
 
 export async function removeRecent(id: string): Promise<void> {
     if (!recentsSupported()) return;
-    const db = await openDb();
-    tx(db, 'readwrite').delete(id);
+    try {
+        const db = await openDb();
+        if (!db) return; // IDB timed out / unavailable (F6) — nothing to remove.
+        tx(db, 'readwrite').delete(id);
+    } catch {
+        // Non-fatal.
+    }
 }
 
 export type ReopenResult =

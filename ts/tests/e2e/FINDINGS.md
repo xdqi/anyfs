@@ -111,7 +111,7 @@ passing native btrfs case is wanted later.
 
 ---
 
-## F6 — IndexedDB never settles on the `anyfs://` origin → "Open file…" / "Open URL…" hang in packaged Electron (CONFIRMED, High)
+## F6 — IndexedDB never settles on the `anyfs://` origin → "Open file…" hang (✅ FIXED — time-boxed openDb, was High)
 
 **Observed (Phase 3.3, Electron prod renderer over `anyfs://app`):** `indexedDB.open(...)` on the
 `anyfs://app` origin fires **neither** `onsuccess`, `onerror`, **nor** `onblocked` — the request
@@ -152,7 +152,7 @@ verified real this way (multi.img → partitions `[0,1,2]`, `backendMode==='nati
 
 ---
 
-## F7 — native `sessionEnter` (partition mount) hangs in the Electron main process — but NOT under plain Node (CONFIRMED, High)
+## F7 — native `sessionEnter` (partition mount) hangs/crashes in the Electron main process (✅ FIXED — sync enter, was High)
 
 **Observed (Phase 3.3, Electron native backend):** With the native addon active in Electron,
 `sessionOpen` + `sessionListJson` work (multi.img → `vda: vda1 vda2`, partitions `[0,1,2]`
@@ -185,6 +185,52 @@ Electron's libuv/Chromium loop. Options mirror the wasm fix: run the enter/mount
 host thread that keeps an event loop free to service the kthread spawn, or revert `sessionEnter`
 to a synchronous op on the QEMU-affine thread (it was sync pre-`3388c5b`). Whole-disk enter(0)
 likely hits the same wall.
+
+**ROOT CAUSE (gdb, 2026-05-30) — it is NOT the threading/AsyncWorker, NOT QEMU BQL.** The
+SIGABRT backtrace is conclusive:
+```
+electron: ../util/fdmon-io_uring.c:99: get_sqe: Assertion `ret > 1' failed.
+#4 get_sqe → #5 add_poll_add_sqe → #9 aio_dispatch → #10 aio_ctx_dispatch
+→ #13 g_main_context_iteration   (Electron's GLib main loop)
+```
+QEMU's AioContext registers itself as a **GLib source**. QEMU built with
+`CONFIG_LINUX_IO_URING` uses the **io_uring fdmon** backend (`aio_context_setup` prefers it when
+available). In the Electron **main process**, Electron's own **GLib main loop**
+(`g_main_context_iteration`) dispatches QEMU's AioContext source — while QEMU *also* drives the
+same io_uring ring from its own `aio_poll` (`bdrv_poll_co`). Two drivers on one io_uring SQ ring
+→ submission-queue exhaustion → `assert(ret > 1)` → abort. Plain Node / `ELECTRON_RUN_AS_NODE`
+do NOT crash because they use a libuv loop that does not adopt QEMU's GLib source — only ONE
+thing drives the ring. Verified: under `ELECTRON_RUN_AS_NODE` the **same addon mounts ext4
+cleanly** (`/lklmnt/anyfs_d0_p1`, exit 0). So the fault is the QEMU-libblock-AioContext ↔
+Electron-GLib-main-loop entanglement, independent of how `sessionEnter` is threaded (the
+`3388c5b` AsyncWorker change only changed the crash's *timing*, not its existence).
+
+**Attempted fix 1 (dedicated pthread, mirroring wasm):** still crashes — the AioContext is still
+dispatched by Electron's GLib loop regardless of which thread submits the syscall.
+**Attempted fix 2 (force epoll fdmon via `ANYFS_NO_IO_URING` env + QEMU `aio_context_setup`
+patch):** the io_uring assert is GONE (confirms the root cause), but the epoll path then
+**SIGSEGVs** during enter under Electron (timing-sensitive: segv without gdb, hang under gdb) —
+a second, race-shaped manifestation of the same fundamental problem.
+
+**ARCHITECTURAL CONCLUSION:** Embedding QEMU's block layer (which owns an AioContext/event loop)
+*inside the Electron main process* fundamentally conflicts with Electron's GLib/Chromium main
+loop — every fdmon backend hits a different fatal interaction. The correct fix is **process
+isolation**: run the native addon (LKL kernel + QEMU libblock) in a **separate process** with its
+own libuv loop (Electron `utilityProcess`, or a child Node process), and IPC results to the main
+process — exactly the context (`ELECTRON_RUN_AS_NODE`) already proven to work.
+
+**✅ FIX APPLIED (sync enter):** `sessionEnter` reverted to a SYNCHRONOUS N-API call (like
+`sessionOpen`/`kernelInit`) under `g_op_mutex`, instead of the `3388c5b` libuv-pool AsyncWorker.
+Running the mount inline on the calling (main) thread keeps QEMU's AioContext work *within* the
+blocking call rather than being dispatched later by Electron's GLib loop — so the io_uring
+`get_sqe` / epoll fdmon collision never occurs. Verified end-to-end through the real Electron
+renderer + ElectronDriver: ext4 partition **mounts**, browser **lists**
+`dir/empty/hello.txt/link/lost+found`, and `hello.txt` **downloads** via Electron IPC (13 bytes,
+`mechanism: electron-ipc`); also re-verified ext4 still mounts under plain Node (no regression).
+Tradeoff accepted: the mount briefly blocks the JS main thread during the mount (same as
+pre-`3388c5b` and as `sessionOpen` already does) in exchange for correctness. The
+async/utilityProcess isolation route above remains the longer-term option if main-thread
+blocking during mount becomes a UX problem. (The wasm backend was separately fixed for F1/F3.)
 
 **E2E impact:** the **native** Electron backend can attach a disk and list partitions but cannot
 mount any partition today, so native `enterPartition`/`listRows`/`download`-of-real-bytes are

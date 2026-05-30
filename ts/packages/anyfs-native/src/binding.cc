@@ -333,24 +333,35 @@ static Napi::Value SessionMetaJson(const Napi::CallbackInfo& info)
 	return promise;
 }
 
+// SessionEnter (partition mount) is SYNCHRONOUS, unlike the other IO ops.
+// Running the ext4/btrfs mount on a libuv thread-pool thread (the AsyncWorker
+// path) deadlocks/crashes inside the Electron main process: QEMU's libblock
+// AioContext gets dispatched by Electron's GLib main loop and collides with
+// QEMU's own io_uring/epoll fdmon driving the same ring (see FINDINGS F7 — the
+// SIGABRT at fdmon-io_uring.c get_sqe). The pre-3388c5b synchronous behavior
+// runs the mount on the calling (main) thread, which avoids the foreign-loop
+// entanglement and mounts cleanly. The cost is a brief main-thread block for
+// the duration of the mount — acceptable vs. a hang/crash. (Node/CLI keep
+// working; only the threading changed.)
 static Napi::Value SessionEnter(const Napi::CallbackInfo& info)
 {
 	int h = info[0].As<Napi::Number>().Int32Value();
 	uint32_t part = info[1].As<Napi::Number>().Uint32Value();
 	uint32_t flags = info[2].As<Napi::Number>().Uint32Value();
-	auto deferred = Napi::Promise::Deferred::New(info.Env());
-	auto promise = deferred.Promise();
-	auto* w = new StrOutWorker(
-	    info.Env(), std::move(deferred), 256,
-	    [h, part, flags](char* out, size_t cap, int* n) {
-		    *n = 0;
-		    int rc = anyfs_ts_session_enter(h, part, flags, out, cap);
-		    if (rc == 0)
-			    *n = (int)strlen(out);
-		    return rc;
-	    });
-	w->Queue();
-	return promise;
+	char out[256];
+	int rc;
+	{
+		std::lock_guard<std::mutex> lock(g_op_mutex);
+		rc = anyfs_ts_session_enter(h, part, flags, out, sizeof(out));
+	}
+	if (rc < 0) {
+		const char* err = anyfs_get_last_error();
+		Napi::Error::New(info.Env(),
+				 (err && *err) ? err : "sessionEnter failed")
+		    .ThrowAsJavaScriptException();
+		return info.Env().Undefined();
+	}
+	return Napi::String::New(info.Env(), out);
 }
 
 // ── path ops ─────────────────────────────────────────────────────────────
