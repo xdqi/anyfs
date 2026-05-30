@@ -202,6 +202,7 @@ export function FilePicker({ onSource }: { onSource: (s: SessionSource) => void 
                     FSA is the primary path when available; this is the fallback. */}
                 <input
                     id="anyfs-legacy-file"
+                    data-testid="legacy-file-input"
                     type="file"
                     className="hidden"
                     onChange={(e) => {
@@ -230,6 +231,7 @@ export function FilePicker({ onSource }: { onSource: (s: SessionSource) => void 
                         <li>
                             <button
                                 type="button"
+                                data-testid="open-file-button"
                                 onClick={() => void onOpenFile()}
                                 className="text-emerald-700 dark:text-emerald-400 hover:underline text-base"
                             >
@@ -244,6 +246,7 @@ export function FilePicker({ onSource }: { onSource: (s: SessionSource) => void 
                         <li>
                             <button
                                 type="button"
+                                data-testid="open-url-button"
                                 onClick={() => setOpenDialog('url')}
                                 className="text-emerald-700 dark:text-emerald-400 hover:underline text-base"
                             >
@@ -259,6 +262,7 @@ export function FilePicker({ onSource }: { onSource: (s: SessionSource) => void 
                             <li>
                                 <button
                                     type="button"
+                                    data-testid="open-drives-button"
                                     onClick={() => setOpenDialog('drives')}
                                     className="text-emerald-700 dark:text-emerald-400 hover:underline text-base"
                                 >
