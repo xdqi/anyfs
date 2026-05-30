@@ -13,7 +13,7 @@
 #   $SYSROOT/include/blkid/blkid.h
 #   (default sysroot: $HOME/wasm-sysroot)
 #
-# Why a separate script: build_anyfs_browser_wasm.sh expects libblkid.a +
+# Why a separate script: build_anyfs_wasm.sh expects libblkid.a +
 # blkid.h to already exist in the sysroot; this script provides the recipe
 # that produces them. The mingw port lives in patches/libblkid/shim/ and
 # uses a hand-compiled source list, but wasm tolerates util-linux's full
