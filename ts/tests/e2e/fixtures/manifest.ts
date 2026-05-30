@@ -87,7 +87,8 @@ export const FIXTURES: Record<string, Fixture> = {
         source: 'downloaded',
         file: img('trusty-cloud.qcow2'),
         url: 'https://cloud-images.ubuntu.com/trusty/current/trusty-server-cloudimg-amd64-disk1.img',
-        // expectedSize/sha256 filled in by the fetch script first run (later task).
+        expectedSize: 264897024,
+        sha256: '3c4ad0defbe729dd3c16d2851d775575d1c5351c85734418d3b89bfdfd28ebd1',
         parts: [{ index: 1, fs: 'ext4', tree: [{ path: 'etc/hostname' }] }],
     },
     isoUrl: {
@@ -95,6 +96,8 @@ export const FIXTURES: Record<string, Fixture> = {
         source: 'downloaded',
         file: img('trusty.iso'),
         url: 'https://releases.ubuntu.com/trusty/ubuntu-14.04.6-server-amd64.iso',
+        expectedSize: 662700032,
+        sha256: 'b17d7c1e9d0321ad5810ba77b69aef43f0f29a5422b08120e6ee0576c4527c0e',
         parts: [{ index: 0, fs: 'iso9660', tree: [{ path: 'README.diskdefines' }] }],
     },
 };
