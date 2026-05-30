@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <napi.h>
 #include <string>
 #include <vector>
@@ -86,13 +87,60 @@ static Napi::Value CallOverflowing(Napi::Env env, const char* name, Fn fn)
 	return env.Null();
 }
 
+// ── serialization ──────────────────────────────────────────────────────────
+// LKL holds a single CPU lock; two concurrent ops would crash the kernel.
+// AsyncWorker 的 Execute() 在线程池里跑，这把锁保证同一时刻只有一个 C 调
+// 用触及 LKL——后续发起的 JS 调用排队等锁，不阻塞 JS 主线程。
+static std::mutex g_op_mutex;
+
 // ── lifecycle ────────────────────────────────────────────────────────────
+
+// AsyncWorker wrapper for kernelInit: moves the blocking C call off the
+// JS thread into the libuv thread pool.  This is the prototype for the
+// full AsyncWorker conversion (Task 18).
+class KernelInitWorker : public Napi::AsyncWorker
+{
+      public:
+	KernelInitWorker(Napi::Env env, Napi::Promise::Deferred deferred,
+			 uint32_t mem_mb, uint32_t loglevel)
+	    : Napi::AsyncWorker(env), deferred_(std::move(deferred)),
+	      mem_mb_(mem_mb), loglevel_(loglevel), rc_(-1)
+	{
+	}
+
+	void Execute() override
+	{
+		std::lock_guard<std::mutex> lock(g_op_mutex);
+		rc_ = anyfs_ts_kernel_init(mem_mb_, loglevel_);
+	}
+
+	void OnOK() override
+	{
+		deferred_.Resolve(Napi::Number::New(Env(), rc_));
+	}
+
+	void OnError(const Napi::Error& e) override
+	{
+		deferred_.Reject(e.Value());
+	}
+
+      private:
+	Napi::Promise::Deferred deferred_;
+	uint32_t mem_mb_;
+	uint32_t loglevel_;
+	int rc_;
+};
 
 static Napi::Value KernelInit(const Napi::CallbackInfo& info)
 {
+	Napi::Env env = info.Env();
 	uint32_t mem = info[0].As<Napi::Number>().Uint32Value();
 	uint32_t lvl = info[1].As<Napi::Number>().Uint32Value();
-	return Napi::Number::New(info.Env(), anyfs_ts_kernel_init(mem, lvl));
+	auto deferred = Napi::Promise::Deferred::New(env);
+	auto promise = deferred.Promise();
+	auto* worker = new KernelInitWorker(env, std::move(deferred), mem, lvl);
+	worker->Queue();
+	return promise;
 }
 
 static Napi::Value KernelHalt(const Napi::CallbackInfo& info)
