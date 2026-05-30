@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { DragEvent as ReactDragEvent } from 'react';
 import type { SessionSource } from '@anyfs/core';
 import { getAnyfsNative, getUrlProxyPrefix } from '@anyfs/core';
 import { useSettings } from '../Settings';
@@ -23,7 +22,6 @@ import { SystemDrivesDialog } from './SystemDrivesDialog';
 import { UrlErrorDialog } from './UrlErrorDialog';
 
 export function FilePicker({ onSource }: { onSource: (s: SessionSource) => void }) {
-    const [dragging, setDragging] = useState(false);
     const [errorDialog, setErrorDialog] = useState<{ title: string; message: string } | null>(null);
     const [recents, setRecents] = useState<Recent[]>([]);
     // null = no overlay; else which action dialog is open.
@@ -61,48 +59,6 @@ export function FilePicker({ onSource }: { onSource: (s: SessionSource) => void 
         },
         [onSource, refreshRecents],
     );
-
-    // Try to lift a FileSystemFileHandle out of a drop event so dropped files
-    // also become recents on Chrome/Edge. Falls back to dataTransfer.files
-    // (still mounts, just doesn't persist).
-    const onDrop = async (e: ReactDragEvent) => {
-        e.preventDefault();
-        setDragging(false);
-        if (nativeMode) {
-            // Native side has no File→path bridge; ask the user to use the
-            // dialog instead so we get an absolute host path.
-            setErrorDialog({
-                title: 'Drag-and-drop not supported in native mode',
-                message:
-                    'Use "Open file…" to pick a disk image — the native bridge needs an absolute host path, not an in-browser File object.',
-            });
-            return;
-        }
-        if (fsa && e.dataTransfer.items && e.dataTransfer.items.length > 0) {
-            for (const item of Array.from(e.dataTransfer.items)) {
-                if (item.kind !== 'file') continue;
-                // Non-standard but shipped in Chromium/WebKit; cast to surface it.
-                const getHandle = (
-                    item as DataTransferItem & {
-                        getAsFileSystemHandle?: () => Promise<FileSystemHandle | null>;
-                    }
-                ).getAsFileSystemHandle;
-                if (getHandle) {
-                    try {
-                        const h = await getHandle.call(item);
-                        if (h && h.kind === 'file') {
-                            const fh = h as FileSystemFileHandle;
-                            const f = await fh.getFile();
-                            await acceptBlob(f, fh);
-                            return;
-                        }
-                    } catch {}
-                }
-            }
-        }
-        const f = e.dataTransfer.files[0];
-        if (f) await acceptBlob(f);
-    };
 
     // Native picker. In Electron we always go through dialog:openImage so we
     // get an absolute host path the LKL kernel can attach. In browsers we
@@ -239,31 +195,8 @@ export function FilePicker({ onSource }: { onSource: (s: SessionSource) => void 
     };
 
     return (
-        <div
-            className="flex-1 flex items-center justify-center p-6"
-            onDragEnter={(e) => {
-                if (nativeMode) return;
-                e.preventDefault();
-                setDragging(true);
-            }}
-            onDragOver={(e) => {
-                if (nativeMode) return;
-                e.preventDefault();
-                setDragging(true);
-            }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={(e) => {
-                void onDrop(e);
-            }}
-        >
-            <div
-                className={[
-                    'w-full max-w-xl rounded-2xl bg-white border dark:bg-zinc-900 p-6 space-y-5 shadow-xl transition-colors',
-                    dragging
-                        ? 'border-emerald-500 ring-2 ring-emerald-500/40'
-                        : 'border-zinc-200 dark:border-zinc-800',
-                ].join(' ')}
-            >
+        <div className="flex-1 flex items-center justify-center p-6">
+            <div className="w-full max-w-xl rounded-2xl bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-800 p-6 space-y-5 shadow-xl transition-colors">
                 {/* Always in DOM so CDP tests can inject files via setFileInputFiles.
                     FSA is the primary path when available; this is the fallback. */}
                 <input
@@ -340,7 +273,7 @@ export function FilePicker({ onSource }: { onSource: (s: SessionSource) => void 
 
                 {!nativeMode && (
                     <p className="text-xs text-zinc-500 leading-relaxed">
-                        Tip — drop a disk image anywhere on this card to open it.
+                        Tip — drop a disk image anywhere in this window to open it.
                     </p>
                 )}
 

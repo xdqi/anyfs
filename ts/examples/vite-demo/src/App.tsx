@@ -9,6 +9,7 @@ import { AboutDialog } from './components/AboutDialog';
 import { DiskView } from './components/DiskView';
 import { KernelStatusBar } from './components/KernelStatusBar';
 import { FilePicker } from './components/FilePicker';
+import { DropOverlay } from './components/DropOverlay';
 import { clearNavHash, sourceName } from './utils';
 
 const WORKER_URL = new URL('/wasm/anyfs.worker.js', window.location.href).href;
@@ -91,6 +92,30 @@ export function App() {
     const onHomeClick = source ? askCloseDisk : undefined;
     const onImageClick = source && selectedPart !== null ? askBackToParts : undefined;
 
+    // Whole-window drag-drop handler.
+    const onDropFile = useCallback(
+        (files: FileList) => {
+            const f = files[0];
+            if (!f) return;
+            if (source) {
+                setConfirm({
+                    title: 'Replace current image?',
+                    message: `Drop "${f.name}" to replace the currently loaded disk.`,
+                    confirmLabel: 'Replace',
+                    onConfirm: () => {
+                        setSelectedPart(null);
+                        setSource({ kind: 'blob', blob: f });
+                        setConfirm(null);
+                    },
+                });
+                return;
+            }
+            setSelectedPart(null);
+            setSource({ kind: 'blob', blob: f });
+        },
+        [source],
+    );
+
     // Detect env at render time. SettingsProvider isn't ready yet so we
     // read disableNative directly from localStorage — it's cheap and the
     // provider snapshots it at mount anyway (Settings change requires
@@ -119,6 +144,7 @@ export function App() {
                 {...(settingsDisableNative ? { disableNative: true as const } : {})}
             >
                 <div className="h-screen flex flex-col">
+                    <DropOverlay onDrop={onDropFile} />
                     <TopBar
                         onOpenSettings={() => setSettingsOpen(true)}
                         onOpenAbout={() => setAboutOpen(true)}
