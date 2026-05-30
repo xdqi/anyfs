@@ -239,7 +239,7 @@ int anyfs_session_open(const char* image_path, uint32_t flags,
 	/* Yield to the event loop to flush any stale ASYNCIFY fiber
 	 * state left over from QEMU block I/O during lkl_disk_add.
 	 * Without this checkpoint, subsequent sysfs reads may hang. */
-#ifdef __EMSCRIPTEN__
+#if defined(__EMSCRIPTEN__) && defined(ANYFS_HAS_QEMU)
 	emscripten_sleep(0);
 #endif
 	/* Construct sysfs block name from disk_id. The first LKL
