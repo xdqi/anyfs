@@ -1,6 +1,6 @@
 // Minimal Node smoke test for the wasm bundle.
-// Exercises: createAnyfsModule() -> NODEFS mount -> anyfs_ts_init ->
-// anyfs_ts_disk_open + anyfs_ts_disk_list_json against disk_multi.img.
+// Exercises: createAnyfsModule() -> NODEFS mount -> anyfs_ts_kernel_init ->
+// anyfs_ts_session_open + anyfs_ts_session_list_json against disk_multi.img.
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,21 +39,21 @@ const M = await createAnyfsModule({
 });
 console.log('[smoke] module loaded; main() ran automatically');
 
-console.log('[smoke] anyfs_ts_init(64, 0)…');
-const rc = M.ccall('anyfs_ts_init', 'number', ['number', 'number'], [64, 0]);
+console.log('[smoke] anyfs_ts_kernel_init(64, 0)…');
+const rc = M.ccall('anyfs_ts_kernel_init', 'number', ['number', 'number'], [64, 0]);
 console.log('  rc =', rc);
 if (rc !== 0) process.exit(3);
 
 const fsPath = '/work/' + path.basename(imgHost);
-console.log('[smoke] anyfs_ts_disk_open(', fsPath, ', 0)…');
-const h = M.ccall('anyfs_ts_disk_open', 'number', ['string', 'number'], [fsPath, 0]);
+console.log('[smoke] anyfs_ts_session_open(', fsPath, ', 0)…');
+const h = M.ccall('anyfs_ts_session_open', 'number', ['string', 'number'], [fsPath, 0]);
 console.log('  handle =', h);
 if (h < 0) process.exit(4);
 
 const cap = 4096;
 const bufPtr = M._malloc(cap);
 const n = M.ccall(
-    'anyfs_ts_disk_list_json',
+    'anyfs_ts_session_list_json',
     'number',
     ['number', 'number', 'number'],
     [h, bufPtr, cap],
@@ -77,27 +77,16 @@ const exerciseEntry =
 
 let mountPath;
 const mountBuf = M._malloc(128);
-if (exerciseEntry.mountWhole) {
-    const rc2 = M.ccall(
-        'anyfs_ts_mount_whole',
-        'number',
-        ['number', 'string', 'number', 'number', 'number'],
-        [h, exerciseEntry.mountWhole, 0, mountBuf, 128],
-    );
-    console.log('[smoke] mount_whole rc =', rc2);
-    if (rc2 !== 0) process.exit(6);
-    mountPath = M.UTF8ToString(mountBuf);
-} else {
-    const rc2 = M.ccall(
-        'anyfs_ts_disk_enter',
-        'number',
-        ['number', 'number', 'number', 'number', 'number'],
-        [h, exerciseEntry.part, 0, mountBuf, 128],
-    );
-    console.log('[smoke] disk_enter rc =', rc2);
-    if (rc2 !== 0) process.exit(6);
-    mountPath = M.UTF8ToString(mountBuf);
-}
+const enterPart = exerciseEntry.mountWhole ? 0 : exerciseEntry.part;
+const rc2 = M.ccall(
+    'anyfs_ts_session_enter',
+    'number',
+    ['number', 'number', 'number', 'number', 'number'],
+    [h, enterPart, 0, mountBuf, 128],
+);
+console.log('[smoke] session_enter rc =', rc2);
+if (rc2 !== 0) process.exit(6);
+mountPath = M.UTF8ToString(mountBuf);
 M._free(mountBuf);
 console.log('  mounted at', mountPath);
 
@@ -137,7 +126,7 @@ if (which === 'big') {
     M.ccall('anyfs_ts_close', 'number', ['number'], [fd]);
 }
 
-M.ccall('anyfs_ts_disk_close', 'number', ['number'], [h]);
+M.ccall('anyfs_ts_session_close', 'number', ['number'], [h]);
 M.ccall('anyfs_ts_kernel_halt', 'number', [], []);
 console.log('[smoke] OK');
 process.exit(0);
