@@ -13,7 +13,7 @@ import {
     pickFile,
     type Recent,
 } from '../recents';
-import { sourceName, probeUrlAhead } from '../utils';
+import { sourceName, probeUrlAhead, fileToSource } from '../utils';
 import { getElectronDialog, getElectronDrives } from './SystemDrivesDialog';
 import { RecentsList } from './RecentsList';
 import { SupportedFormats } from './SupportedFormats';
@@ -55,7 +55,8 @@ export function FilePicker({ onSource }: { onSource: (s: SessionSource) => void 
                 } catch {}
                 void refreshRecents();
             }
-            onSource({ kind: 'blob', blob: file });
+            const source = await fileToSource(file);
+            onSource(source);
         },
         [onSource, refreshRecents],
     );

@@ -10,7 +10,7 @@ import { DiskView } from './components/DiskView';
 import { KernelStatusBar } from './components/KernelStatusBar';
 import { FilePicker } from './components/FilePicker';
 import { DropOverlay } from './components/DropOverlay';
-import { clearNavHash, sourceName } from './utils';
+import { clearNavHash, sourceName, fileToSource } from './utils';
 
 const WORKER_URL = new URL('/wasm/anyfs.worker.js', window.location.href).href;
 
@@ -102,16 +102,17 @@ export function App() {
                     title: 'Replace current image?',
                     message: `Drop "${f.name}" to replace the currently loaded disk.`,
                     confirmLabel: 'Replace',
-                    onConfirm: () => {
+                    onConfirm: async () => {
                         setSelectedPart(null);
-                        setSource({ kind: 'blob', blob: f });
+                        const src = await fileToSource(f);
+                        setSource(src);
                         setConfirm(null);
                     },
                 });
                 return;
             }
             setSelectedPart(null);
-            setSource({ kind: 'blob', blob: f });
+            void fileToSource(f).then(setSource);
         },
         [source],
     );

@@ -26,6 +26,28 @@ export function sourceName(s: SessionSource): string {
     }
 }
 
+/**
+ * Convert a browser File into a SessionSource. Under Electron, if the
+ * `electronFile.pathFor` bridge is available, the File is translated to
+ * an absolute host path and `{kind:'path'}` is returned. Otherwise the
+ * file stays as-is with `{kind:'blob'}`.
+ */
+export async function fileToSource(file: File): Promise<SessionSource> {
+    const ef = (window as any).electronFile as
+        | { pathFor?: (f: File) => Promise<string> }
+        | undefined;
+    if (ef?.pathFor) {
+        try {
+            const p = await ef.pathFor(file);
+            const name = sourceName({ kind: 'path', path: p });
+            return { kind: 'path', path: p, name };
+        } catch {
+            // pathFor failed — fall through to blob
+        }
+    }
+    return { kind: 'blob', blob: file };
+}
+
 /** Format a Unix timestamp (seconds) as human-readable. */
 export function formatTs(ts: number): string {
     if (!ts) return '—';
