@@ -232,6 +232,39 @@ const ops: Record<string, (a: any) => unknown> = {
         const cap = 128;
         const out = M._malloc(cap);
         try {
+            // Prefer the async enter path when available. ext4 (jbd2) and btrfs
+            // mounts spawn a kernel thread; the synchronous enter blocks the
+            // pool-owning thread in sem_wait → Atomics.wait, and the browser
+            // can't create the new pthread's Worker while that thread is
+            // blocked → deadlock (vfat needs no kthread, so it works). Running
+            // the enter on a dedicated pthread keeps this thread's event loop
+            // free to service spawnThread, exactly like the async boot path.
+            if ((M as any)._anyfs_ts_session_enter_async) {
+                const asyncRc = M.ccall(
+                    'anyfs_ts_session_enter_async',
+                    'number',
+                    ['number', 'number', 'number'],
+                    [diskHandle, part, flags ?? 1],
+                );
+                if (asyncRc !== 0)
+                    throw new Error(`anyfs_ts_session_enter_async failed: ${asyncRc}`);
+
+                for (let i = 0; i < 600; i++) {
+                    if (M.ccall('anyfs_ts_session_enter_is_complete', 'number', [], [])) break;
+                    await new Promise((r) => setTimeout(r, 100));
+                }
+                if (!M.ccall('anyfs_ts_session_enter_is_complete', 'number', [], [])) {
+                    throw new Error('session_enter timed out (kernel thread never settled)');
+                }
+                const rc = await callP(
+                    'anyfs_ts_session_enter_result_p',
+                    ['number', 'number'],
+                    [out, cap],
+                );
+                if (rc < 0) throw new Error(`disk_enter rc=${rc}`);
+                return M.UTF8ToString(out);
+            }
+
             const rc = await callP(
                 'anyfs_ts_session_enter_p',
                 ['number', 'number', 'number', 'number', 'number'],

@@ -188,6 +188,7 @@ EXPORTED_FUNCS='_main,_malloc,_free,'\
 '_anyfs_ts_session_open,_anyfs_ts_session_close,'\
 '_anyfs_ts_session_list_json,_anyfs_ts_session_meta_json,'\
 '_anyfs_ts_session_enter,'\
+'_anyfs_ts_session_enter_async,_anyfs_ts_session_enter_is_complete,_anyfs_ts_session_enter_result_p,'\
 '_anyfs_ts_readdir_json,_anyfs_ts_lstat_json,_anyfs_ts_stat_json,'\
 '_anyfs_ts_realpath,_anyfs_ts_readlink,_anyfs_ts_read_kernel_file,'\
 '_anyfs_ts_open,_anyfs_ts_pread,_anyfs_ts_close,'\

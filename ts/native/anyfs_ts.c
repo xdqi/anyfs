@@ -140,6 +140,90 @@ int anyfs_ts_boot_result(void)
 {
 	return g_boot_result;
 }
+
+/*
+ * Async session_enter for wasm/Worker environments — same deadlock, same fix
+ * as async boot. An ext4 (jbd2) or btrfs mount spawns a kernel thread; the
+ * synchronous anyfs_ts_session_enter blocks the calling thread in
+ * sem_down → Atomics.wait while that mount runs. The pool-owning thread can
+ * then no longer service spawnThread/new Worker() messages (creating a peer
+ * Worker needs its JS event loop to spin), so the mount deadlocks. vfat needs
+ * no kthread, which is why it mounts fine.
+ *
+ * The fix mirrors boot_thread_fn exactly: run anyfs_ts_session_enter on a
+ * dedicated detached pthread, return to JavaScript immediately, and poll
+ * anyfs_ts_session_enter_is_complete() while the event loop stays free.
+ *
+ * Only ONE enter may be in flight at a time — the kernel holds a single CPU
+ * lock, and worker.ts already serialises ops via its opChain. The completion
+ * flag is reset at kick-off and set under the same __sync_synchronize barrier
+ * the boot path uses.
+ */
+
+/* Defined further down (alongside the other synchronous session ops). */
+int anyfs_ts_session_enter(int h, unsigned int part, uint32_t flags,
+			   char* mount_out, size_t mount_cap);
+
+static volatile int g_enter_complete = 0;
+static volatile int g_enter_result = 0;
+static char g_enter_mount[64];
+
+struct enter_args {
+	int handle;
+	unsigned int part;
+	uint32_t flags;
+};
+
+static void* enter_thread_fn(void* arg)
+{
+	struct enter_args* a = (struct enter_args*)arg;
+
+	g_enter_result = anyfs_ts_session_enter(a->handle, a->part, a->flags,
+						g_enter_mount,
+						sizeof(g_enter_mount));
+	__sync_synchronize();
+	g_enter_complete = 1;
+
+	return NULL;
+}
+
+int anyfs_ts_session_enter_async(int handle, unsigned int part, uint32_t flags)
+{
+	static struct enter_args args;
+
+	args.handle = handle;
+	args.part = part;
+	args.flags = flags;
+
+	g_enter_complete = 0;
+	g_enter_result = 0;
+	g_enter_mount[0] = '\0';
+	__sync_synchronize();
+
+	pthread_t thread;
+	int rc = pthread_create(&thread, NULL, enter_thread_fn, &args);
+	if (rc != 0)
+		return -1;
+	pthread_detach(thread);
+	return 0; /* returns immediately — caller must poll */
+}
+
+int anyfs_ts_session_enter_is_complete(void)
+{
+	return g_enter_complete;
+}
+
+/* Out-pointer result accessor, matching the _p convention: writes the rc
+ * (0 on success, negative errno / negative sentinel on failure) through
+ * *out and copies the mount path into mount_out. Only valid once
+ * anyfs_ts_session_enter_is_complete() returns 1. */
+void anyfs_ts_session_enter_result_p(char* mount_out, size_t mount_cap,
+				     int32_t* out)
+{
+	if (mount_out && mount_cap)
+		snprintf(mount_out, mount_cap, "%s", g_enter_mount);
+	*out = (int32_t)g_enter_result;
+}
 #endif
 
 int anyfs_ts_kernel_halt(void)
