@@ -1,0 +1,234 @@
+# E2E Test Suite Design — Web (vite-demo) + Electron (electron-demo)
+
+**Date:** 2026-05-30
+**Status:** Approved design, ready for implementation plan
+
+## Goal
+
+Prove that both shipping front-ends — the browser app (`ts/examples/vite-demo`) and the
+Electron desktop app (`ts/examples/electron-demo`) — work as a user sees them: open a disk
+image, browse the filesystem tree, inspect file properties, and download a file. Cover the
+real backend paths (wasm Web Worker, Electron native N-API addon, Electron wasm fallback) and
+the network (URLFS) path. Wire a cheap subset into CI as a regression gate.
+
+Today neither target has a real test harness — only `__anyfsTest` CDP hooks, env-var smoke
+paths in the Electron main process, and standalone Node scripts for the native addon.
+
+## Scope
+
+**In scope:** E2E user flows across web + Electron, plus a CI smoke gate.
+
+**Out of scope:** React component unit tests with the session layer mocked; protocol-only
+integration tests (the worker RPC / IPC surfaces are exercised transitively through the E2E
+flows, not unit-tested in isolation here).
+
+## Harness
+
+Playwright for both targets, one framework / one assertion API:
+
+- **Web** — Chromium headless against a `vite preview` server that emits the COOP/COEP headers
+  required for `SharedArrayBuffer` + `Atomics.wait` (cross-origin isolation). A startup guard
+  fails fast if isolation is missing, because the wasm pthread path dies silently otherwise.
+- **Electron** — Playwright's `_electron.launch()` runs the built main process and lets tests
+  evaluate in both main and renderer contexts.
+
+## Architecture (Approach A: one config, three projects, shared driver)
+
+A single new test package, sibling to the existing `ts/tests/native-session.test.mjs`:
+
+```
+ts/tests/e2e/
+├── playwright.config.ts        # 3 projects: web, electron-native, electron-wasm
+├── package.json                # @playwright/test; scripts: test, test:web, test:electron, fixtures
+├── fixtures/
+│   ├── generate.mjs            # root/sudo mkfs + loop builder → emits images + verifies manifest
+│   ├── fetch.mjs               # downloads + caches remote images, sha/size guard
+│   ├── manifest.ts             # registry: each fixture's path/url + expected tree & file sizes
+│   ├── range-server.ts         # local HTTP server honoring Range, serves cached images for URLFS
+│   └── images/                 # generated + downloaded images (gitignored, built/fetched on demand)
+├── drivers/
+│   ├── driver.ts               # Driver interface
+│   ├── web-driver.ts           # drives vite-demo via __anyfsTest + DOM
+│   └── electron-driver.ts      # drives electron-demo via _electron, parametrized by backend env
+├── flows/                      # written ONCE against Driver, run across all projects
+│   ├── open-browse-download.spec.ts
+│   ├── url-load.spec.ts
+│   ├── formats.spec.ts
+│   └── errors.spec.ts
+├── electron-only/
+│   └── backend-switch.spec.ts  # native↔wasm via Settings disableNative → relaunch
+└── lib/
+    ├── assertions.ts           # expectKnownTree, expectFileDownloaded(name,size), ...
+    └── headers.ts              # COOP/COEP guard for the web preview server
+```
+
+### The `Driver` boundary
+
+Every flow spec talks only to a `Driver`. The two implementations differ in *how* but expose
+the same verbs. Crucially the abstraction does **not** hide real mechanism differences — e.g.
+`download()` reports which mechanism actually fired so the flow can assert the correct one per
+project (Service Worker on web, IPC on Electron).
+
+```ts
+type DownloadMechanism = 'service-worker' | 'electron-ipc';
+
+interface DownloadResult {
+  bytes: Uint8Array;        // captured file content
+  size: number;
+  mechanism: DownloadMechanism;
+}
+
+interface Driver {
+  openImage(fixture: Fixture): Promise<void>;       // file-picker / drag-drop / native dialog
+  openUrl(fixture: UrlFixture): Promise<void>;      // URLFS path (local range server or @network remote)
+  listParts(): Promise<PartInfo[]>;
+  enterPart(idx: number): Promise<void>;
+  readTree(): Promise<TreeNode[]>;                  // entries in the current directory
+  navigate(relPath: string): Promise<void>;
+  statFile(relPath: string): Promise<Stat>;         // Properties dialog
+  download(relPath: string): Promise<DownloadResult>;
+  expectError(kind: ErrorKind): Promise<void>;      // bad image / no-range / unsupported
+}
+```
+
+- `WebDriver` injects the source via `window.__anyfsTest` (`setSourceFile` / `openUrl` / `openPath`),
+  then drives partition selection, tree navigation, Properties, and download through the DOM.
+  `download()` asserts the Service-Worker mechanism and captures bytes via
+  `page.waitForEvent('download')`.
+- `ElectronDriver` feeds the image without a native dialog via `ANYFS_TEST_LOCAL_PATH` /
+  `__anyfsTest.openPath`, drives the same renderer DOM, and `download()` asserts the Electron IPC
+  path (`electronDownload.open/write/close`) by writing to a temp dir the test reads back.
+
+### Debug-hook policy (`__anyfsTest`)
+
+The tests stay **true E2E**: all *actions* — selecting a partition, navigating the tree, opening
+Properties, downloading — go through the real DOM (Chonky rows, dialog buttons). The
+`__anyfsTest` surface is kept **minimal, additive, and read-mostly**, used only for seams that
+cannot be driven faithfully otherwise.
+
+Changes to the app under test (`ts/examples/vite-demo/src/App.tsx`):
+
+1. **Keep the existing 3 source setters** — `openUrl` / `openPath` / `setSourceFile`. Scripting a
+   native OS file dialog or a real drag-drop is not reliable; injecting the source is the
+   standard, legitimate seam, and it is the *entry* of every flow.
+2. **Add read-only observability** (no action-replacing verbs):
+   - `__anyfsTest.getState()` → `{ phase, mode, mountPath }` where `phase` is the AnyfsProvider
+     state (`idle`/`booting`/`booted`/`attaching`/`mounting`/`ready`) and `mode` is the resolved
+     backend `native` | `wasm` (the provider already tracks both as `state.kind`/`state.phase`
+     and `mode: AnyfsBackendMode` — the hook surfaces existing values, it does not invent new
+     state). Lets the driver *await* `ready` deterministically instead of polling with sleeps,
+     and lets the Electron projects **assert which backend actually loaded** (essential for the
+     native-vs-wasm coverage and the switch flow).
+   - `__anyfsTest.lastError` → the last surfaced error, so the error-flow specs assert failure
+     deterministically rather than scraping dialog text.
+3. **Gate the hook behind a flag** — today `__anyfsTest` is attached unconditionally on every
+   page load. Change it to attach only under `import.meta.env.DEV` or an explicit opt-in
+   (`?e2e=1` / `window.__ANYFS_E2E`), so the debug surface is not live in production builds. This
+   is a small production-hygiene cleanup done as part of this work.
+
+Explicitly **rejected**: rich action hooks (`listParts`/`enterPart`/`readdir`/`stat`/
+`openReadable`) that bypass the UI — they would make the suite fast and stable but no longer
+E2E (a broken Chonky row click or download button would pass). Actions stay on the DOM.
+
+The Electron side already has `ANYFS_TEST_LOCAL_PATH` (main process) for headless source
+injection and needs no new debug surface beyond reusing `__anyfsTest` in the renderer.
+
+## Backend wiring
+
+Three Playwright projects:
+
+| Project | Launch | Backend selector |
+|---|---|---|
+| `web` | `vite preview` + Chromium | wasm Web Worker (only path) |
+| `electron-native` | `_electron.launch()` | native addon (default) |
+| `electron-wasm` | `_electron.launch()` | `ANYFS_DISABLE_NATIVE=1` (wasm fallback) |
+
+The four flow specs run across all three projects. `backend-switch.spec.ts` runs only in the
+Electron projects.
+
+**Native precondition guard.** The `electron-native` project verifies that an
+ABI-matching `anyfs_native.node` (built against the test's Electron version) is present. If not,
+it **fails with a clear message** rather than silently skipping — addon/Electron ABI drift
+otherwise SIGSEGVs during `require()`.
+
+## Backend-switch flow
+
+`_electron` cannot follow a real process re-exec, so the relaunch is tested in two halves:
+
+1. Launch native → open Settings → toggle `disableNative` → confirm dialog → assert the
+   `settings:relaunch` IPC fired with the expected args (i.e. `app.relaunch()` + `app.exit()`
+   were requested).
+2. Separately launch a fresh Electron instance with `ANYFS_DISABLE_NATIVE=1` and assert it boots
+   on the **wasm** backend and can open an image and browse it.
+
+Together this proves both the relaunch *request* and the resulting post-relaunch *state*.
+
+## Fixtures
+
+Image generation may use **root/sudo** — real `mkfs` + loop devices (`losetup`, `mount`,
+`sfdisk`/`fdisk`/`sgdisk`, `mkfs.ext4`/`mkfs.fat`/`mkfs.btrfs`). The spec documents this root
+requirement explicitly; unprivileged CI must provide privileges or skip generation.
+
+Each fixture has a manifest entry pinning its expected directory tree and exact file sizes
+(and content hashes where useful) so assertions are exact. The full matrix:
+
+| Fixture | Source | Container / PT | Filesystem(s) | Exercises |
+|---|---|---|---|---|
+| `multiRaw` | generated | GPT | ext4 + vfat | GPT parse, multi-partition, ext4/fat drivers |
+| `mbrExtended` | generated | MBR (msdos) | 2 primary + N logical | MBR parse, extended-partition / EBR chain walk, logical-partition enter |
+| `btrfsVmdk` | generated | **none** (whole-disk), VMDK wrap | btrfs | vmdk decoder, no-partition-table / whole-disk path, btrfs driver |
+| `qcow2Url` | downloaded | (ubuntu cloud image) | (image's own) | qcow2 decoder + URLFS Range |
+| `isoUrl` | downloaded | ISO9660 | iso9660 | iso path + URLFS Range |
+
+**Generated images** — built on demand into gitignored `fixtures/images/`. Known file set per
+filesystem includes a regular file with known content, a nested binary with a deterministic
+pattern and known size, an empty directory (edge case), and a symlink (exercises
+stat/realpath + the follow-symlinks toggle).
+
+**Downloaded images** — fetched once and cached (gitignored) with a size/sha guard so a changed
+or moved remote fails loudly rather than silently testing the wrong bytes. Pinned URLs:
+
+- qcow2 (cloud image): `https://cloud-images.ubuntu.com/trusty/current/trusty-server-cloudimg-amd64-disk1.img`
+- iso (release media): `https://releases.ubuntu.com/trusty/ubuntu-14.04.6-server-amd64.iso`
+
+A `fixtures` npm script generates/fetches everything up front; specs use an
+`ensureFixture(name)` helper that builds-or-fetches lazily and verifies the guard before use.
+
+## User flows (spec files)
+
+1. **open-browse-download** — open an image (file picker / drag-drop / native dialog), see the
+   partition list, enter a partition, navigate the tree, open a file's Properties (stat), and
+   download a file. Assert known files/sizes from the manifest, and that the *correct* download
+   mechanism fired for the project.
+2. **url-load (URLFS)** — open an image by URL. By default serve the cached fixture through the
+   local Range-honoring server (hermetic, fast); a `@network`-tagged variant hits the two real
+   remote URLs to prove real-world fetch. Assert the image mounts and browses correctly.
+3. **formats** — open `multiRaw`, `mbrExtended`, `btrfsVmdk`, `qcow2Url`, `isoUrl`; assert each
+   mounts and lists its known contents (covers GPT/MBR/no-PT topologies × ext4/vfat/btrfs/iso ×
+   qcow2/vmdk decoders).
+4. **errors / edge cases** — corrupt/bad image, URL without Range support (error dialog),
+   unsupported format, empty partition/directory. Assert graceful failure, not just happy path.
+
+## CI smoke gate
+
+A fast, minimal subset wired into CI as a regression gate: boot each target and open a single
+generated fixture (`multiRaw`) without crashing, asserting one known file is listed. Tagged
+`@smoke` so it can run independently of the full (slower, network-touching) suite. The full
+suite — including `@network` and the large downloaded images — runs on demand / nightly rather
+than on every push.
+
+## Honesty / correctness constraints
+
+- `Driver.download()` reports the real mechanism (SW vs IPC); the flow asserts the right one per
+  project. The driver never papers over this difference.
+- The `electron-native` project fails loudly when no ABI-matching addon is present — never a
+  silent skip that would let a broken native path masquerade as passing.
+- Downloaded fixtures are guarded by size/sha; a changed remote fails the run rather than
+  silently testing different bytes.
+- The web project's COOP/COEP guard fails fast if cross-origin isolation is missing.
+
+## Open question for the implementation plan
+
+URL-load default: serve the cached copy via the local Range server (hermetic) with a `@network`
+variant for the real remotes — as specified above. If a future decision wants the URL flow to
+always hit the real remotes, drop the local-server indirection; not assumed here.
