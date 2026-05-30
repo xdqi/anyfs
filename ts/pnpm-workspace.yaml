@@ -1,6 +1,7 @@
 packages:
   - 'packages/*'
   - 'examples/*'
+  - 'tests/*'
 strictDepBuilds: false
 confirmModulesPurge: false
 onlyBuiltDependencies:

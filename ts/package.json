@@ -6,8 +6,8 @@
     "scripts": {
         "build": "pnpm -r --filter './packages/*' build",
         "test": "pnpm -r --filter './packages/*' test",
-        "format": "prettier --write '{packages,examples}/**/*.{ts,tsx,mjs,js,json}'",
-        "format:check": "prettier --check '{packages,examples}/**/*.{ts,tsx,mjs,js,json}'"
+        "format": "prettier --write '{packages,examples,tests}/**/*.{ts,tsx,mjs,js,json}'",
+        "format:check": "prettier --check '{packages,examples,tests}/**/*.{ts,tsx,mjs,js,json}'"
     },
     "devDependencies": {
         "prettier": "^3.4.2",
