@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <mutex>
 #include <napi.h>
 #include <string>
@@ -58,60 +59,30 @@ int64_t anyfs_ts_pread(int fd, void* buf, uint32_t n, int64_t off);
 int anyfs_ts_close(int fd);
 }
 
-// Buffer-grow loop for the "negative rc = need this many bytes" protocol.
-// Mirrors callJsonOut() in ts/packages/core/src/worker.ts:
-//   rc >= 0          -> success, |rc| bytes valid in buf
-//   rc < 0, -rc > cap-> overflow, retry with bigger buffer
-//   rc < 0, -rc <= cap -> hard error, propagate
-template <typename Fn>
-static Napi::Value CallOverflowing(Napi::Env env, const char* name, Fn fn)
-{
-	size_t cap = 8192;
-	for (int i = 0; i < 6; i++) {
-		std::vector<char> buf(cap);
-		int n = fn(buf.data(), buf.size());
-		if (n >= 0)
-			return Napi::String::New(env, buf.data(), (size_t)n);
-		size_t need = (size_t)(-n);
-		if (need <= cap) {
-			Napi::Error::New(env, std::string(name) +
-						  ": rc=" + std::to_string(n))
-			    .ThrowAsJavaScriptException();
-			return env.Null();
-		}
-		cap = std::max(need + 256, cap * 2);
-	}
-	Napi::Error::New(env,
-			 std::string(name) + ": keeps requesting more buffer")
-	    .ThrowAsJavaScriptException();
-	return env.Null();
-}
-
 // ── serialization ──────────────────────────────────────────────────────────
 // LKL holds a single CPU lock; two concurrent ops would crash the kernel.
-// AsyncWorker 的 Execute() 在线程池里跑，这把锁保证同一时刻只有一个 C 调
-// 用触及 LKL——后续发起的 JS 调用排队等锁，不阻塞 JS 主线程。
+// AsyncWorker's Execute() runs in the libuv thread pool; this mutex
+// guarantees only one op touches LKL at a time. Later JS calls queue on
+// the mutex — they do NOT block the JS main thread.
 static std::mutex g_op_mutex;
 
-// ── lifecycle ────────────────────────────────────────────────────────────
+// ── AsyncWorker helpers ──────────────────────────────────────────────────
 
-// AsyncWorker wrapper for kernelInit: moves the blocking C call off the
-// JS thread into the libuv thread pool.  This is the prototype for the
-// full AsyncWorker conversion (Task 18).
-class KernelInitWorker : public Napi::AsyncWorker
+// Simple int-return C call. OnOK resolves with the integer rc.
+class IntRetWorker : public Napi::AsyncWorker
 {
       public:
-	KernelInitWorker(Napi::Env env, Napi::Promise::Deferred deferred,
-			 uint32_t mem_mb, uint32_t loglevel)
+	IntRetWorker(Napi::Env env, Napi::Promise::Deferred deferred,
+		     std::function<int()> fn)
 	    : Napi::AsyncWorker(env), deferred_(std::move(deferred)),
-	      mem_mb_(mem_mb), loglevel_(loglevel), rc_(-1)
+	      fn_(std::move(fn)), rc_(-1)
 	{
 	}
 
 	void Execute() override
 	{
 		std::lock_guard<std::mutex> lock(g_op_mutex);
-		rc_ = anyfs_ts_kernel_init(mem_mb_, loglevel_);
+		rc_ = fn_();
 	}
 
 	void OnOK() override
@@ -126,21 +97,178 @@ class KernelInitWorker : public Napi::AsyncWorker
 
       private:
 	Napi::Promise::Deferred deferred_;
-	uint32_t mem_mb_;
-	uint32_t loglevel_;
+	std::function<int()> fn_;
 	int rc_;
 };
 
+// Buffer-grow JSON-out worker. Mirrors the old CallOverflowing helper but
+// runs in the thread pool. Result string is resolved when rc >= 0.
+class JsonOutWorker : public Napi::AsyncWorker
+{
+      public:
+	JsonOutWorker(Napi::Env env, Napi::Promise::Deferred deferred,
+		      std::string name, std::function<int(char*, size_t)> fn)
+	    : Napi::AsyncWorker(env), deferred_(std::move(deferred)),
+	      name_(std::move(name)), fn_(std::move(fn)), err_("")
+	{
+	}
+
+	void Execute() override
+	{
+		std::lock_guard<std::mutex> lock(g_op_mutex);
+		size_t cap = 8192;
+		for (int i = 0; i < 6; i++) {
+			std::vector<char> buf(cap);
+			int n = fn_(buf.data(), buf.size());
+			if (n >= 0) {
+				result_ = std::string(buf.data(), (size_t)n);
+				return;
+			}
+			size_t need = (size_t)(-n);
+			if (need <= cap) {
+				err_ = name_ + ": rc=" + std::to_string(n);
+				return;
+			}
+			cap = std::max(need + 256, cap * 2);
+		}
+		err_ = name_ + ": keeps requesting more buffer";
+	}
+
+	void OnOK() override
+	{
+		if (!err_.empty()) {
+			Napi::Error::New(Env(), err_)
+			    .ThrowAsJavaScriptException();
+			deferred_.Resolve(Env().Null());
+			return;
+		}
+		deferred_.Resolve(
+		    Napi::String::New(Env(), result_.data(), result_.size()));
+	}
+
+	void OnError(const Napi::Error& e) override
+	{
+		deferred_.Reject(e.Value());
+	}
+
+      private:
+	Napi::Promise::Deferred deferred_;
+	std::string name_;
+	std::function<int(char*, size_t)> fn_;
+	std::string result_;
+	std::string err_;
+};
+
+// String-out worker with a pre-sized stack buffer. The C function writes
+// into the buffer and returns rc; on rc==0 OnOK resolves with the string.
+class StrOutWorker : public Napi::AsyncWorker
+{
+      public:
+	StrOutWorker(Napi::Env env, Napi::Promise::Deferred deferred,
+		     size_t buf_cap, std::function<int(char*, size_t, int*)> fn)
+	    : Napi::AsyncWorker(env), deferred_(std::move(deferred)),
+	      buf_(buf_cap), fn_(std::move(fn)), rc_(-1)
+	{
+	}
+
+	void Execute() override
+	{
+		std::lock_guard<std::mutex> lock(g_op_mutex);
+		int n = 0;
+		rc_ = fn_(buf_.data(), buf_.size(), &n);
+		if (rc_ == 0)
+			result_ = std::string(buf_.data(), (size_t)n);
+	}
+
+	void OnOK() override
+	{
+		if (rc_ != 0) {
+			Napi::Error::New(Env(),
+					 "operation: rc=" + std::to_string(rc_))
+			    .ThrowAsJavaScriptException();
+			deferred_.Resolve(Env().Null());
+			return;
+		}
+		deferred_.Resolve(
+		    Napi::String::New(Env(), result_.data(), result_.size()));
+	}
+
+	void OnError(const Napi::Error& e) override
+	{
+		deferred_.Reject(e.Value());
+	}
+
+      private:
+	Napi::Promise::Deferred deferred_;
+	std::vector<char> buf_;
+	std::function<int(char*, size_t, int*)> fn_;
+	std::string result_;
+	int rc_;
+};
+
+// pread worker — mallocs a temp buffer, calls anyfs_ts_pread, resolves
+// with { rc: number, data: Uint8Array }.
+class PreadWorker : public Napi::AsyncWorker
+{
+      public:
+	PreadWorker(Napi::Env env, Napi::Promise::Deferred deferred, int fd,
+		    uint32_t n, int64_t off)
+	    : Napi::AsyncWorker(env), deferred_(std::move(deferred)), fd_(fd),
+	      n_(n), off_(off), rc_(-1)
+	{
+	}
+
+	void Execute() override
+	{
+		std::lock_guard<std::mutex> lock(g_op_mutex);
+		if (n_ > 0) {
+			buf_.resize(n_);
+			rc_ = (int)anyfs_ts_pread(fd_, buf_.data(), n_, off_);
+		} else {
+			rc_ = 0;
+		}
+	}
+
+	void OnOK() override
+	{
+		auto obj = Napi::Object::New(Env());
+		obj.Set("rc", Napi::Number::New(Env(), rc_));
+		if (rc_ > 0) {
+			obj.Set("data", Napi::Buffer<uint8_t>::Copy(
+					    Env(), buf_.data(), (size_t)rc_));
+		} else {
+			obj.Set("data", Napi::Buffer<uint8_t>::New(Env(), 0));
+		}
+		deferred_.Resolve(obj);
+	}
+
+	void OnError(const Napi::Error& e) override
+	{
+		deferred_.Reject(e.Value());
+	}
+
+      private:
+	Napi::Promise::Deferred deferred_;
+	int fd_;
+	uint32_t n_;
+	int64_t off_;
+	std::vector<uint8_t> buf_;
+	int rc_;
+};
+
+// ── lifecycle ────────────────────────────────────────────────────────────
+// kernelInit / kernelHalt / sessionOpen / sessionClose stay sync because
+// QEMU's blk_new_open / blk_unref assert qemu_in_main_thread().  Moving
+// these to a thread pool would require a dedicated LKL thread; for now the
+// IO-heavy ops (listParts, enter, readdir, pread, …) are the ones that
+// actually block the event loop for significant time.
+
 static Napi::Value KernelInit(const Napi::CallbackInfo& info)
 {
-	Napi::Env env = info.Env();
+	std::lock_guard<std::mutex> lock(g_op_mutex);
 	uint32_t mem = info[0].As<Napi::Number>().Uint32Value();
 	uint32_t lvl = info[1].As<Napi::Number>().Uint32Value();
-	auto deferred = Napi::Promise::Deferred::New(env);
-	auto promise = deferred.Promise();
-	auto* worker = new KernelInitWorker(env, std::move(deferred), mem, lvl);
-	worker->Queue();
-	return promise;
+	return Napi::Number::New(info.Env(), anyfs_ts_kernel_init(mem, lvl));
 }
 
 static Napi::Value KernelHalt(const Napi::CallbackInfo& info)
@@ -154,6 +282,7 @@ static Napi::Value SessionOpen(const Napi::CallbackInfo& info)
 {
 	std::string p = info[0].As<Napi::String>();
 	uint32_t fl = info[1].As<Napi::Number>().Uint32Value();
+	std::lock_guard<std::mutex> lock(g_op_mutex);
 	int rc = anyfs_ts_session_open(p.c_str(), fl);
 	if (rc < 0) {
 		const char* err = anyfs_get_last_error();
@@ -174,41 +303,54 @@ static Napi::Value SessionClose(const Napi::CallbackInfo& info)
 	return Napi::Number::New(info.Env(), anyfs_ts_session_close(h));
 }
 
+// ── IO ops (async via thread pool) ──────────────────────────────────────
+
 static Napi::Value SessionListJson(const Napi::CallbackInfo& info)
 {
 	int h = info[0].As<Napi::Number>().Int32Value();
-	return CallOverflowing(
-	    info.Env(), "sessionListJson", [h](char* b, size_t c) {
-		    return anyfs_ts_session_list_json(h, b, c);
-	    });
+	auto deferred = Napi::Promise::Deferred::New(info.Env());
+	auto promise = deferred.Promise();
+	auto* w = new JsonOutWorker(info.Env(), std::move(deferred),
+				    "sessionListJson", [h](char* b, size_t c) {
+					    return anyfs_ts_session_list_json(
+						h, b, c);
+				    });
+	w->Queue();
+	return promise;
 }
 
 static Napi::Value SessionMetaJson(const Napi::CallbackInfo& info)
 {
 	int h = info[0].As<Napi::Number>().Int32Value();
-	return CallOverflowing(
-	    info.Env(), "sessionMetaJson", [h](char* b, size_t c) {
-		    return anyfs_ts_session_meta_json(h, b, c);
-	    });
+	auto deferred = Napi::Promise::Deferred::New(info.Env());
+	auto promise = deferred.Promise();
+	auto* w = new JsonOutWorker(info.Env(), std::move(deferred),
+				    "sessionMetaJson", [h](char* b, size_t c) {
+					    return anyfs_ts_session_meta_json(
+						h, b, c);
+				    });
+	w->Queue();
+	return promise;
 }
 
-// session_enter writes the LKL mount path into a buffer and returns rc;
-// the wrapper returns the mount path as a string and throws on rc<0.
-// part=0 mounts the whole disk, part>=1 enters a partition.
 static Napi::Value SessionEnter(const Napi::CallbackInfo& info)
 {
 	int h = info[0].As<Napi::Number>().Int32Value();
 	uint32_t part = info[1].As<Napi::Number>().Uint32Value();
 	uint32_t flags = info[2].As<Napi::Number>().Uint32Value();
-	char out[256] = {0};
-	int rc = anyfs_ts_session_enter(h, part, flags, out, sizeof(out));
-	if (rc != 0) {
-		Napi::Error::New(info.Env(),
-				 "sessionEnter: rc=" + std::to_string(rc))
-		    .ThrowAsJavaScriptException();
-		return info.Env().Null();
-	}
-	return Napi::String::New(info.Env(), out);
+	auto deferred = Napi::Promise::Deferred::New(info.Env());
+	auto promise = deferred.Promise();
+	auto* w = new StrOutWorker(
+	    info.Env(), std::move(deferred), 256,
+	    [h, part, flags](char* out, size_t cap, int* n) {
+		    *n = 0;
+		    int rc = anyfs_ts_session_enter(h, part, flags, out, cap);
+		    if (rc == 0)
+			    *n = (int)strlen(out);
+		    return rc;
+	    });
+	w->Queue();
+	return promise;
 }
 
 // ── path ops ─────────────────────────────────────────────────────────────
@@ -216,63 +358,88 @@ static Napi::Value SessionEnter(const Napi::CallbackInfo& info)
 static Napi::Value ReaddirJson(const Napi::CallbackInfo& info)
 {
 	std::string p = info[0].As<Napi::String>();
-	return CallOverflowing(
-	    info.Env(), "readdirJson", [&p](char* b, size_t c) {
-		    return anyfs_ts_readdir_json(p.c_str(), b, c);
-	    });
+	auto deferred = Napi::Promise::Deferred::New(info.Env());
+	auto promise = deferred.Promise();
+	auto* w = new JsonOutWorker(info.Env(), std::move(deferred),
+				    "readdirJson", [p](char* b, size_t c) {
+					    return anyfs_ts_readdir_json(
+						p.c_str(), b, c);
+				    });
+	w->Queue();
+	return promise;
 }
 
 static Napi::Value LstatJson(const Napi::CallbackInfo& info)
 {
 	std::string p = info[0].As<Napi::String>();
-	return CallOverflowing(
-	    info.Env(), "lstatJson", [&p](char* b, size_t c) {
-		    return anyfs_ts_lstat_json(p.c_str(), b, c);
-	    });
+	auto deferred = Napi::Promise::Deferred::New(info.Env());
+	auto promise = deferred.Promise();
+	auto* w = new JsonOutWorker(info.Env(), std::move(deferred),
+				    "lstatJson", [p](char* b, size_t c) {
+					    return anyfs_ts_lstat_json(
+						p.c_str(), b, c);
+				    });
+	w->Queue();
+	return promise;
 }
 
 static Napi::Value StatJson(const Napi::CallbackInfo& info)
 {
 	std::string p = info[0].As<Napi::String>();
-	return CallOverflowing(info.Env(), "statJson", [&p](char* b, size_t c) {
-		return anyfs_ts_stat_json(p.c_str(), b, c);
-	});
+	auto deferred = Napi::Promise::Deferred::New(info.Env());
+	auto promise = deferred.Promise();
+	auto* w = new JsonOutWorker(info.Env(), std::move(deferred), "statJson",
+				    [p](char* b, size_t c) {
+					    return anyfs_ts_stat_json(p.c_str(),
+								      b, c);
+				    });
+	w->Queue();
+	return promise;
 }
 
 static Napi::Value Realpath_(const Napi::CallbackInfo& info)
 {
 	std::string p = info[0].As<Napi::String>();
-	return CallOverflowing(info.Env(), "realpath", [&p](char* b, size_t c) {
-		return anyfs_ts_realpath(p.c_str(), b, c);
-	});
+	auto deferred = Napi::Promise::Deferred::New(info.Env());
+	auto promise = deferred.Promise();
+	auto* w =
+	    new JsonOutWorker(info.Env(), std::move(deferred), "realpath",
+			      [p](char* b, size_t c) {
+				      return anyfs_ts_realpath(p.c_str(), b, c);
+			      });
+	w->Queue();
+	return promise;
 }
 
-// readlink doesn't use the overflow protocol — it's a thin wrapper around
-// lkl_sys_readlink, which returns bytes-written or a negative errno.
 static Napi::Value Readlink_(const Napi::CallbackInfo& info)
 {
 	std::string p = info[0].As<Napi::String>();
-	size_t cap = 4096;
-	std::vector<char> buf(cap);
-	int n = anyfs_ts_readlink(p.c_str(), buf.data(), buf.size());
-	if (n < 0) {
-		Napi::Error::New(info.Env(),
-				 "readlink: rc=" + std::to_string(n))
-		    .ThrowAsJavaScriptException();
-		return info.Env().Null();
-	}
-	return Napi::String::New(info.Env(), buf.data(), (size_t)n);
+	auto deferred = Napi::Promise::Deferred::New(info.Env());
+	auto promise = deferred.Promise();
+	auto* w = new StrOutWorker(info.Env(), std::move(deferred), 4096,
+				   [p](char* out, size_t cap, int* n) {
+					   *n = anyfs_ts_readlink(p.c_str(),
+								  out, cap);
+					   return *n < 0 ? *n : 0;
+				   });
+	w->Queue();
+	return promise;
 }
 
-// ── kernel file ────────────────────────────────────────────────────────────
+// ── kernel file ──────────────────────────────────────────────────────────
 
 static Napi::Value ReadKernelFile(const Napi::CallbackInfo& info)
 {
 	std::string p = info[0].As<Napi::String>();
-	return CallOverflowing(
-	    info.Env(), "readKernelFile", [&p](char* b, size_t c) {
-		    return anyfs_ts_read_kernel_file(p.c_str(), b, c);
-	    });
+	auto deferred = Napi::Promise::Deferred::New(info.Env());
+	auto promise = deferred.Promise();
+	auto* w = new JsonOutWorker(info.Env(), std::move(deferred),
+				    "readKernelFile", [p](char* b, size_t c) {
+					    return anyfs_ts_read_kernel_file(
+						p.c_str(), b, c);
+				    });
+	w->Queue();
+	return promise;
 }
 
 // ── file ops ─────────────────────────────────────────────────────────────
@@ -281,28 +448,39 @@ static Napi::Value FileOpen(const Napi::CallbackInfo& info)
 {
 	std::string p = info[0].As<Napi::String>();
 	int flags = info[1].As<Napi::Number>().Int32Value();
-	return Napi::Number::New(info.Env(), anyfs_ts_open(p.c_str(), flags));
+	auto deferred = Napi::Promise::Deferred::New(info.Env());
+	auto promise = deferred.Promise();
+	auto* w = new IntRetWorker(info.Env(), std::move(deferred), [p, flags] {
+		return anyfs_ts_open(p.c_str(), flags);
+	});
+	w->Queue();
+	return promise;
 }
 
-// pread(fd, dstBuffer, n, offset) — dstBuffer is a Node Buffer or Uint8Array.
-// `n` may be smaller than the buffer length to limit the read.
-// `offset` is a JS number; for >2^53 use diskMetaJson + chunked reads.
+// pread(fd, n, off) — the buffer is now allocated + returned by the
+// AsyncWorker.  Signature changes from (fd, buf, n, off) to (fd, n, off);
+// returns Promise<{ rc: number, data: Uint8Array }>.
 static Napi::Value Pread(const Napi::CallbackInfo& info)
 {
 	int fd = info[0].As<Napi::Number>().Int32Value();
-	auto ta = info[1].As<Napi::Uint8Array>();
-	uint32_t n = info[2].As<Napi::Number>().Uint32Value();
-	int64_t off = (int64_t)info[3].As<Napi::Number>().Int64Value();
-	if (n > ta.ByteLength())
-		n = (uint32_t)ta.ByteLength();
-	int64_t got = anyfs_ts_pread(fd, ta.Data(), n, off);
-	return Napi::Number::New(info.Env(), (double)got);
+	uint32_t n = info[1].As<Napi::Number>().Uint32Value();
+	int64_t off = (int64_t)info[2].As<Napi::Number>().Int64Value();
+	auto deferred = Napi::Promise::Deferred::New(info.Env());
+	auto promise = deferred.Promise();
+	auto* w = new PreadWorker(info.Env(), std::move(deferred), fd, n, off);
+	w->Queue();
+	return promise;
 }
 
 static Napi::Value FileClose(const Napi::CallbackInfo& info)
 {
 	int fd = info[0].As<Napi::Number>().Int32Value();
-	return Napi::Number::New(info.Env(), anyfs_ts_close(fd));
+	auto deferred = Napi::Promise::Deferred::New(info.Env());
+	auto promise = deferred.Promise();
+	auto* w = new IntRetWorker(info.Env(), std::move(deferred),
+				   [fd] { return anyfs_ts_close(fd); });
+	w->Queue();
+	return promise;
 }
 
 // ── exports ──────────────────────────────────────────────────────────────
