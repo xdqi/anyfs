@@ -1,13 +1,17 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
-    getAnyfsNative,
+    createSession,
     prewarm,
     prewarmNative,
     NativeSession,
     type AnyfsSession,
     type SessionSource,
     type SessionOpts,
+    type WasmCaps,
+    type SessionEnv,
+    type SessionBackend,
+    type DispatchResult,
 } from '@anyfs/core';
 
 export type AnyfsDiskStatus =
@@ -19,12 +23,8 @@ export type AnyfsDiskStatus =
     | 'ready' // disk + filesystem ready
     | 'error';
 
-/** Which backend the provider is talking to. `native` means the Electron
- *  preload-injected `window.anyfsNative` bridge is present and we've routed
- *  everything through it; `wasm` is the in-renderer worker. Renderer UI uses
- *  this to gate which input affordances to show (File picker vs path dialog,
- *  URL through native curl vs URLFS, system-drive picker only in native). */
-export type AnyfsBackendMode = 'native' | 'wasm';
+/** Re-exported from @anyfs/core — kept as a named type for API compat. */
+export type AnyfsBackendMode = SessionBackend;
 
 export interface AnyfsState {
     session: AnyfsSession | null;
@@ -62,18 +62,21 @@ export interface AnyfsProviderProps {
     wasmModuleName?: string;
     /** Optional kernel options. */
     mountOpts?: SessionOpts;
-    /** If set and the image is no-PT, auto-mount the whole disk via enter(0).
-     *  Pass `mountOpts.forceFstype` to override the filesystem type. */
-    autoMount?: boolean;
     /** Start booting the kernel as soon as the provider mounts, even if
      *  `source` is null. In wasm mode that costs ~64 MB RAM + a worker;
      *  in native mode it's a cheap one-shot IPC `init` against the host
      *  kernel that's shared across the process. */
     prewarm?: boolean;
-    /** Force a backend regardless of capability. Useful for development /
-     *  testing the wasm path in an Electron build. Default: prefer native
-     *  when `window.anyfsNative` is present, else wasm. */
-    forceMode?: AnyfsBackendMode;
+    /** Runtime environment. The factory uses this to select the backend.
+     *  Default: 'web' (pure browser, blob + CORS URL only).
+     *  'electron' detects the native bridge and disableNative flag. */
+    env?: SessionEnv;
+    /** When true, force wasm even if the native addon bridge is available
+     *  (Electron only). */
+    disableNative?: boolean;
+    /** Caps passed to WasmSession when the electron wasm path is selected.
+     *  Includes the pre-started loopback proxy URL for attachPath support. */
+    electronWasmCaps?: WasmCaps;
     children: ReactNode;
 }
 
@@ -83,15 +86,18 @@ export function AnyfsProvider({
     wasmBaseUrl,
     wasmModuleName,
     mountOpts,
-    autoMount,
     prewarm: doPrewarm,
-    forceMode,
+    env = 'web',
+    disableNative,
+    electronWasmCaps,
     children,
 }: AnyfsProviderProps) {
-    // Decide backend at mount time. `forceMode` wins; otherwise probe.
-    const [mode] = useState<AnyfsBackendMode>(() => {
-        if (forceMode) return forceMode;
-        return getAnyfsNative() ? 'native' : 'wasm';
+    // Decide backend at mount time via the factory. Never changes.
+    const [dispatch] = useState<DispatchResult>(() => {
+        const opts: Parameters<typeof createSession>[1] = {};
+        if (disableNative !== undefined) opts.disableNative = disableNative;
+        if (electronWasmCaps !== undefined) opts.electronWasmCaps = electronWasmCaps;
+        return createSession(env, opts);
     });
 
     const [state, setState] = useState<AnyfsState>({
@@ -101,7 +107,7 @@ export function AnyfsProvider({
         status: 'idle',
         step: null,
         error: null,
-        mode,
+        mode: dispatch.backend,
     });
     // Survives StrictMode's double-effect.
     const desired = useRef<SessionSource | null>(null);
@@ -129,41 +135,42 @@ export function AnyfsProvider({
                       error: null,
                   },
         );
-        const p: Promise<AnyfsSession> =
-            mode === 'native'
-                ? prewarmNative({
-                      ...(mountOpts?.memMb !== undefined ? { memMb: mountOpts.memMb } : {}),
-                      ...(mountOpts?.loglevel !== undefined
-                          ? { loglevel: mountOpts.loglevel }
-                          : {}),
-                  }).then((s) => {
-                      if (!s) throw new Error('native bridge unavailable');
-                      return s;
-                  })
-                : (() => {
-                      const opts: Parameters<typeof prewarm>[0] = {
-                          workerUrl,
-                      };
-                      if (wasmBaseUrl !== undefined) opts.wasmBaseUrl = wasmBaseUrl;
-                      if (wasmModuleName !== undefined) opts.wasmModuleName = wasmModuleName;
-                      if (mountOpts?.memMb !== undefined) opts.memMb = mountOpts.memMb;
-                      if (mountOpts?.loglevel !== undefined) opts.loglevel = mountOpts.loglevel;
-                      if (mountOpts?.forceFstype !== undefined)
-                          opts.forceFstype = mountOpts.forceFstype;
-                      return prewarm(opts).then((session) => {
-                          const off = session.onProgress((step) => {
-                              setState((s) =>
-                                  s.status === 'booting' ||
-                                  s.status === 'attaching' ||
-                                  s.status === 'mounting'
-                                      ? { ...s, step }
-                                      : s,
-                              );
-                          });
-                          void off;
-                          return session;
-                      });
-                  })();
+        const p: Promise<AnyfsSession> = (() => {
+            if (dispatch.backend === 'native') {
+                return prewarmNative({
+                    ...(mountOpts?.memMb !== undefined ? { memMb: mountOpts.memMb } : {}),
+                    ...(mountOpts?.loglevel !== undefined ? { loglevel: mountOpts.loglevel } : {}),
+                }).then((s) => {
+                    if (!s) throw new Error('native bridge unavailable');
+                    return s;
+                });
+            }
+            // wasm (web or electron caps)
+            const opts: Parameters<typeof prewarm>[0] = { workerUrl };
+            if (wasmBaseUrl !== undefined) opts.wasmBaseUrl = wasmBaseUrl;
+            if (wasmModuleName !== undefined) opts.wasmModuleName = wasmModuleName;
+            if (mountOpts?.memMb !== undefined) opts.memMb = mountOpts.memMb;
+            if (mountOpts?.loglevel !== undefined) opts.loglevel = mountOpts.loglevel;
+            if (mountOpts?.forceFstype !== undefined) opts.forceFstype = mountOpts.forceFstype;
+            // Forward urlProxyPrefix from caps so the worker applies the proxy
+            if (dispatch.wasmCaps?.urlProxyPrefix) {
+                (opts as unknown as Record<string, unknown>).urlProxyPrefix =
+                    dispatch.wasmCaps.urlProxyPrefix;
+            }
+            return prewarm(opts).then((session) => {
+                const off = session.onProgress((step) => {
+                    setState((s) =>
+                        s.status === 'booting' ||
+                        s.status === 'attaching' ||
+                        s.status === 'mounting'
+                            ? { ...s, step }
+                            : s,
+                    );
+                });
+                void off;
+                return session;
+            });
+        })();
         prewarming.current = p;
         p.then(
             (session) => {
@@ -189,7 +196,7 @@ export function AnyfsProvider({
                     status: 'error',
                     step: null,
                     error: err instanceof Error ? err : new Error(String(err)),
-                    mode,
+                    mode: dispatch.backend,
                 });
             },
         );
@@ -223,7 +230,7 @@ export function AnyfsProvider({
                     status: 'idle',
                     step: null,
                     error: null,
-                    mode,
+                    mode: dispatch.backend,
                 };
             });
             return;
@@ -257,6 +264,11 @@ export function AnyfsProvider({
             console.log('[PROVIDER] startPrewarm returned', d ? 'promise' : 'null');
             const session = await (d ?? Promise.reject(new Error('no prewarm slot')));
             console.log('[PROVIDER] got session, calling attach...');
+            if (!dispatch.allowedKinds.has(source.kind)) {
+                throw new Error(
+                    `source kind "${source.kind}" is not supported by the ${dispatch.backend} backend`,
+                );
+            }
             if (source.kind === 'blob') {
                 if (session instanceof NativeSession) {
                     throw new Error(
@@ -294,22 +306,7 @@ export function AnyfsProvider({
                 // The prewarmed slot has been consumed by this attach; clear
                 // it so a future remount creates a fresh session.
                 prewarmed.current = null;
-                let mountPath: string | null = null;
-                if (autoMount) {
-                    setState((s) => ({
-                        ...s,
-                        status: 'mounting',
-                        step: 'reading partitions',
-                    }));
-                    const parts = await session.listParts();
-                    if (parts.length === 0) {
-                        setState((s) => ({
-                            ...s,
-                            step: 'mounting whole disk',
-                        }));
-                        mountPath = await session.enter(0);
-                    }
-                }
+                const mountPath: string | null = null;
                 if (desired.current !== source) {
                     current.current = null;
                     await session.close();
@@ -322,7 +319,7 @@ export function AnyfsProvider({
                     status: 'ready',
                     step: null,
                     error: null,
-                    mode,
+                    mode: dispatch.backend,
                 });
             } catch (err) {
                 console.log(
@@ -337,11 +334,11 @@ export function AnyfsProvider({
                     status: 'error',
                     step: null,
                     error: err instanceof Error ? err : new Error(String(err)),
-                    mode,
+                    mode: dispatch.backend,
                 });
             }
         })();
-    }, [source, workerUrl, wasmBaseUrl, wasmModuleName, mountOpts, autoMount, mode]);
+    }, [source, workerUrl, wasmBaseUrl, wasmModuleName, mountOpts, dispatch.backend]);
 
     // Unmount-time cleanup.
     useEffect(() => {
