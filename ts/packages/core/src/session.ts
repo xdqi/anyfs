@@ -2,7 +2,7 @@ import type { DirEntry, LklFd, SessionMeta, SessionPartInfo, Stat } from './type
 
 export interface AnyfsSession {
     // ── Lifecycle ──────────────────────────────────────
-    attachFile(file: File): Promise<void>;
+    attachBlob(blob: Blob): Promise<void>;
     attachUrl(url: string, name?: string): Promise<void>;
     attachPath(path: string): Promise<void>;
     close(): Promise<void>;

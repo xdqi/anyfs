@@ -65,6 +65,6 @@ export interface SessionMeta {
 /** What the session can attach to. TS-specific — C has a single
  *  anyfs_session_open(path, flags). */
 export type SessionSource =
-    | { kind: 'file'; file: File }
+    | { kind: 'blob'; blob: Blob }
     | { kind: 'url'; url: string; name?: string }
     | { kind: 'path'; path: string; name?: string };
