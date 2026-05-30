@@ -1,0 +1,4 @@
+fixtures/images/
+test-results/
+playwright-report/
+.cache/

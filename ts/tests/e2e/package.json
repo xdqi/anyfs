@@ -1,0 +1,17 @@
+{
+    "name": "@anyfs/e2e",
+    "private": true,
+    "version": "0.0.0",
+    "type": "module",
+    "scripts": {
+        "fixtures": "node fixtures/generate.mjs && node fixtures/fetch.mjs",
+        "test": "playwright test",
+        "test:web": "playwright test --project=web",
+        "test:electron": "playwright test --project=electron-native --project=electron-wasm",
+        "test:smoke": "playwright test --grep @smoke"
+    },
+    "devDependencies": {
+        "@playwright/test": "^1.60.0",
+        "@anyfs/core": "workspace:*"
+    }
+}
