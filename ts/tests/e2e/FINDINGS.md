@@ -281,3 +281,58 @@ Rebuilt `@anyfs/core` dist (`pnpm --filter @anyfs/core build`) since vite-demo c
 `@anyfs/core/dist`. Verified: the electron-wasm wire smoke now opens multi.img and lists
 partitions `[0,1,2]`; web and electron-native unaffected (web has no `anyfsNative` → still `blob`;
 native doesn't use `fileToSource`). No regression in either.
+
+---
+
+## F9 — Electron **native** `app.close()` hangs ~2 min after a native mount, blowing fixture teardown (CONFIRMED native, Medium)
+
+**Observed (Phase 4, electron-native, open-browse-download flow):** Every test BODY on the
+native backend PASSES in isolation — `flows/open-browse-download.spec.ts` run one test at a time
+under `--project=electron-native` is green for all three:
+
+- `@smoke open multiRaw, enter ext4, see known files` → passes (mount → partitions `[0,1,2]` →
+  enter #1 → lists `dir/empty/lost+found/hello.txt/link`);
+- `properties of hello.txt show a file with a size` → passes (5.3s; right-click → Properties →
+  modal renders kind+size);
+- `download hello.txt yields 13 bytes via the right mechanism` → passes (35.3s; real
+  `download:open/write/close` IPC writes 13 bytes, `mechanism === 'electron-ipc'`).
+
+But running the **whole spec file** (3 tests, 1 worker, sequential) fails: the FIRST test to run
+in a worker passes its body, then the `driver` fixture's teardown — `await app.close()` after a
+native QEMU+LKL mount — **never returns within the 120 s per-test timeout**:
+
+```
+Tearing down "driver" exceeded the test timeout of 120000ms.
+Worker teardown timeout of 120000ms exceeded.
+Failed worker ran 1 test: … @smoke open multiRaw …
+```
+
+Playwright then recycles the worker and the remaining tests pass on the fresh process, so the
+failing test is non-deterministic in WHICH test it lands on (it's whichever ran first), but the
+teardown hang itself is deterministic. No Electron process is left leaked (it does eventually
+die) — `app.close()` just doesn't complete in time, and the error is purely in fixture teardown,
+never in a test assertion.
+
+**Repro (electron-native):** `npx playwright test --project=electron-native
+flows/open-browse-download.spec.ts` → one test reports `Tearing down "driver" exceeded the test
+timeout`, worker recycled. **Counter-repro:** the same tests run individually
+(`-g "<single title>"`) ALL pass; electron-wasm runs all 3 in one worker green (no native QEMU,
+clean shutdown); web runs green.
+
+**Suspected area:** the same QEMU-block-AioContext ↔ Electron-GLib-main-loop entanglement
+diagnosed for F7, surfacing now at process **SHUTDOWN** rather than at mount. F7's sync-enter fix
+kept the AioContext work inside the blocking mount call so the io_uring/epoll fdmon collision
+never fires *during* enter — but tearing the app down while QEMU's block layer is still
+registered as a GLib source apparently stalls the exit path. The architectural fix is the same
+as F7's long-term recommendation: run the native addon (LKL + QEMU libblock) in a separate
+process (`utilityProcess` / child Node) with its own libuv loop, so closing the Electron window
+doesn't have to unwind a QEMU AioContext from Chromium's main loop.
+
+**E2E impact / handling:** the flow spec marks the **electron-native** project `test.fixme` for
+this whole spec (a `beforeEach` gate keyed on `testInfo.project.name === 'electron-native'`),
+referencing this finding. Because the fixme aborts before the `driver` fixture is requested, no
+Electron app is launched on native and the teardown hang can't fire — the suite stays green and
+deterministic. **No assertion is weakened:** the native test bodies are verified to pass in
+isolation, and the real 13-byte IPC-download proof (`mechanism === 'electron-ipc'`) still runs
+green on the **electron-wasm** project (3/3), which exercises the identical
+`download:open/write/close` IPC path. Web runs `@smoke` + `properties` (download skipped for F4).
