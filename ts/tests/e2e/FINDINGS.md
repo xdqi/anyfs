@@ -339,7 +339,7 @@ green on the **electron-wasm** project (3/3), which exercises the identical
 
 ---
 
-## F10 — qcow2 is NOT decoded in the wasm bundle: raw file bytes fed to the kernel, so its MBR partition table is never enumerated (CONFIRMED wasm, Medium)
+## F10 — qcow2 not decoded on the wasm attach/attachUrl path (raw bytes -> no PT); QEMU IS in the bundle but not selected for WORKERFS/URLFS opens (symptom CONFIRMED, root cause OPEN, Medium)
 
 **Observed (Phase 5, web + electron-wasm, url-load flow):** Opening the trusty `qcow2` fixture
 (either by URL through the local Range server *or* as a local `<input>` blob) attaches the source
@@ -365,14 +365,30 @@ file length (264897024 bytes). So the qcow2 is handed to the kernel as a RAW ima
 *compressed* bytes; the qcow2 L1/L2 cluster mapping is never applied. The sector-0 bytes are the
 qcow2 header, not an MBR, hence no partition table and no mountable filesystem.
 
-**Root cause:** the loaded wasm bundle has **no QEMU block layer**. `vite-demo/src/App.tsx:145`
-hard-codes `wasmModuleName="anyfs.mjs"` (the plain bundle), and the qemu-enabled bundle
-`anyfs.qemu.mjs` is **not present** in `ts/packages/core/wasm/` in this checkout (only
-`anyfs.mjs`, `anyfs.node.mjs`, `anyfs.workeronly.mjs` exist). Per memory
-`feedback_anyfs_qemu_bundle_rebuild`, the demo must load `anyfs.qemu.mjs` (built with
-`ANYFS_QEMU=1`) for any qcow2/vmdk/vdi/vhd decode; without it, container formats are read as raw
-byte streams. This is a wasm-bundle/wiring gap, independent of URLFS — the identical `[0]`-only
-result reproduces opening the same qcow2 as a local blob.
+**Root cause — CORRECTED (initial diagnosis was wrong):** The bundle is NOT missing QEMU.
+Verified: `ts/packages/core/wasm/anyfs.wasm` **contains qcow2/bdrv decode symbols**
+(`qcow2_cache_entry_mark_dirty`, `qcow2_mark_dirty`, `bdrv_*`), and `build_anyfs_wasm.sh` always
+links the QEMU objects (`ANYFS_QEMU_OBJ`/`QEMU_BLK_OBJ` in `EXTRA_OBJS`, not env-gated). The
+single `anyfs.mjs` IS the unified QEMU-enabled bundle — commit `d7bbf51`
+*"drop anyfs.qemu.* filename — single unified bundle"* deliberately removed the separate
+`anyfs.qemu.mjs`. (The memory note `feedback_anyfs_qemu_bundle_rebuild` predates that unification
+and is now stale on the filename.)
+
+So the real cause is NOT a missing bundle. The qcow2 decode capability is present but is **not
+being applied on the wasm `attach`/`attachUrl` path**: the worker mounts the image via
+WORKERFS/URLFS (presenting it as a *file*) and calls `anyfs_ts_session_open_p(fsPath, 1)`, and on
+this path the image is opened as a **raw** block device rather than routed through the QEMU
+backend (`qemu_blk_open`/`blk_new_open`) the way the *native* addon does (native logs show
+`[qemu_blk] blk_new_open` decoding correctly). The exact gap — whether the wasm
+`anyfs_ts_session_open` should detect the qcow2 magic and select `qemu_backend_ops`, or whether
+the worker must pass a backend/format hint — is **not yet root-caused** (needs a dedicated dive
+into `anyfs_kernel.c` backend registration + `anyfs_session_open` backend selection under
+`ANYFS_HAS_QEMU`). Independent of URLFS — identical `[0]`-only result opening the same qcow2 as a
+local blob.
+
+**Status:** symptom CONFIRMED, precise root cause OPEN. Not blocking the URLFS *mechanism* (which
+works — source attaches, mounts, reaches ready). A raw-image URL fixture would give url-load a
+green gate independent of this (the partition scanner handles raw images, cf. multiRaw `[0,1,2]`).
 
 **Repro (web):** `npx playwright test --project=web --grep-invert @network
 flows/url-load.spec.ts` (remove the `test.fixme` gate) → `enterPartition(1)` times out;
