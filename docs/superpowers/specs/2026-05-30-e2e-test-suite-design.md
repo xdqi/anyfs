@@ -209,9 +209,9 @@ Source inspection surfaced facts that become explicit prerequisite tasks in the 
   the dialog. The test reads the file back to assert bytes/size.
 - **wasm bundle is prebuilt and committed** (`packages/core/wasm/*`, ~58 MB `anyfs.wasm`,
   symlinked into `vite-demo/public/wasm/`). Web E2E runs in CI **without compiling LKL**.
-- **No Playwright / node-CI infra exists**; `.github/workflows/linux.yml` is pure C build. The
-  plan adds a separate Node/Playwright CI job. Electron under Playwright needs a display in CI →
-  `xvfb-run`.
+- **No Playwright / node-CI infra exists**; `.github/workflows/linux.yml` is pure C build. CI
+  wiring is **deferred (out of scope)** — the suite runs locally. Electron under Playwright needs
+  a display on a headless box → `xvfb-run` (documented in the suite README).
 - **State shape** is `AnyfsState` with `status` (not `phase`) and `mode` ∈
   `'native'|'wasm'|'node-wasm'`; consumed via `useAnyfsDisk()`. The `getState()` hook reads it
   through a ref bridge (see Debug-hook policy).
@@ -301,13 +301,14 @@ A `fixtures` npm script generates/fetches everything up front; specs use an
 4. **errors / edge cases** — corrupt/bad image, URL without Range support (error dialog),
    unsupported format, empty partition/directory. Assert graceful failure, not just happy path.
 
-## CI smoke gate
+## Smoke subset (CI deferred)
 
-A fast, minimal subset wired into CI as a regression gate: boot each target and open a single
-generated fixture (`multiRaw`) without crashing, asserting one known file is listed. Tagged
-`@smoke` so it can run independently of the full (slower, network-touching) suite. The full
-suite — including `@network` and the large downloaded images — runs on demand / nightly rather
-than on every push.
+A fast, minimal subset is tagged `@smoke`: boot each target and open a single generated fixture
+(`multiRaw`) without crashing, asserting one known file is listed. This lets the suite run
+independently of the full (slower, network-touching) flows via `pnpm test:smoke`. **Wiring this
+into CI is deferred and out of scope** for the current plan — the tags exist so a gate can be
+added later (`playwright test --grep @smoke --grep-invert @network` on `web` + `electron-wasm`,
+with `xvfb-run` for Electron and the prebuilt committed wasm bundle, no LKL compile).
 
 ## Honesty / correctness constraints
 

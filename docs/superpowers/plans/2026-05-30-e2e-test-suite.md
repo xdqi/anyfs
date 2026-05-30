@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a Playwright-driven E2E suite proving the web (vite-demo) and Electron (electron-demo) apps open disk images, browse the filesystem, and download files — across the wasm, Electron-native, and Electron-wasm backends — plus a CI smoke gate.
+**Goal:** Build a Playwright-driven E2E suite proving the web (vite-demo) and Electron (electron-demo) apps open disk images, browse the filesystem, and download files — across the wasm, Electron-native, and Electron-wasm backends. (`@smoke` tags are kept for a future CI gate; CI wiring itself is out of scope for this plan.)
 
 **Architecture:** One Playwright config at `ts/tests/e2e/` with three projects (`web`, `electron-native`, `electron-wasm`) sharing a `Driver` interface, so each user-flow spec is written once and runs across all backends. Fixtures are root/sudo-generated raw/MBR/VMDK images plus downloaded-and-cached qcow2/iso. Small prerequisite changes are made to the apps under test (stable `data-testid`s, a `getState()`/`lastError` debug hook gated behind `import.meta.env.DEV || ?e2e=1`, a `ANYFS_TEST_DOWNLOAD_DIR` save-dialog bypass) and three production-hygiene cleanups.
 
@@ -26,10 +26,11 @@ Phase 5  Flow: url-load               (depends 2,3 + range server)
 Phase 6  Flow: formats                (depends 2,3)
 Phase 7  Flow: errors                 (depends 1,3)
 Phase 8  Electron backend-switch flow (depends 1,3)
-Phase 9  CI smoke gate + @smoke tagging + workflow
+Phase 9  Suite docs & local run (@smoke confirmation + README; no CI)
 ```
 
-Phases 4–8 are independent of each other once 1–3 land. Phase 9 is last.
+Phases 4–8 are independent of each other once 1–3 land. Phase 9 is last. CI wiring is
+deferred — not part of this plan.
 
 ---
 
@@ -415,25 +416,27 @@ git add ts/examples/vite-demo/src/App.tsx ts/examples/vite-demo/src/test-bridge.
 git commit -m "test(vite-demo): gate __anyfsTest behind DEV||?e2e=1, add getState/lastError bridge, quiet prod loglevel"
 ```
 
-### Task 1.4: Exclude orphaned debug/probe HTML from the production build
+### Task 1.4: Delete orphaned debug/probe HTML pages
+
+These 8 pages in `public/` are git-tracked, referenced from nowhere in the codebase
+(verified by grep), and currently shipped into the production `dist/`. They are standalone
+manual debug pages superseded by this E2E suite. Delete them — git history (`fca81d7`) retains
+them if ever needed again.
 
 **Files:**
-- Modify: `ts/examples/vite-demo/vite.config.ts`
+- Delete: `ts/examples/vite-demo/public/{debug,debug-api,debug-atomics,debug-worker,debug-stream,direct-module-test,probe,probe2}.html`
 
-- [ ] **Step 1: Move debug pages out of the served/copied root**
-
-Move the 8 orphaned pages out of `public/` so Vite stops copying them into `dist/`:
+- [ ] **Step 1: Remove the orphaned pages**
 
 ```bash
-mkdir -p ts/examples/vite-demo/debug-pages
-git mv ts/examples/vite-demo/public/debug.html ts/examples/vite-demo/debug-pages/
-git mv ts/examples/vite-demo/public/debug-api.html ts/examples/vite-demo/debug-pages/
-git mv ts/examples/vite-demo/public/debug-atomics.html ts/examples/vite-demo/debug-pages/
-git mv ts/examples/vite-demo/public/debug-worker.html ts/examples/vite-demo/debug-pages/
-git mv ts/examples/vite-demo/public/debug-stream.html ts/examples/vite-demo/debug-pages/
-git mv ts/examples/vite-demo/public/direct-module-test.html ts/examples/vite-demo/debug-pages/
-git mv ts/examples/vite-demo/public/probe.html ts/examples/vite-demo/debug-pages/ 2>/dev/null || true
-git mv ts/examples/vite-demo/public/probe2.html ts/examples/vite-demo/debug-pages/ 2>/dev/null || true
+git rm ts/examples/vite-demo/public/debug.html \
+       ts/examples/vite-demo/public/debug-api.html \
+       ts/examples/vite-demo/public/debug-atomics.html \
+       ts/examples/vite-demo/public/debug-worker.html \
+       ts/examples/vite-demo/public/debug-stream.html \
+       ts/examples/vite-demo/public/direct-module-test.html \
+       ts/examples/vite-demo/public/probe.html \
+       ts/examples/vite-demo/public/probe2.html
 ```
 
 - [ ] **Step 2: Build and confirm dist/ no longer contains them**
@@ -444,8 +447,7 @@ Expected: only `index.html` (no `debug-*.html` / `probe*.html`).
 - [ ] **Step 3: Commit**
 
 ```bash
-git add -A ts/examples/vite-demo/public ts/examples/vite-demo/debug-pages
-git commit -m "chore(vite-demo): keep orphaned debug/probe HTML out of prod build"
+git commit -m "chore(vite-demo): delete orphaned debug/probe HTML pages"
 ```
 
 ### Task 1.5: Add `ANYFS_TEST_DOWNLOAD_DIR` save-dialog bypass (Electron)
@@ -1791,97 +1793,25 @@ git commit -m "test(e2e): electron native->wasm switch — relaunch request + po
 
 ---
 
-## Phase 9 — CI smoke gate
+## Phase 9 — Suite docs & local run
 
-### Task 9.1: GitHub Actions job for the @smoke subset
+> CI wiring is intentionally **out of scope** for this plan (deferred per user request). The
+> `@smoke` tags and the `test:smoke` script remain so a CI gate can be added later by running
+> `playwright test --grep @smoke --grep-invert @network` on `web` + `electron-wasm` — but no
+> workflow file is created here.
 
-**Files:**
-- Create: `.github/workflows/e2e.yml`
-
-- [ ] **Step 1: Write the workflow**
-
-Create `.github/workflows/e2e.yml`. Runs the `@smoke`-tagged tests on web + electron-wasm (no native addon, no @network), using the prebuilt committed wasm bundle (no LKL compile). `xvfb-run` provides a display for Electron. Fixtures are generated with sudo (the runner is root-capable; `losetup`/`mkfs` available after installing tools).
-
-```yaml
-name: e2e
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
-
-jobs:
-  e2e-smoke:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: ts
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install fixture tooling
-        run: sudo apt-get update && sudo apt-get install -y gdisk dosfstools btrfs-progs qemu-utils xvfb
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.2.2
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Install deps
-        run: pnpm install --frozen-lockfile
-
-      - name: Build packages (core/react/trees)
-        run: pnpm -r --filter './packages/*' build
-
-      - name: Install Playwright Chromium
-        run: pnpm --filter @anyfs/e2e exec playwright install --with-deps chromium
-
-      - name: Generate fixtures (root mkfs/loop)
-        run: sudo --preserve-env=PATH node tests/e2e/fixtures/generate.mjs
-
-      - name: Run @smoke E2E (web + electron-wasm)
-        run: |
-          cd tests/e2e
-          xvfb-run -a pnpm exec playwright test \
-            --project=web --project=electron-wasm \
-            --grep @smoke --grep-invert @network
-
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: playwright-report
-          path: ts/tests/e2e/playwright-report
-```
-
-- [ ] **Step 2: Validate workflow YAML locally**
-
-Run: `python3 -c "import yaml,sys; yaml.safe_load(open('.github/workflows/e2e.yml')); print('ok')"`
-Expected: prints `ok`.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add .github/workflows/e2e.yml
-git commit -m "ci(e2e): @smoke gate on web + electron-wasm (prebuilt wasm, xvfb, root fixtures)"
-```
-
-### Task 9.2: Tag @smoke + document running the full suite
+### Task 9.1: Confirm @smoke coverage + suite README
 
 **Files:**
-- Modify: relevant specs (ensure exactly one `@smoke` test per major flow)
 - Create: `ts/tests/e2e/README.md`
 
 - [ ] **Step 1: Confirm @smoke coverage**
 
-Ensure these carry `@smoke`: open-browse-download (the first test, already tagged), url-load (the local-Range test, already tagged). Confirm formats/errors/backend-switch are NOT `@smoke` (they run in the full suite, not the gate).
+Ensure these carry `@smoke`: open-browse-download (the first test, already tagged), url-load (the local-Range test, already tagged). Confirm formats/errors/backend-switch are NOT `@smoke` (they form the fuller suite). These tags drive the local `pnpm test:smoke` script and a future CI gate.
 
 - [ ] **Step 2: Write the README**
 
-Create `ts/tests/e2e/README.md` documenting: prerequisites (passwordless sudo, the apt tools), `pnpm fixtures`, `pnpm test` / `test:web` / `test:electron` / `test:smoke`, the `xvfb-run` requirement for Electron locally, the `@network` opt-in, and the native-addon build requirement for `electron-native`.
+Create `ts/tests/e2e/README.md` documenting: prerequisites (passwordless sudo + the fixture tools `gdisk`/`dosfstools`/`btrfs-progs`/`qemu-utils`), `pnpm fixtures`, the run scripts (`pnpm test` / `test:web` / `test:electron` / `test:smoke`), the `xvfb-run` requirement for Electron on a headless box, the `@network` opt-in (`--grep @network`), and the native-addon build requirement for `electron-native` (node-gyp `--runtime=electron --target=<ver>`).
 
 - [ ] **Step 3: Format check**
 
@@ -1892,7 +1822,7 @@ Expected: passes for `tests/e2e/**` (fix with `pnpm format` if needed).
 
 ```bash
 git add ts/tests/e2e/README.md
-git commit -m "docs(e2e): README + confirm @smoke gate coverage"
+git commit -m "docs(e2e): suite README + confirm @smoke coverage"
 ```
 
 ---
@@ -1910,7 +1840,7 @@ git commit -m "docs(e2e): README + confirm @smoke gate coverage"
 - Backend-switch (relaunch request + fresh wasm state) → 8.1. ✓
 - Fixtures (root mkfs GPT/MBR-extended/btrfs-VMDK; downloaded qcow2+iso w/ guard; Range server) → 2.1–2.4. ✓
 - Four flows → Phases 4–7. ✓
-- CI @smoke gate (prebuilt wasm, xvfb, no @network) → 9.1, 9.2. ✓
+- @smoke tags + suite README (CI deferred, out of scope) → 9.1. ✓
 - Workspace placement + prettier glob → 0.1. ANYFS_TEST_DOWNLOAD_DIR → 1.5. ✓
 
 **Type consistency:** `Driver` adds `backToPartitions()` in Phase 6 — both drivers and the interface updated together in Task 6.1 Step 2 + committed in Task 6.1 Step 5. `getState()` returns `{status, mode, mountPath, error}` (1.3) and drivers read `.status`/`.mode` consistently. `Fixture`/`PartExpect`/`TreeEntry` names consistent across manifest, ensure, assertions, drivers.
