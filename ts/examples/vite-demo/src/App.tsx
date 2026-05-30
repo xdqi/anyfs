@@ -110,7 +110,7 @@ export function App() {
                 source={source}
                 workerUrl={WORKER_URL}
                 wasmBaseUrl="/wasm/"
-                wasmModuleName="anyfs.qemu.mjs"
+                wasmModuleName="anyfs.mjs"
                 autoMount
                 mountOpts={{ loglevel: 7 }}
                 prewarm

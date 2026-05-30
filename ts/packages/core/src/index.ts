@@ -48,8 +48,8 @@ export interface BrowserMountOpts extends SessionOpts {
      *  `/wasm/`. */
     wasmBaseUrl?: string;
     /** Filename of the emscripten shim under wasmBaseUrl. Defaults to
-     *  `anyfs.mjs`. Set to `anyfs.qemu.mjs` to use the QEMU-libblock bundle
-     *  (qcow2/vmdk/vdi/vhd in addition to raw images). */
+     *  `anyfs.mjs`. The bundle always includes the QEMU block layer
+     *  (qcow2/vmdk/vdi/vhd in addition to raw). */
     wasmModuleName?: string;
 }
 

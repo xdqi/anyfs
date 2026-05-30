@@ -62,8 +62,8 @@ pnpm -C ts -F @anyfs/core test    # smoke-tests against single/multi/big disk im
 ```
 
 The wasm itself is produced out-of-band by
-`scripts/build_anyfs_browser_wasm.sh` (browser, qemu variant) and the
-companion node variant — see `scripts/build_lkl_wasm.sh` for the kernel side.
+`scripts/build_anyfs_wasm.sh` (set `ANYFS_TARGET=browser` or `node`); see
+`scripts/build_lkl_wasm.sh` for the kernel side.
 
 ### `@anyfs/react`
 
@@ -118,9 +118,10 @@ pnpm -C ts -F vite-demo dev       # http://localhost:5173
 pnpm -C ts -F vite-demo build     # static output in ts/examples/vite-demo/dist
 ```
 
-The wasm bundle is loaded via `anyfs.qemu.mjs` (the QEMU variant). If you
-modify any of the C glue, rebuild with `ANYFS_QEMU=1` or the demo will keep
-running the stale wasm.
+The wasm bundle is loaded via `anyfs.mjs` and always includes the QEMU
+block layer (qcow2/vmdk/vdi/vhd + raw). If you modify any of the C glue,
+rebuild with `scripts/build_anyfs_wasm.sh` or the demo will keep running
+the stale wasm.
 
 ### `examples/electron-demo`
 

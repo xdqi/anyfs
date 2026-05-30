@@ -57,8 +57,8 @@ export interface AnyfsProviderProps {
     /** URL prefix where `anyfs.mjs` and `anyfs.wasm` live; default `/wasm/`.
      *  Ignored in native mode. */
     wasmBaseUrl?: string;
-    /** Override the wasm shim filename (default `anyfs.mjs`). Set to
-     *  `anyfs.qemu.mjs` for the QEMU-libblock bundle. Ignored in native mode. */
+    /** Override the wasm shim filename (default `anyfs.mjs`). The bundle
+     *  always includes the QEMU block layer. Ignored in native mode. */
     wasmModuleName?: string;
     /** Optional kernel options. */
     mountOpts?: SessionOpts;
