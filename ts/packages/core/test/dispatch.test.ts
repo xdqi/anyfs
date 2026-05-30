@@ -58,17 +58,24 @@ test('electron (no bridge) → wasm backend', () => {
     strictEqual(r.backend, 'wasm');
 });
 
-test('electron (no bridge) → allowed url only (no pathLoopbackUrl)', () => {
+test('electron (no bridge) → allowed blob+url (no pathLoopbackUrl)', () => {
     const r = createSession('electron');
-    deepStrictEqual(r.allowedKinds, new Set(['url']));
+    deepStrictEqual(r.allowedKinds, new Set(['blob', 'url']));
+});
+
+// F8 contract: wasm-under-electron can take a blob source (local files stay
+// {kind:'blob'} when native is disabled, mounted via WORKERFS like the web path).
+test('electron (no bridge) → allowedKinds includes blob (F8)', () => {
+    const r = createSession('electron');
+    strictEqual(r.allowedKinds.has('blob'), true);
 });
 
 // electron with pathLoopbackUrl: add path to allowed
-test('electron (wasm + pathLoopbackUrl) → allowed url+path', () => {
+test('electron (wasm + pathLoopbackUrl) → allowed blob+url+path', () => {
     const r = createSession('electron', {
         electronWasmCaps: { pathLoopbackUrl: 'http://127.0.0.1:12345/token123' },
     });
-    deepStrictEqual(r.allowedKinds, new Set(['url', 'path']));
+    deepStrictEqual(r.allowedKinds, new Set(['blob', 'url', 'path']));
 });
 
 // electron with disableNative: force wasm even if bridge present

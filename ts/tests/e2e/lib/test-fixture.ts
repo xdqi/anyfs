@@ -34,9 +34,15 @@ export const test = base.extend<{ driver: Driver }>({
         if (backend === 'native') assertNativeAddonPresent();
         const { app, downloadDir } = await launchElectron(backend, getElectronImage());
         const d = new ElectronDriver(app, downloadDir);
-        await d.start();
-        await use(d);
-        await d.stop();
+        try {
+            await d.start();
+            await use(d);
+        } finally {
+            // Always close the launched Electron app, even if start() throws
+            // mid-way (otherwise the process leaks). Closing `app` directly is
+            // robust regardless of how far start() got; d.stop() does the same.
+            await app.close();
+        }
     },
 });
 
