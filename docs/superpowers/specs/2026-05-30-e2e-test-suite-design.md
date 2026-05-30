@@ -34,7 +34,10 @@ Playwright for both targets, one framework / one assertion API:
 
 ## Architecture (Approach A: one config, three projects, shared driver)
 
-A single new test package, sibling to the existing `ts/tests/native-session.test.mjs`:
+A single new test package at `ts/tests/e2e/`, sibling to the existing
+`ts/tests/native-session.test.mjs`. Because `ts/tests/` is **not** currently a pnpm workspace
+member, this work adds `tests/*` to `ts/pnpm-workspace.yaml` and extends the root prettier globs
+to cover it.
 
 ```
 ts/tests/e2e/
@@ -113,15 +116,20 @@ Changes to the app under test (`ts/examples/vite-demo/src/App.tsx`):
    native OS file dialog or a real drag-drop is not reliable; injecting the source is the
    standard, legitimate seam, and it is the *entry* of every flow.
 2. **Add read-only observability** (no action-replacing verbs):
-   - `__anyfsTest.getState()` → `{ phase, mode, mountPath }` where `phase` is the AnyfsProvider
-     state (`idle`/`booting`/`booted`/`attaching`/`mounting`/`ready`) and `mode` is the resolved
-     backend `native` | `wasm` (the provider already tracks both as `state.kind`/`state.phase`
-     and `mode: AnyfsBackendMode` — the hook surfaces existing values, it does not invent new
-     state). Lets the driver *await* `ready` deterministically instead of polling with sleeps,
-     and lets the Electron projects **assert which backend actually loaded** (essential for the
-     native-vs-wasm coverage and the switch flow).
-   - `__anyfsTest.lastError` → the last surfaced error, so the error-flow specs assert failure
-     deterministically rather than scraping dialog text.
+   - `__anyfsTest.getState()` → `{ status, mode, mountPath, error }` mirroring the existing
+     `AnyfsState` (provider.tsx): `status` is `AnyfsDiskStatus`
+     (`idle`/`booting`/`booted`/`attaching`/`mounting`/`ready`/`error`), `mode` is
+     `AnyfsBackendMode` = `'native'|'wasm'|'node-wasm'`, `mountPath: string|null`,
+     `error: Error|null`. The provider already computes all of these; the hook surfaces existing
+     values, it does not invent new state. Because `AnyfsState` lives in React state (not an
+     imperatively-readable object), the hook reads it through a `useRef` that the provider keeps
+     in sync — the cleanest place is a tiny bridge component rendered inside `<AnyfsProvider>`
+     that calls `useAnyfsDisk()` and writes the snapshot to the ref on every change. Lets the
+     driver *await* `status === 'ready'` deterministically instead of polling with sleeps, and
+     lets the Electron projects **assert which backend actually loaded** (`mode`) — essential for
+     native-vs-wasm coverage and the switch flow.
+   - `__anyfsTest.lastError` → reads `state.error` (already in `AnyfsState`), so the error-flow
+     specs assert failure deterministically rather than scraping dialog text.
 3. **Gate the hook behind a flag** — today `__anyfsTest` is attached unconditionally on every
    page load. Change it to attach only when `import.meta.env.DEV || (URL has ?e2e=1)` (see
    "Gating mechanism" below), so the debug surface is not live in normal production sessions.
@@ -184,15 +192,48 @@ work (user-approved):
    exclude from the production build (move out of `public/`, or a Vite build exclude). They remain
    available for manual debugging in dev.
 
+## Prerequisites discovered during planning (verified 2026-05-30)
+
+Source inspection surfaced facts that become explicit prerequisite tasks in the plan:
+
+- **No `data-testid` exists anywhere** in vite-demo or `@anyfs/trees`. The plan adds stable
+  testids as a prerequisite: file-picker open buttons (`open-file-button`/`open-url-button`/
+  `open-drives-button`), partition rows (`partition-<index>`), URL dialog submit, download status
+  container + cancel, settings disable-native toggle + restart-confirm, the URL error dialog, and
+  the properties modal. The Chonky file list has no per-row testids and uses an internal shadow
+  DOM; rows are addressed by their Chonky-assigned `id` (mount-relative path) / text — the plan
+  uses Chonky's row identity, not invented testids, for file rows.
+- **Electron download is blocked by `dialog.showSaveDialog()`** ([main.ts `download:open`]) with
+  **no existing bypass** (unlike `ANYFS_TEST_LOCAL_PATH` for open). The plan **adds
+  `ANYFS_TEST_DOWNLOAD_DIR`**: when set, `download:open` writes to `<dir>/<fileName>` and skips
+  the dialog. The test reads the file back to assert bytes/size.
+- **wasm bundle is prebuilt and committed** (`packages/core/wasm/*`, ~58 MB `anyfs.wasm`,
+  symlinked into `vite-demo/public/wasm/`). Web E2E runs in CI **without compiling LKL**.
+- **No Playwright / node-CI infra exists**; `.github/workflows/linux.yml` is pure C build. The
+  plan adds a separate Node/Playwright CI job. Electron under Playwright needs a display in CI →
+  `xvfb-run`.
+- **State shape** is `AnyfsState` with `status` (not `phase`) and `mode` ∈
+  `'native'|'wasm'|'node-wasm'`; consumed via `useAnyfsDisk()`. The `getState()` hook reads it
+  through a ref bridge (see Debug-hook policy).
+
+## Launch modes
+
+- **Web** — `vite build` then `vite preview` (tests the real production bundle; the driver opts
+  the debug hook in via `/?e2e=1`). A `headers.ts` guard asserts cross-origin isolation
+  (COOP/COEP) is present on the preview server before running.
+- **Electron** — `_electron.launch()` on the esbuilt `dist/main.cjs` (via `pnpm build:main` +
+  `build:renderer`), with `ELECTRON_DEV`-style env. **No `electron-packager` step** — the plan
+  drives the built main process directly, not the packaged binary.
+
 ## Backend wiring
 
 Three Playwright projects:
 
 | Project | Launch | Backend selector |
 |---|---|---|
-| `web` | `vite preview` + Chromium | wasm Web Worker (only path) |
-| `electron-native` | `_electron.launch()` | native addon (default) |
-| `electron-wasm` | `_electron.launch()` | `ANYFS_DISABLE_NATIVE=1` (wasm fallback) |
+| `web` | `vite preview` + Chromium (`/?e2e=1`) | wasm Web Worker (only path) |
+| `electron-native` | `_electron.launch(dist/main.cjs)` | native addon (default) |
+| `electron-wasm` | `_electron.launch(dist/main.cjs)` | `ANYFS_DISABLE_NATIVE=1` (wasm fallback) |
 
 The four flow specs run across all three projects. `backend-switch.spec.ts` runs only in the
 Electron projects.
