@@ -54,14 +54,6 @@ option('enable_fuse', type: 'boolean',
     value: false,
     description: 'Enable FUSE frontend (anyfs-fuse)')
 
-option('enable_winfsp', type: 'boolean',
-    value: false,
-    description: 'Enable WinFSP FUSE frontend for Windows (anyfs-winfsp.exe)')
-
-option('winfsp_root', type: 'string',
-    value: '',
-    description: 'Path to WinFSP source tree (contains inc/ and opt/fsext/lib/)')
-
 option('blkid_root', type: 'string',
     value: '',
     description: 'Path to a hand-built libblkid (contains lib/libblkid.a + '
