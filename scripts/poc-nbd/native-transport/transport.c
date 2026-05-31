@@ -21,13 +21,13 @@ static napi_value Socketpair(napi_env env, napi_callback_info info)
 		napi_throw_error(env, NULL, "socketpair() failed");
 		return NULL;
 	}
-	/* Clear CLOEXEC on both ends so the child can inherit fds[1].
-	 * (socketpair does not set CLOEXEC by default on Linux, but be
-	 * explicit so the contract is obvious.) */
-	for (int i = 0; i < 2; i++) {
-		int fl = fcntl(fds[i], F_GETFD);
+	/* Clear CLOEXEC on the child end (fds[1]) so it survives exec into the
+	 * spawned QEMU/lspart child. The parent end (fds[0]) keeps its default
+	 * and is never inherited — only the child end is passed via stdio. */
+	{
+		int fl = fcntl(fds[1], F_GETFD);
 		if (fl >= 0)
-			fcntl(fds[i], F_SETFD, fl & ~FD_CLOEXEC);
+			fcntl(fds[1], F_SETFD, fl & ~FD_CLOEXEC);
 	}
 
 	napi_value arr, a, b;

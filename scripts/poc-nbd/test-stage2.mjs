@@ -60,7 +60,7 @@ if (readCount() === 0) {
 
 /* === Check (b): byte verify THROUGH qcow2-over-NBD with qemu-io === */
 const sockPath = '/tmp/poc-nbd-stage2.sock';
-const { server } = await serveOnUnixSocket(meta.qcow2, sockPath);
+const { server, imageFd } = await serveOnUnixSocket(meta.qcow2, sockPath);
 try {
   const len = Buffer.from(meta.verifyBytesHex, 'hex').length;
   const nbdUri = `json:{"driver":"qcow2","file":{"driver":"nbd","server":{"type":"unix","path":"${sockPath}"}}}`;
@@ -89,6 +89,9 @@ try {
   fail = true;
 } finally {
   server.close();
+  try {
+    fs.closeSync(imageFd);
+  } catch {}
 }
 
 if (fail) process.exit(1);
