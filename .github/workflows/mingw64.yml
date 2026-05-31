@@ -14,17 +14,15 @@ name: mingw64
 # anyfs-winfsp.exe is intentionally skipped: WinFSP headers aren't available
 # in CI, and the server tarball doesn't need the FUSE frontend.
 #
-# LKL kernel:  github.com/xdqi/lkl   branch lkl-win64-6.18
-#               — tavip/linux@lkl-6.18 + Win64 (LLP64) port patches
-#                 (__lkl_long_t typedef, --image-base=0x10000, custom linker,
-#                  cygwin-gcc wrapper for the final link, nt-host memcpy/set,
-#                  hmac on Windows targets, mingw32 PE binutils).
-#                 The page/folio static_asserts in stock lkl-6.18 fail under
-#                 mingw without the LLP64 typedef commit, so the upstream
-#                 branch alone won't build for x86_64-w64-mingw32.
-# QEMU:        v11.0.0  (same pin as linux.yml)
-# ksmbd-tools: master  (source-only — anyfs-ksmbd compiles selected .c files
-#                       directly; the userspace binaries aren't shipped)
+# LKL kernel:  deps/linux  (via peru — xdqi/lkl@lkl-anyfs, unified ref for
+#               linux-amd64 + mingw64 + wasm; replaces the former separate
+#               xdqi/lkl@lkl-win64-6.18 clone. The LLP64 / page-folio fixes
+#               from the win64 port are merged into the unified lkl-anyfs
+#               branch; see peru.yaml for the pinned SHA.)
+# QEMU:        deps/qemu   (via peru — v11.0.0 pinned SHA)
+# ksmbd-tools: deps/ksmbd-tools (via peru; source-only — anyfs-ksmbd compiles
+#               selected .c files directly; the userspace binaries aren't shipped)
+# util-linux:  deps/util-linux  (via peru; source-only for libblkid mingw build)
 
 on:
   push:
@@ -40,14 +38,6 @@ jobs:
     timeout-minutes: 90
 
     env:
-      LKL_REPO:   https://github.com/xdqi/lkl.git
-      LKL_REF:    lkl-win64-6.18
-      QEMU_REPO:  https://gitlab.com/qemu-project/qemu.git
-      QEMU_REF:   v11.0.0
-      KSMBD_REPO: https://github.com/cifsd-team/ksmbd-tools.git
-      KSMBD_REF:  master
-      UTIL_LINUX_REPO: https://github.com/util-linux/util-linux.git
-      UTIL_LINUX_REF:  stable/v2.40
       MSYS_CROSS_REPO: https://msys.kosaka.moe/repo
       MSYS_CROSS_PREFIX: /opt/msys2-cross
 
@@ -59,7 +49,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential meson ninja-build pkg-config python3 \
+            build-essential meson ninja-build pkg-config python3 pipx \
             flex bison bc rsync libelf-dev libssl-dev \
             fakeroot xz-utils ca-certificates curl
 
@@ -91,7 +81,7 @@ jobs:
           # msys.kosaka.moe/repo and [mingw64] at repo.msys2.org.
           sudo "${MSYS_CROSS_PREFIX}/bin/msys-pacman" -Sy --noconfirm
           # cygwin-gcc is required by the LKL-side x86_64-w64-mingw32-gcc
-          # wrapper (tools/lkl/bin/) on xdqi/lkl@lkl-win64-6.18: kernel-side
+          # wrapper (tools/lkl/bin/) on xdqi/lkl@lkl-anyfs: kernel-side
           # objects compile/link through cygwin-gcc (LP64) to avoid the
           # IMAGE_REL_AMD64_REL32 overflow that MinGW ld hits on the
           # ~320 MiB lkl.o; user-space side stays on mingw-gcc (LLP64).
@@ -128,16 +118,26 @@ jobs:
             --modversion glib-2.0
 
       # ── Caches ──────────────────────────────────────────────────────────────
-      - name: Cache LKL kernel tree + per-target build
+      # All source deps (linux, qemu, ksmbd-tools, util-linux) are now managed
+      # by peru and cached together under ./deps/. Key on peru.yaml (SHA-pinned
+      # — no lock file; cache rebuilds exactly when any pin moves).
+      - name: Cache peru-synced deps
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-${{ hashFiles('peru.yaml') }}
+
+      # Per-target LKL kernel build output (config + object tree). Key includes
+      # script hashes so it rebuilds when gen/build/patch logic changes.
+      - name: Cache LKL per-target build (mingw64)
         id: cache-lkl
         uses: actions/cache@v4
         with:
-          path: |
-            ~/linux
-            lkl-mingw64
-          key: lkl-mingw64-${{ env.LKL_REF }}-${{ hashFiles('scripts/gen_lkl_config.sh', 'scripts/build_lkl.sh', 'scripts/oot_fs.sh', '.github/workflows/mingw64.yml') }}
+          path: lkl-mingw64
+          key: lkl-mingw64-${{ hashFiles('peru.yaml', 'scripts/gen_lkl_config.sh', 'scripts/build_lkl.sh', 'scripts/oot_fs.sh', '.github/workflows/mingw64.yml') }}
           restore-keys: |
-            lkl-mingw64-${{ env.LKL_REF }}-
+            lkl-mingw64-
 
       - name: Cache OOT FS sources (NTFS PLUS + APFS + OpenZFS)
         id: cache-oot
@@ -148,69 +148,30 @@ jobs:
           restore-keys: |
             oot-fs-
 
-      - name: Cache QEMU tree + build
+      - name: Cache QEMU per-target build (mingw64)
         id: cache-qemu
         uses: actions/cache@v4
         with:
-          path: ~/qemu
-          key: qemu-mingw64-${{ env.QEMU_REF }}-${{ hashFiles('scripts/build_qemu.sh') }}
+          path: deps/qemu/build-anyfs-mingw64
+          key: qemu-mingw64-${{ hashFiles('peru.yaml', 'scripts/build_qemu.sh') }}
           restore-keys: |
-            qemu-mingw64-${{ env.QEMU_REF }}-
+            qemu-mingw64-
 
-      - name: Cache ksmbd-tools (source only)
-        id: cache-ksmbd
-        uses: actions/cache@v4
-        with:
-          path: ~/ksmbd-tools
-          key: ksmbd-src-${{ env.KSMBD_REF }}
+      # ── Fetch pinned dependencies ───────────────────────────────────────────
+      - name: Install peru
+        run: pipx install peru
 
-      # util-linux is fetched purely for libblkid sources;
-      # build_libblkid_mingw.sh compiles a hand-picked TU set under mingw with
-      # shim headers from patches/libblkid/shim/. The hash on
-      # build_libblkid_mingw.sh + the workflow file invalidates the cache when
-      # either the TU list or the upstream ref move.
-      - name: Cache util-linux source
-        id: cache-util-linux
-        uses: actions/cache@v4
-        with:
-          path: ~/util-linux
-          key: util-linux-${{ env.UTIL_LINUX_REF }}-${{ hashFiles('scripts/build_libblkid_mingw.sh', '.github/workflows/mingw64.yml') }}
-          restore-keys: |
-            util-linux-${{ env.UTIL_LINUX_REF }}-
+      - name: Sync pinned dependencies
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: peru sync
 
-      # ── Clones ──────────────────────────────────────────────────────────────
-      - name: Clone LKL kernel
-        if: steps.cache-lkl.outputs.cache-hit != 'true'
+      # Stage libblkid/src/blkid.h from the util-linux source in deps/.
+      # util-linux's autotools normally produces blkid.h from blkid.h.in; we
+      # substitute the version macros from patches/libblkid/shim/config.h to
+      # skip running ./configure entirely. This replaces the former inline step
+      # that was bundled with the util-linux clone.
+      - name: Stage blkid.h from deps/util-linux
         run: |
-          rm -rf "$HOME/linux"
-          git clone --depth=1 --branch="${LKL_REF}" "${LKL_REPO}" "$HOME/linux"
-          test -d "$HOME/linux/arch/lkl" || { echo "::error::arch/lkl missing in cloned tree"; exit 1; }
-
-      - name: Clone QEMU
-        if: steps.cache-qemu.outputs.cache-hit != 'true'
-        run: |
-          rm -rf "$HOME/qemu"
-          git clone --depth=1 --branch="${QEMU_REF}" "${QEMU_REPO}" "$HOME/qemu"
-
-      # ksmbd-tools is used as source: anyfs-ksmbd compiles a handful of
-      # mountd/*.c and tools/management/*.c files directly into the .exe via
-      # meson.build. No mountd/builddir is produced.
-      - name: Clone ksmbd-tools
-        if: steps.cache-ksmbd.outputs.cache-hit != 'true'
-        run: |
-          rm -rf "$HOME/ksmbd-tools"
-          git clone --depth=1 --branch="${KSMBD_REF}" "${KSMBD_REPO}" "$HOME/ksmbd-tools"
-
-      # util-linux is consumed source-only by build_libblkid_mingw.sh.
-      # The build expects libblkid/src/blkid.h (post-autoconf), but a fresh
-      # clone only has blkid.h.in — substitute the two version macros from
-      # patches/libblkid/shim/config.h to skip running ./configure entirely.
-      - name: Clone util-linux + stage blkid.h
-        if: steps.cache-util-linux.outputs.cache-hit != 'true'
-        run: |
-          rm -rf "$HOME/util-linux"
-          git clone --depth=1 --branch="${UTIL_LINUX_REF}" \
-            "${UTIL_LINUX_REPO}" "$HOME/util-linux"
           ver=$(grep -E '^#define LIBBLKID_VERSION' \
             patches/libblkid/shim/config.h | awk -F'"' '{print $2}')
           date=$(grep -E '^#define LIBBLKID_DATE' \
@@ -218,8 +179,16 @@ jobs:
           test -n "$ver" && test -n "$date" \
             || { echo "::error::LIBBLKID_VERSION/DATE missing in shim/config.h"; exit 1; }
           sed -e "s/@LIBBLKID_VERSION@/$ver/g" -e "s/@LIBBLKID_DATE@/$date/g" \
-            "$HOME/util-linux/libblkid/src/blkid.h.in" \
-            > "$HOME/util-linux/libblkid/src/blkid.h"
+            deps/util-linux/libblkid/src/blkid.h.in \
+            > deps/util-linux/libblkid/src/blkid.h
+
+      # Doctor checks: meson/ninja/peru/python3, native ld, mingw cross.
+      # NOTE: doctor also checks wasm-ld, which is NOT present in this job
+      # (mingw64 doesn't need it). We run advisory-only (|| echo) so the
+      # mingw cross check (relevant here) still surfaces as ok/FAIL without
+      # blocking the job on the wasm-ld miss.
+      - name: Preflight (doctor)
+        run: ./scripts/doctor.sh || echo "doctor reported issues (advisory — wasm-ld check is expected to fail in this job)"
 
       - name: Fetch OOT FS sources
         if: steps.cache-oot.outputs.cache-hit != 'true'
@@ -231,14 +200,14 @@ jobs:
       - name: Generate LKL kernel config (mingw64)
         run: |
           ./scripts/gen_lkl_config.sh \
-            --linux="$HOME/linux" \
+            --linux=deps/linux \
             --out="$GITHUB_WORKSPACE" \
             --targets=mingw64
 
       - name: Build LKL kernel (mingw64)
         run: |
           ./scripts/build_lkl.sh \
-            --linux="$HOME/linux" \
+            --linux=deps/linux \
             --out="$GITHUB_WORKSPACE" \
             --targets=mingw64 \
             -j"$(nproc)"
@@ -248,13 +217,13 @@ jobs:
       - name: Build QEMU block layer (mingw64)
         run: |
           ./scripts/build_qemu.sh \
-            --qemu-src="$HOME/qemu" \
+            --qemu-src=deps/qemu \
             --targets=mingw64 \
             -j"$(nproc)"
 
       - name: Build libblkid (mingw64)
         run: |
-          ./scripts/build_libblkid_mingw.sh mingw64
+          UL_SRC=deps/util-linux ./scripts/build_libblkid_mingw.sh mingw64
           test -f "$GITHUB_WORKSPACE/build-blkid-mingw64/lib/libblkid.a" \
             || { echo "::error::libblkid.a missing"; exit 1; }
 
@@ -263,9 +232,9 @@ jobs:
           ./scripts/build_anyfs.sh \
             --targets=mingw64 \
             --components=core,server \
-            --lkl-src="$HOME/linux" \
-            --qemu-root="$HOME/qemu" \
-            --ksmbd-root="$HOME/ksmbd-tools" \
+            --lkl-src=deps/linux \
+            --qemu-root=deps/qemu \
+            --ksmbd-root=deps/ksmbd-tools \
             -j"$(nproc)"
 
       - name: Package Win64 distribution tarball

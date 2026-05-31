@@ -3,10 +3,10 @@ name: linux
 # Builds the Linux x86_64 distribution tarball (anyfs-ksmbd + anyfs-nfsd +
 # anyfs-fuse + liblkl.so + libanyfs-qemublk.so) and uploads it as an artifact.
 #
-# LKL kernel:  github.com/tavip/linux  branch lkl-6.18  (PR lkl/linux#632)
-# QEMU:        v11.0.0  (matches the local tree; fdmon-poll.c no longer needs
-#                        the `static __thread` workaround on this version)
-# ksmbd-tools: master  (pinned in env below)
+# LKL kernel:  deps/linux  (via peru — xdqi/lkl@lkl-anyfs, unified ref for
+#               linux-amd64 + mingw64 + wasm; see peru.yaml for pinned SHA)
+# QEMU:        deps/qemu   (via peru — v11.0.0 pinned SHA)
+# ksmbd-tools: deps/ksmbd-tools (via peru — pinned SHA)
 #
 # The `net/sunrpc/svc.c` rpcbind guard is applied by gen_lkl_config.sh itself
 # (function patch_sunrpc_lkl_guard; idempotent via LKL_RPCBIND_GUARD marker),
@@ -25,14 +25,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 75
 
-    env:
-      LKL_REPO:   https://github.com/tavip/linux.git
-      LKL_REF:    lkl-6.18
-      QEMU_REPO:  https://gitlab.com/qemu-project/qemu.git
-      QEMU_REF:   v11.0.0
-      KSMBD_REPO: https://github.com/cifsd-team/ksmbd-tools.git
-      KSMBD_REF:  master
-
     steps:
       - name: Checkout anyfs-reader
         uses: actions/checkout@v4
@@ -41,7 +33,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential meson ninja-build pkg-config python3 \
+            build-essential meson ninja-build pkg-config python3 pipx \
             flex bison bc rsync libelf-dev libssl-dev \
             libglib2.0-dev liburing-dev libaio-dev \
             libzstd-dev libbz2-dev zlib1g-dev libpixman-1-dev \
@@ -51,22 +43,36 @@ jobs:
             smbclient nfs-common curl
 
       # ── Caches ──────────────────────────────────────────────────────────────
-      # Kernel source + per-target build (lkl-linux-amd64/) live in one bucket.
-      # Key rebuilds when LKL_REF moves OR any of the config/patch scripts
-      # change OR this workflow file changes (gen_lkl_config.sh embeds the
-      # LKL_RPCBIND_GUARD patcher and dispatches to oot_fs.sh, so their hashes
-      # capture patch changes; adding the workflow yml lets the cache rebuild
-      # when we add steps like the OOT fetch).
-      - name: Cache LKL kernel tree + per-target build
+      # All source deps (linux, qemu, ksmbd-tools) are now managed by peru and
+      # cached together under ./deps/. Key on peru.yaml (SHA-pinned — no lock
+      # file; cache rebuilds exactly when any pin moves).
+      - name: Cache peru-synced deps
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-${{ hashFiles('peru.yaml') }}
+
+      # ksmbd-tools is compiled (meson) for linux-amd64; cache its build output
+      # separately so a pure-source peru-cache-hit doesn't need to re-compile.
+      # Key matches deps cache so they miss together when ksmbd pin changes.
+      - name: Cache ksmbd-tools build (linux-amd64)
+        id: cache-ksmbd-build
+        uses: actions/cache@v4
+        with:
+          path: build-ksmbd-linux-amd64
+          key: ksmbd-build-linux-amd64-${{ hashFiles('peru.yaml') }}
+
+      # Per-target LKL kernel build output (config + object tree). Key includes
+      # the script hashes so it rebuilds when gen/build/patch logic changes.
+      - name: Cache LKL per-target build (linux-amd64)
         id: cache-lkl
         uses: actions/cache@v4
         with:
-          path: |
-            ~/linux
-            lkl-linux-amd64
-          key: lkl-${{ env.LKL_REF }}-${{ hashFiles('scripts/gen_lkl_config.sh', 'scripts/build_lkl.sh', 'scripts/oot_fs.sh', '.github/workflows/linux.yml') }}
+          path: lkl-linux-amd64
+          key: lkl-linux-amd64-${{ hashFiles('peru.yaml', 'scripts/gen_lkl_config.sh', 'scripts/build_lkl.sh', 'scripts/oot_fs.sh', '.github/workflows/linux.yml') }}
           restore-keys: |
-            lkl-${{ env.LKL_REF }}-
+            lkl-linux-amd64-
 
       - name: Cache OOT FS sources (NTFS PLUS + APFS + OpenZFS)
         id: cache-oot
@@ -77,44 +83,38 @@ jobs:
           restore-keys: |
             oot-fs-
 
-      - name: Cache QEMU tree + build
+      - name: Cache QEMU per-target build (linux-amd64)
         id: cache-qemu
         uses: actions/cache@v4
         with:
-          path: ~/qemu
-          key: qemu-${{ env.QEMU_REF }}-${{ hashFiles('scripts/build_qemu.sh') }}
+          path: deps/qemu/build-anyfs-linux-amd64
+          key: qemu-linux-amd64-${{ hashFiles('peru.yaml', 'scripts/build_qemu.sh') }}
           restore-keys: |
-            qemu-${{ env.QEMU_REF }}-
+            qemu-linux-amd64-
 
-      - name: Cache ksmbd-tools
-        id: cache-ksmbd
-        uses: actions/cache@v4
-        with:
-          path: ~/ksmbd-tools
-          key: ksmbd-${{ env.KSMBD_REF }}
+      # ── Fetch pinned dependencies ───────────────────────────────────────────
+      - name: Install peru
+        run: pipx install peru
 
-      # ── Clones (skipped on cache hit) ───────────────────────────────────────
-      - name: Clone LKL kernel
-        if: steps.cache-lkl.outputs.cache-hit != 'true'
+      - name: Sync pinned dependencies
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: peru sync
+
+      # Doctor checks: meson/ninja/peru/python3, native ld >= 2.30, deps synced.
+      # NOTE: doctor also checks mingw cross and wasm-ld, which are NOT present
+      # in this job (linux-amd64 doesn't need them). We run doctor advisory-only
+      # (|| echo) so relevant checks surface in the log without blocking the job
+      # on irrelevant ones. The wasm-ld and mingw checks will print FAIL but that
+      # is expected and harmless here.
+      - name: Preflight (doctor)
+        run: ./scripts/doctor.sh || echo "doctor reported issues (advisory — mingw/wasm-ld checks are expected to fail in this job)"
+
+      # ── Build ksmbd-tools (linux-amd64) ────────────────────────────────────
+      - name: Build ksmbd-tools
+        if: steps.cache-ksmbd-build.outputs.cache-hit != 'true'
         run: |
-          rm -rf "$HOME/linux"
-          git clone --depth=1 --branch="${LKL_REF}" "${LKL_REPO}" "$HOME/linux"
-          test -d "$HOME/linux/arch/lkl" || { echo "::error::arch/lkl missing in cloned tree"; exit 1; }
-
-      - name: Clone QEMU
-        if: steps.cache-qemu.outputs.cache-hit != 'true'
-        run: |
-          rm -rf "$HOME/qemu"
-          git clone --depth=1 --branch="${QEMU_REF}" "${QEMU_REPO}" "$HOME/qemu"
-
-      - name: Clone & build ksmbd-tools
-        if: steps.cache-ksmbd.outputs.cache-hit != 'true'
-        run: |
-          rm -rf "$HOME/ksmbd-tools"
-          git clone --depth=1 --branch="${KSMBD_REF}" "${KSMBD_REPO}" "$HOME/ksmbd-tools"
-          cd "$HOME/ksmbd-tools"
-          meson setup builddir
-          meson compile -C builddir
+          meson setup build-ksmbd-linux-amd64 deps/ksmbd-tools
+          meson compile -C build-ksmbd-linux-amd64
 
       # Out-of-tree FS sources: NTFS PLUS, APFS, OpenZFS. gen_lkl_config.sh
       # internally runs `oot_fs.sh stage`, which silently no-ops if the
@@ -130,27 +130,27 @@ jobs:
       - name: Generate LKL kernel config (applies LKL_RPCBIND_GUARD)
         run: |
           ./scripts/gen_lkl_config.sh \
-            --linux="$HOME/linux" \
+            --linux=deps/linux \
             --out="$GITHUB_WORKSPACE" \
             --targets=linux-amd64
 
       - name: Build LKL kernel
         run: |
           ./scripts/build_lkl.sh \
-            --linux="$HOME/linux" \
+            --linux=deps/linux \
             --out="$GITHUB_WORKSPACE" \
             --targets=linux-amd64 \
             -j"$(nproc)"
           # package_linux.sh falls back to $HOME/linux/tools/lkl/lib/liblkl.so —
           # link the per-target build there so packaging finds it.
-          mkdir -p "$HOME/linux/tools/lkl/lib"
+          mkdir -p deps/linux/tools/lkl/lib
           ln -sf "$GITHUB_WORKSPACE/lkl-linux-amd64/tools/lkl/lib/liblkl.so" \
-                 "$HOME/linux/tools/lkl/lib/liblkl.so"
+                 deps/linux/tools/lkl/lib/liblkl.so
 
       - name: Build QEMU block layer
         run: |
           ./scripts/build_qemu.sh \
-            --qemu-src="$HOME/qemu" \
+            --qemu-src=deps/qemu \
             --targets=linux-amd64 \
             -j"$(nproc)"
 
@@ -159,9 +159,9 @@ jobs:
           ./scripts/build_anyfs.sh \
             --targets=linux-amd64 \
             --components=core,server,fuse \
-            --lkl-src="$HOME/linux" \
-            --qemu-root="$HOME/qemu" \
-            --ksmbd-root="$HOME/ksmbd-tools" \
+            --lkl-src=deps/linux \
+            --qemu-root=deps/qemu \
+            --ksmbd-root=deps/ksmbd-tools \
             -j"$(nproc)"
 
       # ── Integration smoke test ──────────────────────────────────────────────
@@ -192,6 +192,11 @@ jobs:
 
       - name: Package distribution tarball
         run: |
+          # package_linux.sh searches $HOME/linux and $HOME/qemu for .so files
+          # (historical defaults). Symlink them to the peru-synced deps so the
+          # script finds liblkl.so and libanyfs-qemublk.so without modification.
+          ln -sfn "$GITHUB_WORKSPACE/deps/linux" "$HOME/linux" || true
+          ln -sfn "$GITHUB_WORKSPACE/deps/qemu"  "$HOME/qemu"  || true
           ./scripts/package_linux.sh build-anyfs-linux-amd64
           ls -la /tmp/anyfs-reader-*-linux-amd64.tar.gz
 
