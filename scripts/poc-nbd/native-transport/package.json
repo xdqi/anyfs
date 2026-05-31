@@ -1,0 +1,10 @@
+{
+  "name": "native-transport",
+  "version": "0.0.0",
+  "private": true,
+  "description": "PoC N-API addon: socketpair() for NBD-over-fd transport",
+  "main": "index.js",
+  "scripts": {
+    "build": "node-gyp rebuild"
+  }
+}
