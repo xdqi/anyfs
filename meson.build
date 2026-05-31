@@ -515,33 +515,3 @@ if enable_fuse
         install_rpath: '$ORIGIN/../lib',
     )
 endif
-
-# --- WinFSP FUSE Frontend (anyfs-winfsp.exe) ---
-enable_winfsp = get_option('enable_winfsp')
-if enable_winfsp
-    winfsp_root = get_option('winfsp_root')
-    if winfsp_root == ''
-        error('winfsp_root must be set when enable_winfsp=true')
-    endif
-
-    winfsp_inc = include_directories(
-        winfsp_root / 'inc',
-    )
-
-    _winfsp_lib = host_machine.cpu_family() == 'x86_64' ? 'winfsp-x64' : 'winfsp-x86'
-    winfsp_lib = cc.find_library(_winfsp_lib,
-        dirs: [winfsp_root / 'opt' / 'fsext' / 'lib'],
-        required: true,
-    )
-
-    anyfs_winfsp = executable('anyfs-winfsp',
-        'src/fuse/fuse_main.c',
-        include_directories: [anyfs_inc, winfsp_inc],
-        dependencies: [lkl_dep, winfsp_lib, thread_dep, ws2_dep, iphlpapi_dep],
-        link_with: [anyfs_core],
-        c_args: ['-DFUSE_USE_VERSION=35'],
-        win_subsystem: 'console',
-        install: true,
-        install_rpath: '',
-    )
-endif
