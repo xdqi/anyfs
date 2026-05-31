@@ -252,10 +252,14 @@ int anyfs_session_open(const char* image_path, uint32_t flags,
 	(void)load_top_parts_locked(d);
 	pthread_mutex_unlock(&d->lock);
 
-	/* Cache the whole-disk fstype via superblock magic probe.
-	 * This runs after the ASYNCIFY checkpoint above, so the
-	 * block I/O is safe. mountWhole reuses the cached hint
-	 * and avoids any probe reads that would corrupt fibers. */
+	/* Cache the whole-disk fstype via libblkid (anyfs_probe_meta), which
+	 * recognises every filesystem blkid knows — btrfs, f2fs, bcachefs, …,
+	 * not just the handful of superblock magics this used to hand-check.
+	 * mountWhole reuses the cached hint and avoids any probe reads that
+	 * would corrupt fibers. blkid runs against a host-spooled snapshot of
+	 * the device, so it's ASYNCIFY-safe like the per-partition probe above.
+	 * (If blkid can't identify the device the hint stays empty → whole-disk
+	 * mount falls back to auto-detection.) */
 	d->whole_fstype_hint[0] = '\0';
 	d->whole_dev = 0;
 	uint32_t probe_dev = 0;
@@ -267,31 +271,9 @@ int anyfs_session_open(const char* image_path, uint32_t flags,
 		snprintf(tmpdev, sizeof(tmpdev), "/dev/.anyfs_probe_%d",
 			 d->disk_id);
 		(void)lkl_sys_mknod(tmpdev, LKL_S_IFBLK | 0600, probe_dev);
-		int probe_fd = lkl_sys_open(tmpdev, LKL_O_RDONLY, 0);
-		if (probe_fd >= 0) {
-			char sb[4096];
-			long n = lkl_sys_pread64(probe_fd, sb, sizeof(sb), 0);
-			if (n >= (long)sizeof(sb)) {
-				if ((unsigned char)sb[0x438] == 0x53 &&
-				    (unsigned char)sb[0x439] == 0xEF)
-					snprintf(d->whole_fstype_hint,
-						 sizeof(d->whole_fstype_hint),
-						 "ext4");
-				else if (memcmp(sb, "XFSB", 4) == 0)
-					snprintf(d->whole_fstype_hint,
-						 sizeof(d->whole_fstype_hint),
-						 "xfs");
-				else if (memcmp(sb + 3, "NTFS    ", 8) == 0)
-					snprintf(d->whole_fstype_hint,
-						 sizeof(d->whole_fstype_hint),
-						 "ntfs");
-				else if (memcmp(sb + 3, "EXFAT   ", 8) == 0)
-					snprintf(d->whole_fstype_hint,
-						 sizeof(d->whole_fstype_hint),
-						 "exfat");
-			}
-			lkl_sys_close(probe_fd);
-		}
+		char label[64], uuid[40];
+		(void)anyfs_probe_meta(tmpdev, d->whole_fstype_hint, label,
+				       uuid);
 		lkl_sys_unlink(tmpdev);
 	}
 

@@ -34,10 +34,7 @@ AnyfsPartKind anyfs_probe_kind_blkdev(const char* lkl_blkdev_path);
  * found). Returns 0 on success, non-zero on any I/O error (in which
  * case the buffers are left empty). Safe to call on container kinds —
  * libblkid simply won't recognise them as filesystems and returns
- * empty output.
- *
- * When libblkid is not compiled in (ANYFS_HAS_BLKID undefined), this
- * is a no-op that returns 0 with empty outputs. */
+ * empty output. libblkid is always linked. */
 int anyfs_probe_meta(const char* lkl_blkdev_path, char fstype[32],
 		     char label[64], char uuid[40]);
 

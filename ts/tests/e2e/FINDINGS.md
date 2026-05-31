@@ -110,7 +110,7 @@ electron-wasm stays green (3/3) via the unaffected `electron-ipc` path. The web 
 
 ---
 
-## F5 — native whole-disk btrfs (no partition table) not auto-detected (CONFIRMED native, Medium)
+## F5 — native whole-disk btrfs (no partition table) not auto-detected (✅ FIXED — libblkid whole-disk hint, was Medium)
 
 **Observed (Phase 3.2 spike, native LKL):** Opening `btrfs-whole.vmdk` (whole-disk btrfs, no
 PT) natively, `sessionListJson` returns 0 partitions and `sessionEnter(0)` fails cleanly
@@ -124,12 +124,20 @@ the open-time hint probe, not a btrfs driver problem.
 
 **Repro (native):** open a whole-disk (no-PT) btrfs image → enter(0) → rc=-1 instead of mount.
 
-**Suspected fix area:** add the btrfs superblock magic (`_BHRfS_M` at offset 0x10040) to the
-whole-disk hint detection in `anyfs_session.c`. Cleanly errors today, so low urgency.
+**✅ FIX:** Rather than hand-add a btrfs magic, the whole-disk hint in `anyfs_session.c`
+(`anyfs_session_open`) now calls `anyfs_probe_meta()` — the existing **libblkid** probe (already
+used for per-partition fstype/label/uuid) — against the whole device. blkid authoritatively
+identifies every filesystem it knows (btrfs, f2fs, bcachefs, xfs, ntfs, …), so the curated
+4-magic check (ext4/xfs/ntfs/exfat) is gone entirely. Verified native: whole-disk
+`btrfs-whole.vmdk` now mounts (`enter(0) → /lklmnt/anyfs_d0_whole`, lists `sub whole.txt`); no
+regression (ext4 partition still mounts). Also rebuilt the wasm bundle. Separately, the
+`ANYFS_HAS_BLKID` conditional was removed across the code + meson + wasm build — libblkid is now
+unconditionally required (it was already linked in every target; the `#else` no-op path was dead
+weight that made this bug's "silent empty hint" behaviour confusing).
 
-**E2E impact:** the `btrfsVmdk` fixture's whole-disk index-0 mount will be a `test.fixme` on
-BOTH backends (wasm hangs F3 / native errors F5). Tests should use btrfs-in-a-partition if a
-passing native btrfs case is wanted later.
+**E2E impact:** native whole-disk btrfs now works. The `btrfsVmdk` whole-disk case is still
+`test.fixme` on the WASM backends (that path's container-open is F10, separate from F5). A
+native btrfs E2E case could now pass, but is gated by F9 (native Electron teardown hang).
 
 ---
 

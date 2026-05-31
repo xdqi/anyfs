@@ -248,9 +248,10 @@ anyfs_core_sources = files(
     'src/core/anyfs_share.c',
 )
 
-# libblkid (optional, v2 enrichment of KIND_FS rows with FSTYPE/LABEL/UUID).
-# Prefer a hand-built archive when blkid_root is set (mingw cross-builds);
-# fall back to pkg-config lookup on Linux.
+# libblkid is REQUIRED — anyfs_probe.c always uses it to identify filesystems
+# (FSTYPE/LABEL/UUID enrichment + the whole-disk fstype hint). Prefer a
+# hand-built archive when blkid_root is set (mingw cross-builds); fall back to
+# pkg-config lookup on Linux. A missing blkid is a hard build error.
 blkid_root = get_option('blkid_root')
 if blkid_root != ''
     _blkid_lib = blkid_root / 'lib/libblkid.a'
@@ -266,14 +267,8 @@ if blkid_root != ''
         compile_args: ['-I' + _blkid_inc],
         link_args: [_blkid_lib],
     )
-    blkid_args = ['-DANYFS_HAS_BLKID=1']
 else
-    blkid_dep = dependency('blkid', required: false)
-    if blkid_dep.found()
-        blkid_args = ['-DANYFS_HAS_BLKID=1']
-    else
-        blkid_args = []
-    endif
+    blkid_dep = dependency('blkid', required: true)
 endif
 
 if enable_gio
@@ -308,10 +303,9 @@ endif
 anyfs_core = static_library('anyfs_core',
     anyfs_core_sources,
     include_directories: _anyfs_core_inc,
-    dependencies: [lkl_dep, gio_dep] + (enable_qemu ? [qemu_dep] : [])
-                  + (blkid_dep.found() ? [blkid_dep] : []),
+    dependencies: [lkl_dep, gio_dep, blkid_dep] + (enable_qemu ? [qemu_dep] : []),
     c_args: ['-DANYFS_CORE_BUILDING', '-fvisibility=hidden']
-            + gio_args + qemu_args + blkid_args,
+            + gio_args + qemu_args,
     install: true,
 )
 

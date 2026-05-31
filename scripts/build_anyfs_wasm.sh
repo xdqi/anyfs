@@ -101,7 +101,11 @@ echo "=== Phase 1: libanyfs_core.a ==="
 for src in "${CORE_SOURCES[@]}"; do
     obj="${src%.c}.o"
     echo "  CC   $src"
-    emcc "${CFLAGS[@]}" "${INC[@]}" -c "$SRC_CORE/$src" -o "$obj"
+    # anyfs_probe.c includes <blkid/blkid.h> (always — libblkid is required),
+    # so it needs the sysroot include path; the other core files don't.
+    extra_inc=()
+    [[ "$src" == "anyfs_probe.c" ]] && extra_inc=(-I "$SYS/include")
+    emcc "${CFLAGS[@]}" "${INC[@]}" "${extra_inc[@]}" -c "$SRC_CORE/$src" -o "$obj"
 done
 echo "  AR   libanyfs_core.a"
 emar rcs libanyfs_core.a "${CORE_SOURCES[@]/.c/.o}"
@@ -163,16 +167,10 @@ emcc -pthread -O2 -g \
 QEMU_STUBS_OBJ="$BLD/qemu_stubs.${TARGET}.o"
 echo "  CC   src/core/qemu_stubs.c -> $QEMU_STUBS_OBJ"
 emcc -pthread -O2 -g -c "$SRC_CORE/qemu_stubs.c" -o "$QEMU_STUBS_OBJ"
-
-# Rebuild anyfs_probe.c with ANYFS_HAS_BLKID so fstype probe succeeds
-# without brute-forcing /proc/filesystems (30+ fstypes * ASYNCIFY unwind
-# corrupts fiber state).
-KINDPROBE_BLKID_OBJ="$BLD/anyfs_probe.blkid.${TARGET}.o"
-echo "  CC   src/core/anyfs_probe.c (ANYFS_HAS_BLKID) -> $KINDPROBE_BLKID_OBJ"
-emcc "${CFLAGS[@]}" "${INC[@]}" \
-     -DANYFS_HAS_BLKID \
-     -I "$SYS/include" \
-     -c "$SRC_CORE/anyfs_probe.c" -o "$KINDPROBE_BLKID_OBJ"
+# anyfs_probe.c is built once into libanyfs_core.a above (with -I $SYS/include
+# for <blkid/blkid.h>); libblkid identifies filesystems (fstype/label/uuid +
+# the whole-disk hint), avoiding a /proc/filesystems brute-force that ASYNCIFY
+# unwinding would corrupt. No separate blkid override object is needed anymore.
 
 # ── Phase 4: link ───────────────────────────────────────────────────
 
@@ -200,7 +198,7 @@ EXPORTED_FUNCS='_main,_malloc,_free,'\
 
 EXPORTED_RUNTIME="ccall,cwrap,HEAPU8,HEAP32,HEAPU32,FS,${FS_RUNTIME},UTF8ToString,stringToUTF8,getValue,setValue"
 
-EXTRA_OBJS=("$ANYFS_QEMU_OBJ" "$QEMU_BLK_OBJ" "$QEMU_STUBS_OBJ" "$KINDPROBE_BLKID_OBJ")
+EXTRA_OBJS=("$ANYFS_QEMU_OBJ" "$QEMU_BLK_OBJ" "$QEMU_STUBS_OBJ")
 EXTRA_ARCHIVES=(
     "$QBLD/libblock.a" "$QBLD/libio.a" "$QBLD/libqom.a"
     "$QBLD/libauthz.a" "$QBLD/libcrypto.a"

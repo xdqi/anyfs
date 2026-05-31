@@ -23,9 +23,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#ifdef ANYFS_HAS_BLKID
 #include <blkid/blkid.h>
-#endif
 
 #define PROBE_SIZE (64u * 1024u)
 
@@ -390,7 +388,6 @@ int anyfs_probe_meta(const char* lkl_blkdev_path, char fstype[32],
 	if (!lkl_blkdev_path)
 		return -1;
 
-#ifdef ANYFS_HAS_BLKID
 	/* Spool up to 2 MB — enough for every common superblock (xfs
 	 * superblock is at +0, ext at +1024, btrfs primary at +64KB, etc.)
 	 * AND for libblkid's secondary checks. */
@@ -466,8 +463,4 @@ int anyfs_probe_meta(const char* lkl_blkdev_path, char fstype[32],
 	blkid_free_probe(pr);
 	close(hfd);
 	return 0;
-#else
-	(void)spool_to_host_tmpfile;
-	return 0;
-#endif
 }
