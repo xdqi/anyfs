@@ -9,7 +9,15 @@
  */
 
 import { app, BrowserWindow, protocol, net, ipcMain, dialog } from 'electron';
-import { createWriteStream, existsSync, mkdirSync, unlink, type WriteStream } from 'node:fs';
+import {
+    createWriteStream,
+    existsSync,
+    mkdirSync,
+    statSync,
+    unlink,
+    type WriteStream,
+} from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { join, extname, normalize, resolve } from 'node:path';
 import type { Drive } from 'drivelist';
@@ -142,11 +150,32 @@ async function handleAnyfsUrlRequest(request: Request): Promise<Response> {
             headers: PROXY_CORS_HEADERS,
         });
     }
-    if (!/^https?:\/\//i.test(target)) {
-        return new Response('anyfs-url: only http(s) targets are allowed', {
+    const isFile = /^file:\/\//i.test(target);
+    if (!/^https?:\/\//i.test(target) && !isFile) {
+        return new Response('anyfs-url: only http(s) and file targets are allowed', {
             status: 400,
             headers: PROXY_CORS_HEADERS,
         });
+    }
+    // net.fetch handles GET (incl. Range) for file:// fine — that's how
+    // handleAnyfsRequest streams the /disks/ images. But net.fetch's HEAD on a
+    // file:// URL doesn't carry Content-Length/Accept-Ranges, which URLFS.probeUrl
+    // needs up front. Answer file:// HEADs ourselves from statSync so the wasm
+    // worker learns the size + range support; GETs fall through to net.fetch.
+    if (isFile && request.method === 'HEAD') {
+        try {
+            const sz = statSync(fileURLToPath(target)).size;
+            const headers = new Headers(PROXY_CORS_HEADERS);
+            headers.set('Content-Length', String(sz));
+            headers.set('Accept-Ranges', 'bytes');
+            return new Response(null, { status: 200, headers });
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return new Response(`anyfs-url: stat failed: ${msg}`, {
+                status: 404,
+                headers: PROXY_CORS_HEADERS,
+            });
+        }
     }
     // Forward only headers that affect the read; in particular Range. We
     // intentionally drop Origin / Referer so the upstream sees a plain
@@ -157,6 +186,13 @@ async function handleAnyfsUrlRequest(request: Request): Promise<Response> {
     const accept = request.headers.get('accept');
     if (accept) fwd.set('Accept', accept);
     try {
+        // file:// targets are local images the wasm path opens via
+        // anyfs-url://proxy/?u=file://… (the renderer/worker can't read a host
+        // path directly). net.fetch streams them with Range support — the same
+        // mechanism handleAnyfsRequest already relies on for /disks/ images, so
+        // no proxy worker is needed. The path is one the user explicitly picked
+        // (drag/drop, "Open file…", or a recents entry), so it's no more
+        // privileged than native mode's attachPath.
         const upstream = await net.fetch(target, {
             method: request.method,
             headers: fwd,

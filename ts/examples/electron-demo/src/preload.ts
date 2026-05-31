@@ -75,6 +75,9 @@ contextBridge.exposeInMainWorld('__anyfs', {
 // this object is present, @anyfs/core prefers it over the wasm path; absence
 // falls back transparently. All ops are async because IPC is.
 // Skip when ANYFS_DISABLE_NATIVE=1 — tests can force the wasm path.
+// (startProxy/stopProxy stay here for NativeSession.attachUrl's remote-URL
+// proxy; the wasm path mounts local files via anyfs-url://?u=file://… instead,
+// which needs no proxy worker — see usePathProxy.ts + main.ts.)
 if (!process.env.ANYFS_DISABLE_NATIVE) {
     const anyfsNative = {
         available: () => ipcRenderer.invoke('anyfs-native:available') as Promise<boolean>,

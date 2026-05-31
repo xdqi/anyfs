@@ -11,6 +11,7 @@ import { KernelStatusBar } from './components/KernelStatusBar';
 import { FilePicker } from './components/FilePicker';
 import { DropOverlay } from './components/DropOverlay';
 import { clearNavHash, sourceName, fileToSource } from './utils';
+import { usePathProxy } from './usePathProxy';
 import { TestStateBridge, e2eEnabled } from './test-bridge';
 
 const WORKER_URL = new URL('/wasm/anyfs.worker.js', window.location.href).href;
@@ -20,6 +21,9 @@ interface ConfirmCfg {
     message: string;
     confirmLabel: string;
     onConfirm: () => void;
+    /** Optional override for the cancel/dismiss action (Esc, backdrop, ✕).
+     *  Defaults to just closing the dialog. */
+    onCancel?: () => void;
 }
 
 export function App() {
@@ -136,10 +140,36 @@ export function App() {
         return false;
     })();
 
+    // Native mode = Electron with the addon present AND not disabled by setting.
+    // In every other ("wasm-ish") state a {kind:'path'} source can't be handed
+    // to the provider directly — usePathProxy starts the Electron streaming
+    // loopback proxy and rewrites it to {kind:'url'} so URLFS can range-read it.
+    // Non-path sources and native mode pass straight through.
+    const nativeMode = env === 'electron' && !settingsDisableNative && !!getAnyfsNative();
+    const { source: providerSource, error: pathProxyError } = usePathProxy(source, !nativeMode);
+
+    // A path source that can't be proxied (no Electron proxy bridge / start
+    // failed): surface the reason and clear the source so the picker returns.
+    useEffect(() => {
+        if (!pathProxyError) return;
+        const dismiss = () => {
+            setSelectedPart(null);
+            setSource(null);
+            setConfirm(null);
+        };
+        setConfirm({
+            title: "Can't open this file",
+            message: pathProxyError.message,
+            confirmLabel: 'OK',
+            onConfirm: dismiss,
+            onCancel: dismiss,
+        });
+    }, [pathProxyError]);
+
     return (
         <SettingsProvider>
             <AnyfsProvider
-                source={source}
+                source={providerSource}
                 workerUrl={WORKER_URL}
                 wasmBaseUrl="/wasm/"
                 wasmModuleName="anyfs.mjs"
@@ -184,7 +214,7 @@ export function App() {
                             title={confirm.title}
                             message={confirm.message}
                             confirmLabel={confirm.confirmLabel}
-                            onCancel={() => setConfirm(null)}
+                            onCancel={confirm.onCancel ?? (() => setConfirm(null))}
                             onConfirm={confirm.onConfirm}
                         />
                     )}
