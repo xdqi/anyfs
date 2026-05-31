@@ -105,12 +105,6 @@ jobs:
       - name: Put msys2-cross on PATH
         run: |
           echo "${MSYS_CROSS_PREFIX}/bin" >> "$GITHUB_PATH"
-          # gen_lkl_config.sh defaults BINUTILS_DIR to
-          # ~/binutils-gdb/build-combined/install/bin (the historical local
-          # build path); point it at the msys-cross install instead, which
-          # ships the same patched 2.46 plus the cross prefixes the LKL
-          # kernel Makefile expects.
-          echo "BINUTILS_DIR=${MSYS_CROSS_PREFIX}/bin" >> "$GITHUB_ENV"
           echo "=== sanity ==="
           "${MSYS_CROSS_PREFIX}/bin/x86_64-w64-mingw32-gcc" --version | head -1
           "${MSYS_CROSS_PREFIX}/bin/x86_64-w64-mingw32-ld" --version | head -1
