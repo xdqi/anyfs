@@ -109,6 +109,9 @@ jobs:
       - name: Preflight (doctor)
         run: ./scripts/doctor.sh || echo "doctor reported issues (advisory — mingw/wasm-ld checks are expected to fail in this job)"
 
+      - name: Lint — no hardcoded paths in migrated build scripts
+        run: ./scripts/lint-no-hardcoded-paths.sh
+
       # ── Build ksmbd-tools (linux-amd64) ────────────────────────────────────
       - name: Build ksmbd-tools
         if: steps.cache-ksmbd-build.outputs.cache-hit != 'true'
