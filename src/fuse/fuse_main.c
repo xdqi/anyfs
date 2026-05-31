@@ -42,93 +42,7 @@
 #include <string.h>
 #include <unistd.h>
 
-/*
- * Platform type compatibility: Linux libfuse3 uses POSIX types (struct stat,
- * off_t, etc.). WinFSP on native Windows uses its own types (struct fuse_stat,
- * fuse_off_t, etc.). On Cygwin these map back to POSIX.
- *
- * Define portable aliases so callback signatures work on both platforms.
- */
-#ifdef _WIN32
-/*
- * WinFSP defines these as structs (not typedefs), so we need explicit
- * typedefs to use them without the struct keyword.
- *
- * WinFSP's fuse3/fuse_common.h and fuse/fuse_common.h use the same
- * header guard (FUSE_COMMON_H_), so fuse_parse_cmdline from the latter
- * is blocked. We declare it manually.
- */
-#include <fcntl.h>
-/* WinFSP doesn't provide POSIX file-mode bits — pull them from
- * mingw's <sys/stat.h>, which defines S_IFDIR/S_IFREG/etc. */
-#include <sys/stat.h>
-typedef struct fuse_stat fuse_stat;
-typedef struct fuse_statvfs fuse_statvfs;
-typedef struct fuse_timespec fuse_timespec;
-
-/* O_* flags that exist on Linux but not in MinGW <fcntl.h>.
- * WinFSP never sets these in fi->flags, so defining them to 0 is safe. */
-#ifndef O_NONBLOCK
-#define O_NONBLOCK 0
-#endif
-#ifndef O_DSYNC
-#define O_DSYNC 0
-#endif
-#ifndef O_DIRECT
-#define O_DIRECT 0
-#endif
-#ifndef O_LARGEFILE
-#define O_LARGEFILE 0
-#endif
-#ifndef O_DIRECTORY
-#define O_DIRECTORY 0
-#endif
-#ifndef O_NOFOLLOW
-#define O_NOFOLLOW 0
-#endif
-#ifndef O_NOATIME
-#define O_NOATIME 0
-#endif
-#ifndef O_CLOEXEC
-#define O_CLOEXEC 0
-#endif
-#ifndef O_SYNC
-#define O_SYNC 0
-#endif
-
-/* fuse_parse_cmdline: not exported by the WinFSP DLL we have.
- * Implement locally — on Windows we only need mountpoint, foreground,
- * and single-threaded flags. -o options were already handled by
- * fuse_opt_parse above. */
-static int fuse_parse_cmdline(struct fuse_args* args, char** mountpoint,
-			      int* multithreaded, int* foreground)
-{
-	int i;
-	*mountpoint = NULL;
-	*multithreaded = 0;
-	*foreground = 0;
-
-	for (i = 0; i < args->argc; i++) {
-		if (!args->argv[i])
-			continue;
-		if (strcmp(args->argv[i], "-f") == 0) {
-			*foreground = 1;
-			args->argv[i] = NULL;
-		} else if (strcmp(args->argv[i], "-s") == 0) {
-			*multithreaded = 0;
-			args->argv[i] = NULL;
-		} else if (strcmp(args->argv[i], "-d") == 0) {
-			/* debug — ignore, fuse_new handles it */
-		} else if (args->argv[i][0] != '-') {
-			if (!*mountpoint)
-				*mountpoint = strdup(args->argv[i]);
-			args->argv[i] = NULL;
-		}
-	}
-	return 0;
-}
-#else
-// Linux: map portable names to POSIX types
+// Linux libfuse3: map portable names to POSIX types
 #include <fuse3/fuse_lowlevel.h> // provides fuse_parse_cmdline, fuse_cmdline_opts
 #include <sys/stat.h>
 typedef struct stat fuse_stat;
@@ -139,7 +53,6 @@ typedef struct statvfs fuse_statvfs;
 typedef unsigned int fuse_uid_t;
 typedef unsigned int fuse_gid_t;
 typedef struct timespec fuse_timespec;
-#endif
 
 #include "anyfs.h"
 
@@ -1442,10 +1355,8 @@ static const struct fuse_operations anyfs_fuse_ops = {
     .create = anyfs_fuse_create,
     .utimens = anyfs_fuse_utimens,
     .fallocate = anyfs_fuse_fallocate,
-#ifndef _WIN32
     .copy_file_range = anyfs_fuse_copy_file_range,
     .lseek = anyfs_fuse_lseek,
-#endif
 };
 
 /* ── Main ──────────────────────────────────────────────────────────── */
@@ -1470,19 +1381,6 @@ int main(int argc, char* argv[])
 		goto out;
 	}
 
-	/*
-	 * fuse_parse_cmdline signature differs between Linux libfuse3 and
-	 * WinFSP.
-	 */
-#ifdef _WIN32
-	{
-		int multithreaded = 0;
-		if (fuse_parse_cmdline(&args, &cli_mountpoint, &multithreaded,
-				       &cli_foreground))
-			goto out;
-		cli_singlethread = !multithreaded;
-	}
-#else
 	{
 		struct fuse_cmdline_opts cli_opts;
 		memset(&cli_opts, 0, sizeof(cli_opts));
@@ -1492,7 +1390,6 @@ int main(int argc, char* argv[])
 		cli_foreground = cli_opts.foreground;
 		cli_singlethread = cli_opts.singlethread;
 	}
-#endif
 
 	if (!cli_mountpoint) {
 		fprintf(stderr, "error: no mount point specified\n");

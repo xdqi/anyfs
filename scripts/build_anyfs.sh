@@ -10,14 +10,13 @@
 #   --components=LIST   Comma-separated subset of: core,server,fuse
 #                       core   = libanyfs_core.a (with qemublk backend if avail)
 #                       server = anyfs-ksmbd + anyfs-nfsd + anyfs-lspart
-#                       fuse   = anyfs-fuse (Linux) / anyfs-winfsp (Windows)
+#                       fuse   = anyfs-fuse (Linux only; WinFSP removed)
 #                       (default: core,server,fuse)
 #   --src=DIR           anyfs-reader source root (default: <script-parent>)
 #   --out-prefix=PFX    Build-dir prefix (default: build-anyfs)
 #                       Produces <src>/<PFX>-<target>/.
 #   --qemu-root=DIR     QEMU source tree (default: ~/qemu)
 #   --ksmbd-root=DIR    ksmbd-tools source tree (default: ~/ksmbd-tools)
-#   --winfsp-root=DIR   WinFSP source tree (default: ~/winfsp)
 #   --lkl-src=DIR       Linux kernel source tree (default: ~/linux). Meson
 #                       needs this for tools/lkl/include/{lkl.h,lkl_host.h};
 #                       the option default in meson_options.txt is the literal
@@ -44,7 +43,6 @@ COMPONENTS_REQ="core,server,fuse"
 OUT_PFX="build-anyfs"
 QEMU_ROOT="$HOME/qemu"
 KSMBD_ROOT="$HOME/ksmbd-tools"
-WINFSP_ROOT="$HOME/winfsp"
 LKL_SRC="$HOME/linux"
 RECONFIGURE=0
 JOBS="$(nproc)"
@@ -63,8 +61,6 @@ while [[ $# -gt 0 ]]; do
         --qemu-root)    QEMU_ROOT="$2"; shift 2 ;;
         --ksmbd-root=*) KSMBD_ROOT="${1#--ksmbd-root=}"; shift ;;
         --ksmbd-root)   KSMBD_ROOT="$2"; shift 2 ;;
-        --winfsp-root=*) WINFSP_ROOT="${1#--winfsp-root=}"; shift ;;
-        --winfsp-root)  WINFSP_ROOT="$2"; shift 2 ;;
         --lkl-src=*)    LKL_SRC="${1#--lkl-src=}"; shift ;;
         --lkl-src)      LKL_SRC="$2"; shift 2 ;;
         --reconfigure)  RECONFIGURE=1; shift ;;
@@ -163,7 +159,6 @@ component_target_names() {
     if has_comp fuse; then
         case "$target" in
             linux-amd64)    out+=("anyfs-fuse") ;;
-            mingw32|mingw64) out+=("anyfs-winfsp") ;;
         esac
     fi
     printf '%s\n' "${out[@]}"
@@ -272,7 +267,7 @@ build_one() {
         meson_opts+=("-Denable_ksmbd=false")
     fi
 
-    # ── fuse: Linux→fuse3, Windows→winfsp ─────────────────────────
+    # ── fuse: Linux→fuse3 only (WinFSP removed) ────────────────────
     if has_comp fuse; then
         case "$target" in
             linux-amd64)
@@ -282,23 +277,13 @@ build_one() {
                     echo "  WARNING: fuse3 pkg-config not found — fuse target disabled."
                     meson_opts+=("-Denable_fuse=false")
                 fi
-                meson_opts+=("-Denable_winfsp=false")
                 ;;
             mingw32|mingw64)
                 meson_opts+=("-Denable_fuse=false")
-                if [[ -d "$WINFSP_ROOT/inc" ]]; then
-                    meson_opts+=(
-                        "-Denable_winfsp=true"
-                        "-Dwinfsp_root=$WINFSP_ROOT"
-                    )
-                else
-                    echo "  WARNING: $WINFSP_ROOT/inc not found — fuse target disabled."
-                    meson_opts+=("-Denable_winfsp=false")
-                fi
                 ;;
         esac
     else
-        meson_opts+=("-Denable_fuse=false" "-Denable_winfsp=false")
+        meson_opts+=("-Denable_fuse=false")
     fi
 
     # Cross-file argument (after options so meson sees it as a separate arg list)
@@ -326,8 +311,7 @@ build_one() {
 
     # Resolve each component name to its output filename(s) via
     # `meson introspect --targets`. Drop names that meson didn't
-    # materialize for this configuration (e.g. anyfs-winfsp when
-    # winfsp_root is missing).
+    # materialize for this configuration.
     local introspect_json
     introspect_json="$(meson introspect --targets "$builddir")"
 
@@ -480,13 +464,6 @@ stage_bin() {
         # QEMU build dir so stage_pe_imports can chase its DLL closure.
         if [[ -n "$qbuild" && -f "$qbuild/libanyfs-qemublk.dll" ]]; then
             ln -sfn "$qbuild/libanyfs-qemublk.dll" "$bin_dir/libanyfs-qemublk.dll"
-        fi
-        # WinFSP DLL too if the build asked for it.
-        if [[ -f "$WINFSP_ROOT/bin/winfsp-x64.dll" ]]; then
-            ln -sfn "$WINFSP_ROOT/bin/winfsp-x64.dll" "$bin_dir/winfsp-x64.dll"
-        fi
-        if [[ -f "$WINFSP_ROOT/bin/winfsp-x86.dll" ]]; then
-            ln -sfn "$WINFSP_ROOT/bin/winfsp-x86.dll" "$bin_dir/winfsp-x86.dll"
         fi
         local sysroot objdump
         sysroot="$(mingw_sysroot_for "$target")"
