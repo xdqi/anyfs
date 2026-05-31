@@ -120,7 +120,9 @@ TLS / structured-reply / advanced features.
 
 - **Does:** speaks NBD newstyle (read-only subset) over an already-open socket fd.
 - **Interface:** `startNbdServer(fd, imagePath)`. Data source abstracted as
-  `read(offset, len) -> Buffer`; PoC implementation = `fs.readSync(imageFd, ...)`.
+  `read(offset, len) -> Buffer`. **PoC simplification:** synchronous
+  `fs.readSync(imageFd, ...)`, serving one request at a time. The production server is
+  fully async with multiple in-flight requests — see §9.
 - **Protocol subset:** newstyle fixed handshake → `NBD_OPT_GO` (advertise export size
   + flags with `NBD_FLAG_READ_ONLY`) → command loop handling only `NBD_CMD_READ`,
   `NBD_CMD_FLUSH` (no-op), `NBD_CMD_DISC`; everything else returns `EINVAL`. Simple
@@ -269,3 +271,46 @@ connect to the hand-written server successfully, then swap in lspart. This decou
 
 All changes live on the anyfs side (lspart + qemu_backend branches); the existing
 file/URL paths are untouched. Existing lspart plain-file usage must keep passing.
+
+## 9. Production server (post-PoC, design intent)
+
+The PoC server (§5.1) is deliberately synchronous and one-request-at-a-time to keep
+the verification minimal. The **production** Node NBD server is **fully asynchronous**
+end to end, on both the local-fs and the http/url data sources. This section records
+the intent so the PoC interface (`read(offset, len) -> Buffer/Promise<Buffer>`) doesn't
+have to be re-shaped later.
+
+### Concurrency model — exploit NBD's multi-in-flight
+
+QEMU's NBD client issues up to **16 concurrent in-flight requests**
+(`MAX_NBD_REQUESTS = 16`, `block/nbd.c:50`), pairing requests to replies by `cookie`
+(handle) and accepting **out-of-order** replies (`nbd_receive_replies` matches by
+cookie, `block/nbd.c:421`). The production server therefore:
+
+- Reads NBD command headers in a loop **without waiting** for the previous command's
+  data — it can hold several `NBD_CMD_READ`s outstanding at once.
+- Dispatches each read to an async data source, and emits each reply (handle + data) as
+  soon as that source resolves, in whatever order they complete. The handle guarantees
+  the client re-associates correctly.
+- Serializes only the *write* of reply frames onto the socket (one reply on the wire at
+  a time), not the *servicing* of reads.
+
+This is what keeps a keep-alive http upstream's throughput up: multiple Range requests
+can be in flight to the upstream concurrently instead of a serial request/wait/respond
+cycle.
+
+### Async data sources
+
+- **Local fs:** `fs.promises` / async `fs.read` (or a small read pool), never
+  `readSync`.
+- **http/url:** a persistent keep-alive agent (`http.Agent({ keepAlive: true })` or
+  `undici` with a connection pool) so range requests **reuse upstream connections**
+  instead of reconnecting per request — the exact reconnect-churn problem URLFS has
+  today.
+
+### Shared concern with URLFS
+
+URLFS (`ts/packages/core/src/url-fs.ts`) currently issues a fresh synchronous XHR per
+chunk with no upstream connection reuse. The production http data source should solve
+keep-alive / connection pooling in a way that URLFS can later adopt the same approach.
+This is noted as a **shared future improvement**, not part of this PoC.
