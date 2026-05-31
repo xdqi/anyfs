@@ -173,15 +173,36 @@ int qemu_blk_open(const char* image_path, uint32_t flags,
 	 */
 	QDict* options = NULL;
 	const int is_url = image_path && strstr(image_path, "://") != NULL;
-	if (is_url) {
+
+	/* PoC: NBD-over-inherited-fd transport. image_path "nbd-fd:N" means the
+	 * NBD client should adopt already-open socket fd N (passed by the parent
+	 * via inheritance). "nbd-port:P" is the Windows fallback: connect to a
+	 * 127.0.0.1 loopback on port P. In both cases the server address comes
+	 * from the options QDict (server.*), so the filename handed to
+	 * blk_new_open must be NULL. */
+	const char* open_name = image_path;
+	if (image_path && strncmp(image_path, "nbd-fd:", 7) == 0) {
+		options = qdict_new();
+		qdict_put_str(options, "driver", "nbd");
+		qdict_put_str(options, "server.type", "fd");
+		qdict_put_str(options, "server.str", image_path + 7);
+		open_name = NULL;
+	} else if (image_path && strncmp(image_path, "nbd-port:", 9) == 0) {
+		options = qdict_new();
+		qdict_put_str(options, "driver", "nbd");
+		qdict_put_str(options, "server.type", "inet");
+		qdict_put_str(options, "server.host", "127.0.0.1");
+		qdict_put_str(options, "server.port", image_path + 9);
+		open_name = NULL;
+	} else if (is_url) {
 		options = qdict_new();
 		qdict_put_int(options, "file.timeout", 20);
 	}
 
-	fprintf(stderr, "[qemu_blk] blk_new_open flags=0x%x timeout=%d\n",
-		bdrv_flags, is_url ? 20 : 0);
+	fprintf(stderr, "[qemu_blk] blk_new_open name=%s flags=0x%x\n",
+		open_name ? open_name : "(nbd via options)", bdrv_flags);
 	BlockBackend* blk =
-	    blk_new_open(image_path, NULL, options, bdrv_flags, &errp);
+	    blk_new_open(open_name, NULL, options, bdrv_flags, &errp);
 	fprintf(stderr, "[qemu_blk] blk_new_open returned %p\n", (void*)blk);
 	if (!blk) {
 		anyfs_set_last_error("%s", error_get_pretty(errp));
