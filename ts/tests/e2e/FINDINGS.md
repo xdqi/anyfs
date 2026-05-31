@@ -314,7 +314,7 @@ native doesn't use `fileToSource`). No regression in either.
 
 ---
 
-## F9 — Electron **native** `app.close()` hangs ~2 min after a native mount, blowing fixture teardown (CONFIRMED native, Medium)
+## F9 — Electron **native** main process stalls after a native mount: `app.close()` / switching files hangs ~2 min (CONFIRMED native incl. real Windows; deferred → utilityProcess/IPC rework)
 
 **Observed (Phase 4, electron-native, open-browse-download flow):** Every test BODY on the
 native backend PASSES in isolation — `flows/open-browse-download.spec.ts` run one test at a time
@@ -357,6 +357,21 @@ registered as a GLib source apparently stalls the exit path. The architectural f
 as F7's long-term recommendation: run the native addon (LKL + QEMU libblock) in a separate
 process (`utilityProcess` / child Node) with its own libuv loop, so closing the Electron window
 doesn't have to unwind a QEMU AioContext from Chromium's main loop.
+
+**Confirmed on real Windows (2026-05-31):** once F12 was fixed and native mode actually loads, the
+same stall shows up in normal use — **switching/replacing the loaded file in native mode hangs** the
+main process (a session close/re-open path that has to tear down the QEMU-backed disk while it's
+still entangled with Electron's main loop, same root cause as the `app.close()` hang). So this is
+not merely a test-teardown artifact; it blocks the user-facing "open another disk" gesture in native
+mode.
+
+**Decision (user, 2026-05-31): DEFERRED — will be redone with an IPC / process-isolation approach.**
+The fix is to move the native engine (LKL + QEMU libblock) out of the Electron main process into a
+dedicated `utilityProcess` (or child Node), with the renderer driving it over IPC and the disk's
+QEMU AioContext owned by that process's own libuv loop. Tearing down a disk then means killing/idling
+that worker, never unwinding a QEMU source from Chromium's loop. This is a larger refactor of the
+`anyfs-native:*` IPC surface (`main.ts` + `preload.ts` + `native-session.ts`) and is intentionally
+out of scope for now — tracked here until picked up.
 
 **E2E impact / handling:** the flow spec marks the **electron-native** project `test.fixme` for
 this whole spec (a `beforeEach` gate keyed on `testInfo.project.name === 'electron-native'`),
