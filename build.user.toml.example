@@ -1,0 +1,7 @@
+# Copy to build.user.toml (gitignored) and override per machine.
+# Only set what differs from build.config.toml.
+# [paths]
+# linux_src = "/home/me/linux"
+# [toolchains]
+# emsdk    = "/home/me/emsdk"
+# wasm_ld  = "/home/me/llvm-wasm/install/bin/wasm-ld"

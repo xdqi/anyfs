@@ -23,3 +23,6 @@ tests/images/
 Thumbs.db
 
 node_modules/
+
+# Machine-local build config override (see build.config.toml / build.user.toml.example)
+build.user.toml
