@@ -209,10 +209,13 @@ if enable_qemu
             qemu_libs += cc.find_library(libname, dirs: [qemu_build_abs], static: true)
         endforeach
 
-        # libblock.a needs --whole-archive to pull in format driver constructors
+        # libblock.a needs --whole-archive to pull in format driver constructors.
+        # Use qemu_build_abs: link_args paths are passed verbatim to the linker,
+        # which runs from the build dir, so a relative qemu_build would not
+        # resolve (the find_library dirs above are already absolutized).
         qemu_block_link_args = [
             '-Wl,--whole-archive',
-            qemu_build / 'libblock.a',
+            qemu_build_abs / 'libblock.a',
             '-Wl,--no-whole-archive',
             '-lm',  # needed by some block drivers
             '-lbz2', # needed by dmg driver
