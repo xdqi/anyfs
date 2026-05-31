@@ -301,16 +301,29 @@ cycle.
 
 ### Async data sources
 
+How the server fans the (up to 16) in-flight NBD reads out to the upstream depends on
+the source. **Note the distinction: HTTP/1.1 keep-alive is connection *reuse*, not
+multiplexing** — a single keep-alive connection is still serial (one response must be
+fully read before the next request goes out on that connection; HTTP/1.1 pipelining is
+deprecated and unusable due to head-of-line blocking). Concurrency on H1 comes from the
+*number of pooled connections*, not from muxing one connection.
+
 - **Local fs:** `fs.promises` / async `fs.read` (or a small read pool), never
-  `readSync`.
-- **http/url:** a persistent keep-alive agent (`http.Agent({ keepAlive: true })` or
-  `undici` with a connection pool) so range requests **reuse upstream connections**
-  instead of reconnecting per request — the exact reconnect-churn problem URLFS has
-  today.
+  `readSync`. No connection concept — the 16 reads simply run concurrently.
+- **http/url over HTTP/1.1:** a keep-alive **connection pool**
+  (`http.Agent({ keepAlive: true, maxSockets: N })` or `undici.Pool`). This eliminates
+  per-request handshake/TLS churn (the problem URLFS has today) and gives **up to N
+  concurrent** Range requests; the rest queue. Throughput-bound by N, typically 6–16.
+- **http/url over HTTP/2:** a single connection genuinely multiplexes — the 16 in-flight
+  Range reads become up to 16 parallel streams on one connection (bounded by the
+  server's `SETTINGS_MAX_CONCURRENT_STREAMS`). `undici` negotiates H2 when the upstream
+  supports it, so object-storage/CDN image URLs (which usually speak H2) get real mux;
+  H1-only upstreams fall back to the connection-pool behavior above.
 
 ### Shared concern with URLFS
 
 URLFS (`ts/packages/core/src/url-fs.ts`) currently issues a fresh synchronous XHR per
-chunk with no upstream connection reuse. The production http data source should solve
-keep-alive / connection pooling in a way that URLFS can later adopt the same approach.
-This is noted as a **shared future improvement**, not part of this PoC.
+chunk with **no upstream connection reuse and no multiplexing**. The production http
+data source should solve connection reuse (H1 keep-alive pool) and prefer H2 mux where
+available, in a way URLFS can later adopt. This is noted as a **shared future
+improvement**, not part of this PoC.
