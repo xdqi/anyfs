@@ -94,7 +94,9 @@ jobs:
 
       # ── Fetch pinned dependencies ───────────────────────────────────────────
       - name: Install peru
-        run: pipx install peru
+        run: |
+          pipx install peru
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"   # pipx installs here; ensure peru is on PATH for later steps
 
       - name: Sync pinned dependencies
         if: steps.cache-deps.outputs.cache-hit != 'true'
