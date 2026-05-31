@@ -455,6 +455,15 @@ stage_bin() {
     rm -rf "$bin_dir"
     mkdir -p "$bin_dir"
 
+    # Absolutize qbuild for the symlink farm. -Dqemu_build is kept relative
+    # (meson's include_directories rejects an absolute path into the source
+    # tree), but the bin/ symlinks must point at an absolute target: a
+    # relative target (e.g. deps/qemu/build-anyfs-mingw64) resolves against
+    # bin/ and dangles, so package_*.sh's `cp -L` silently drops the DLL.
+    if [[ -n "$qbuild" && "$qbuild" != /* && -d "$SRC_DIR/$qbuild" ]]; then
+        qbuild="$(cd "$SRC_DIR/$qbuild" && pwd)"
+    fi
+
     # All built executables / libraries.
     for f in "${out_files[@]}"; do
         [[ -f "$f" ]] || continue
