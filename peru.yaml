@@ -10,13 +10,19 @@
 # NOTE: drivelist-anyfs is NOT included here — the local checkout at ~/drivelist-anyfs tracks
 # balena-io-modules/drivelist upstream (anyfs/main is a local-only branch with no public fork URL).
 # Add a drivelist module once the fork is published at a stable public URL.
+# `peru sync` fetches only the modules listed under `imports:`. llvm-wasm is
+# intentionally NOT imported here: it's the multi-GB LLVM monorepo and is only
+# needed by the (future) wasm-bundle job, which fetches it on demand via
+# `peru sync deps/llvm-wasm`-equivalent / `peru clone llvm-wasm`. Keeping it as a
+# pinned `git module` below (but unimported) keeps wasm-ld reproducible without
+# forcing the linux-amd64 / mingw64 jobs to clone all of LLVM.
 imports:
   linux:       deps/linux
   qemu:        deps/qemu
   util-linux:  deps/util-linux
   ksmbd-tools: deps/ksmbd-tools
-  llvm-wasm:   deps/llvm-wasm
-  # drivelist: deps/drivelist-anyfs   # deferred: no confirmed public fork URL (see note above)
+  # llvm-wasm: deps/llvm-wasm        # NOT default-synced (multi-GB) — wasm job only; pinned module below
+  # drivelist: deps/drivelist-anyfs  # deferred: no confirmed public fork URL (see note above)
 
 git module linux:
   url: https://github.com/xdqi/lkl.git
