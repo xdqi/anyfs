@@ -28,10 +28,11 @@ emit("", cfg)
 PY
 )"
     local deps="${ANYFS_PATHS_DEPS_ROOT:-deps}"
-    : "${ANYFS_PATHS_LINUX_SRC:=$root/$deps/linux}"
-    : "${ANYFS_PATHS_QEMU_SRC:=$root/$deps/qemu}"
-    : "${ANYFS_PATHS_UTIL_LINUX:=$root/$deps/util-linux}"
-    : "${ANYFS_PATHS_KSMBD_TOOLS:=$root/$deps/ksmbd-tools}"
+    local pfx="$root/"; [[ "$deps" = /* ]] && pfx=""
+    : "${ANYFS_PATHS_LINUX_SRC:=$pfx$deps/linux}"
+    : "${ANYFS_PATHS_QEMU_SRC:=$pfx$deps/qemu}"
+    : "${ANYFS_PATHS_UTIL_LINUX:=$pfx$deps/util-linux}"
+    : "${ANYFS_PATHS_KSMBD_TOOLS:=$pfx$deps/ksmbd-tools}"
     : "${ANYFS_TOOLCHAINS_EMSDK:=${EMSDK:-}}"
     export ANYFS_PATHS_LINUX_SRC ANYFS_PATHS_QEMU_SRC ANYFS_PATHS_UTIL_LINUX \
            ANYFS_PATHS_KSMBD_TOOLS ANYFS_TOOLCHAINS_EMSDK

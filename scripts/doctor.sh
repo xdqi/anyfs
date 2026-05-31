@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # scripts/doctor.sh — validate the toolchain/deps before a build. Exit non-zero on any failure.
 set -uo pipefail
+_root="$(cd "$(dirname "$0")/.." && pwd)"
 # Capture env overrides before config.sh (which exports toml defaults, overwriting env vars).
 _pre_wasm_ld="${ANYFS_TOOLCHAINS_WASM_LD:-}"
 source "$(dirname "$0")/lib/config.sh"
@@ -30,7 +31,12 @@ mw="$ANYFS_TOOLCHAINS_MSYS2_CROSS/bin/x86_64-w64-mingw32-ld"
 
 echo "== wasm-ld (patched, from xdqi/llvm-wasm — only this binary is consumed) =="
 wl="${ANYFS_TOOLCHAINS_WASM_LD:-}"
-[ -z "$wl" ] && wl="$ANYFS_PATHS_DEPS_ROOT/llvm-wasm/workspace/install/llvm/bin/wasm-ld"
+if [ -z "$wl" ]; then
+    case "$ANYFS_PATHS_DEPS_ROOT" in
+        /*) wl="$ANYFS_PATHS_DEPS_ROOT/llvm-wasm/workspace/install/llvm/bin/wasm-ld" ;;
+        *)  wl="$_root/$ANYFS_PATHS_DEPS_ROOT/llvm-wasm/workspace/install/llvm/bin/wasm-ld" ;;
+    esac
+fi
 if [ -x "$wl" ]; then
     ver=$("$wl" --version 2>/dev/null | grep -oE 'LLD [0-9]+' | head -1)
     [ "$ver" = "LLD 18" ] && ok "$ver ($wl)" || bad "wasm-ld is '$ver', expected LLD 18 ($wl)"

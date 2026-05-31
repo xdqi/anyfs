@@ -4,9 +4,9 @@
 # Usage: ./build_lkl.sh [OPTIONS]
 #
 # Options:
-#   --linux=DIR         Kernel source tree (default: ~/linux)
+#   --linux=DIR         Kernel source tree (default: from build.config.toml; linux_src or deps/linux)
 #   --out=DIR           Parent dir containing lkl-<target>/ build trees
-#                       (default: ~/anyfs-reader)
+#                       (default: repo root)
 #   --targets=LIST      Comma-separated subset of:
 #                         linux-amd64,linux-arm64,mingw32,mingw64
 #                       (default: linux-amd64,mingw32,mingw64)
