@@ -13,12 +13,39 @@ SharedArrayBuffer + the streaming-download service worker).
 cd ts
 pnpm install
 
+# REQUIRED for native mode: build the addon against Electron's ABI (see below).
+# Skip this and the app falls back to wasm, logging "[anyfs-native] addon not
+# loadable" — Electron can't load a .node built against the host node's ABI.
+bash packages/anyfs-native/scripts/build-linux-electron.sh
+
 # dev mode (vite HMR + electron)
 pnpm --filter electron-demo dev
 
 # production mode (build vite-demo, then run electron against built dist/)
 pnpm --filter electron-demo start
 ```
+
+## Native addon ABI (IMPORTANT)
+
+`anyfs_native.node` (and `drivelist.node`) must be compiled against **Electron's
+vendored node headers**, not the host node's. Electron N embeds a libnode whose
+module ABI differs from the host (host node v24 → ABI 137; Electron 42 → ABI 146).
+A `.node` built with a plain `node-gyp rebuild` (the `pnpm --filter @anyfs/native
+build` script, which targets the host) compiles fine but **fails to load inside
+Electron** — surfacing in the demo as native-mode silently degrading to wasm.
+
+Build the Electron-targeted addon with:
+
+```sh
+# from ts/
+bash packages/anyfs-native/scripts/build-linux-electron.sh   # writes build/Release/anyfs_native.node
+bash ../../drivelist-anyfs/scripts/build-linux-electron.sh    # writes build/Release/drivelist.node
+```
+
+Both dev (`native-loader.ts` resolves `build/Release/`) and the Linux package
+(`scripts/stage-native.sh` copies from the same dir) consume these. The win64
+package uses the cross-built `build-win64/anyfs_native.node` instead (see
+`scripts/build-win64.sh`), which is already linked against Electron's `node.lib`.
 
 ## Why a custom protocol
 
