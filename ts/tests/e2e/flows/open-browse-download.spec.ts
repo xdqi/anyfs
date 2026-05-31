@@ -51,17 +51,13 @@ test('properties of hello.txt show a file with a size', async ({ driver }) => {
 });
 
 test('download hello.txt yields 13 bytes via the right mechanism', async ({ driver }, testInfo) => {
-    // FINDING F4: on the WEB project, the streaming Service-Worker download fails
-    // under `vite preview` (SecurityError: SW scope '/' not under '/assets/' —
-    // the preview server omits the `Service-Worker-Allowed: /` header that only
-    // Caddy ships). The Electron projects download via the download:open IPC and
-    // are unaffected, so we skip only web here and keep the real 13-byte proof on
-    // electron. See ts/tests/e2e/FINDINGS.md F4.
-    test.skip(
-        testInfo.project.name === 'web',
-        'F4: SW download fails under vite preview (missing Service-Worker-Allowed: /)',
-    );
-
+    // FINDING F4 (FIXED): the WEB project's streaming Service-Worker download
+    // used to fail under `vite preview` (SecurityError: SW scope '/' not under
+    // '/assets/' — the preview server omitted the `Service-Worker-Allowed: /`
+    // header that only Caddy shipped). vite.config.ts now sends that header on
+    // both the dev and preview servers, matching Caddy, so the SW registers at
+    // scope '/' and the web download works. The Electron projects download via
+    // the download:open IPC and were always unaffected. See FINDINGS.md F4.
     await driver.openImage(fx);
     await driver.enterPartition(ext4.index);
     const res = await driver.download('hello.txt');

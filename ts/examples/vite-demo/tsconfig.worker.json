@@ -1,0 +1,14 @@
+{
+    // Service workers run in a WebWorker global scope, not the DOM. They need
+    // the WebWorker lib (which types `self` as ServiceWorkerGlobalScope and
+    // declares FetchEvent etc.) instead of the DOM lib the app tsconfig uses —
+    // the two libs redeclare globals like `self`, so the SW gets its own
+    // tsconfig and is excluded from the app's. Referenced from tsconfig.json.
+    "extends": "../../tsconfig.base.json",
+    "compilerOptions": {
+        "noEmit": true,
+        "lib": ["ES2022", "WebWorker"],
+        "types": ["vite/client"]
+    },
+    "include": ["src/sw-download.ts"]
+}

@@ -16,23 +16,41 @@
 // No SharedArrayBuffer reachable here — the MessageChannel transfers fresh
 // ArrayBuffer copies the client makes before each postMessage.
 
+// Typed by tsconfig.worker.json (WebWorker lib), which provides FetchEvent and
+// the Extendable* events — no hand-rolled types. The lib hard-declares the
+// ambient `self` as the generic WorkerGlobalScope, so narrow it once to a
+// ServiceWorker scope (`skipWaiting`, `clients`, the install/activate/fetch
+// events). This single cast is the standard TS idiom for SW scripts; `sw` *is*
+// `self` at runtime.
+const sw: ServiceWorkerGlobalScope = self as unknown as ServiceWorkerGlobalScope;
+
+interface PendingEntry {
+    port: MessagePort;
+    fileName: string;
+    size: number | null;
+    queue: Uint8Array[];
+    controller: ReadableStreamDefaultController<Uint8Array> | null;
+    done: boolean;
+    abortReason: string | null;
+}
+
 const PREFIX = '/__streamsave/';
-const pending = new Map(); // url -> { port, fileName, size, queue, controller, done, abortReason }
+const pending = new Map<string, PendingEntry>(); // url -> { port, fileName, size, queue, controller, done, abortReason }
 
-self.addEventListener('install', (event) => {
-    event.waitUntil(self.skipWaiting());
+sw.addEventListener('install', (event: ExtendableEvent) => {
+    event.waitUntil(sw.skipWaiting());
 });
 
-self.addEventListener('activate', (event) => {
-    event.waitUntil(self.clients.claim());
+sw.addEventListener('activate', (event: ExtendableEvent) => {
+    event.waitUntil(sw.clients.claim());
 });
 
-self.addEventListener('message', (event) => {
+sw.addEventListener('message', (event: ExtendableMessageEvent) => {
     const data = event.data;
     if (!data || typeof data !== 'object') return;
     if (data.kind === 'streamsave:register') {
         const { url, fileName, size, port } = data;
-        const entry = {
+        const entry: PendingEntry = {
             port,
             fileName,
             size: typeof size === 'number' && size >= 0 ? size : null,
@@ -41,7 +59,7 @@ self.addEventListener('message', (event) => {
             done: false,
             abortReason: null,
         };
-        port.onmessage = (ev) => onPortMessage(entry, ev.data);
+        port.onmessage = (ev: MessageEvent) => onPortMessage(entry, ev.data);
         pending.set(url, entry);
         // Tell the client the entry is live BEFORE they trigger the
         // iframe navigation. Without this, Firefox can dispatch the
@@ -56,7 +74,7 @@ self.addEventListener('message', (event) => {
     }
 });
 
-function onPortMessage(entry, msg) {
+function onPortMessage(entry: PendingEntry, msg: any) {
     if (!msg) return;
     if (msg.kind === 'chunk' && msg.data) {
         const chunk = msg.data instanceof Uint8Array ? msg.data : new Uint8Array(msg.data);
@@ -71,22 +89,23 @@ function onPortMessage(entry, msg) {
     }
     if (msg.kind === 'abort') {
         entry.done = true;
-        entry.abortReason = msg.reason ?? 'aborted';
-        if (entry.controller) entry.controller.error(new Error(entry.abortReason));
+        const reason: string = msg.reason ?? 'aborted';
+        entry.abortReason = reason;
+        if (entry.controller) entry.controller.error(new Error(reason));
         return;
     }
 }
 
-self.addEventListener('fetch', (event) => {
+sw.addEventListener('fetch', (event: FetchEvent) => {
     const url = new URL(event.request.url);
-    if (url.origin !== self.location.origin) return;
+    if (url.origin !== sw.location.origin) return;
     if (!url.pathname.startsWith(PREFIX)) return;
     const entry = pending.get(url.pathname);
     if (!entry) return; // let the network 404 — we don't claim it
 
     pending.delete(url.pathname);
 
-    const body = new ReadableStream({
+    const body = new ReadableStream<Uint8Array>({
         start(controller) {
             entry.controller = controller;
             for (const c of entry.queue) controller.enqueue(c);

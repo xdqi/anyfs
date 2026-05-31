@@ -5,5 +5,9 @@
         "noEmit": true,
         "types": ["vite/client"]
     },
-    "include": ["src/**/*"]
+    // sw-download.ts runs in a WebWorker scope; it's typed separately by
+    // tsconfig.worker.json (WebWorker lib, not DOM) and excluded here so the
+    // DOM-lib `self`/globals don't conflict with the SW's types.
+    "include": ["src/**/*"],
+    "exclude": ["src/sw-download.ts"]
 }

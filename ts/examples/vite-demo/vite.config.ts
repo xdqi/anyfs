@@ -10,6 +10,19 @@ const crossOriginIsolated = {
     'Cross-Origin-Embedder-Policy': 'credentialless',
 };
 
+// The streaming-download SW is served from /assets/sw-download-<hash>.js but
+// registers with scope:'/'. A browser only lets a SW claim a scope above its
+// own path if the SW's HTTP response carries Service-Worker-Allowed: /. The
+// prod Caddy server ships that header (public/Caddyfile @sw); `vite preview`
+// and `vite dev` do not, so the SW registration throws a SecurityError there
+// and downloads fail (FINDINGS F4). Applying the header to *every* response is
+// harmless — browsers only read it on SW script responses — so just merge it
+// into the dev/preview header set to match Caddy.
+const devServerHeaders = {
+    ...crossOriginIsolated,
+    'Service-Worker-Allowed': '/',
+};
+
 // react-dnd@11 (transitive via chonky) calls ReactDOM.findDOMNode at render
 // time. React 19 removed the export, so the file browser crashes the moment
 // it mounts. Patch the pre-bundled react-dom CJS entry to re-add a fiber-walk
@@ -65,9 +78,9 @@ function reactDomFindDOMNodeRollupPlugin() {
 
 export default defineConfig({
     plugins: [react(), reactDomFindDOMNodeRollupPlugin()],
-    server: { headers: crossOriginIsolated },
+    server: { headers: devServerHeaders },
     preview: {
-        headers: crossOriginIsolated,
+        headers: devServerHeaders,
         allowedHosts: ['anyfs.kosaka.moe'],
     },
     optimizeDeps: {

@@ -1,4 +1,4 @@
-// Client side of the streaming-download bridge. See public/sw-download.js for
+// Client side of the streaming-download bridge. See ./sw-download.ts for
 // the SW half. Triggers a native browser download (no Save As dialog) for
 // data we produce on the fly.
 //
@@ -22,16 +22,23 @@ declare global {
     }
 }
 
-// SW source is owned by Vite via ?url — every build gives it a content-hashed
-// filename like /assets/sw-download-XXXX.js. Two upshots:
+// SW source is owned by Vite via ?worker&url — every build gives it a
+// content-hashed filename like /assets/sw-download-XXXX.js. We use
+// ?worker&url, NOT a bare ?url: a plain ?url import of a .ts file copies the
+// source verbatim into dist (Vite treats it as a static asset, extension and
+// all), so the browser would be handed un-transpiled TypeScript. ?worker&url
+// runs the file through the build pipeline (TS stripped, minified) and emits a
+// standalone, hashed .js the browser can execute as a classic Service Worker.
+// Two upshots of the content hash:
 //   1. The URL is immutable, so Cloudflare/Caddy can cache it forever, and we
 //      don't need updateViaCache:'none' + a reg.update() race to swap bytes.
 //   2. A code change means a NEW URL, which means a NEW registration. The
 //      old registration is explicitly unregistered below so we don't keep
 //      stale SWs alive forever.
 // Caddy ships Service-Worker-Allowed: / for /assets/sw-download-* so the
-// hashed file can still claim scope /.
-import swUrl from './sw-download.js?url';
+// hashed file can still claim scope /. The vite dev/preview servers send the
+// same header (see vite.config.ts) so the SW registers under all servers.
+import swUrl from './sw-download.ts?worker&url';
 
 let swReady: Promise<ServiceWorker> | null = null;
 

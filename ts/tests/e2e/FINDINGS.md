@@ -67,7 +67,7 @@ as F1/F2.
 
 ---
 
-## F4 — Service-Worker download fails under `vite preview` (OPEN, Medium; partly env)
+## F4 — Service-Worker download fails under `vite preview` (✅ FIXED — preview/dev now send Service-Worker-Allowed, was Medium)
 
 **Observed:** `download()` on the web path triggers SW registration of the hashed
 `/assets/sw-download-*.js`, which throws
@@ -85,6 +85,28 @@ preview-served prod build, the streaming SW download cannot register.
 assumes a `/`-scoped SW that only Caddy enables). For E2E: either (a) serve the preview with
 `Service-Worker-Allowed: /` (a preview-middleware/header tweak), or (b) treat web download as a
 known-fixme and assert the Electron IPC download instead. Decision pending.
+
+**FIX (2026-05-31):** took option (a) plus a SW-source cleanup.
+1. `vite.config.ts` now sends `Service-Worker-Allowed: /` on **both** the `server` (dev) and
+   `preview` headers — a `devServerHeaders = { ...crossOriginIsolated, 'Service-Worker-Allowed':
+   '/' }` set applied to both. Vite's static `headers` option applies to every response;
+   browsers only read the header on SW script responses, so this is harmless and now matches the
+   prod Caddy config (`public/Caddyfile` `@sw path /assets/sw-download-*.js` → `header @sw
+   Service-Worker-Allowed "/"`, verified correct, unchanged). The SW now registers at scope `/`
+   under dev, preview, and Caddy alike.
+2. While here, the SW was converted from JS → TS (`src/sw-download.js` → `src/sw-download.ts`)
+   to match the otherwise-all-TS project: `/// <reference lib="webworker" />`, a typed
+   `const sw = self as unknown as ServiceWorkerGlobalScope` (the app tsconfig loads the DOM lib,
+   not WebWorker, so the ambient `self` can't be re-`declare`d), a `PendingEntry` interface, and
+   typed event handlers. Runtime logic is byte-identical. The `stream-download.ts` import was
+   switched from `./sw-download.js?url` to `./sw-download.ts?worker&url` — a plain `?url` on a
+   `.ts` file copies the source **verbatim** into `dist` (un-transpiled TypeScript the browser
+   can't run); `?worker&url` runs it through the build pipeline and emits the hashed, transpiled
+   `/assets/sw-download-<hash>.js` the Caddyfile glob already expects.
+
+**Result:** the web `download hello.txt yields 13 bytes` test (was `test.skip` for web) now runs
+and **passes** (SW registers, browser download event fires, 13 bytes, mechanism `service-worker`).
+electron-wasm stays green (3/3) via the unaffected `electron-ipc` path. The web skip was removed.
 
 ---
 
@@ -335,7 +357,8 @@ Electron app is launched on native and the teardown hang can't fire — the suit
 deterministic. **No assertion is weakened:** the native test bodies are verified to pass in
 isolation, and the real 13-byte IPC-download proof (`mechanism === 'electron-ipc'`) still runs
 green on the **electron-wasm** project (3/3), which exercises the identical
-`download:open/write/close` IPC path. Web runs `@smoke` + `properties` (download skipped for F4).
+`download:open/write/close` IPC path. Web runs all three including `download` (the F4 skip was
+removed once F4 was fixed — web now downloads via the service-worker mechanism).
 
 ---
 
