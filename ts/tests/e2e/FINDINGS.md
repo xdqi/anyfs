@@ -542,6 +542,45 @@ so the addon links the F5 + F10-era core. The win64 native artifacts were rebuil
 
 ---
 
+## F12 — Windows (win64) native mode "module not found" → falls back to wasm; depends on the launch cwd (✅ FIXED — put the DLL dir on PATH before require, was High)
+
+**Observed (real Windows, reported by user):** the packaged `anyfs-demo.exe` shows a "native module
+not found" error and you can only proceed by toggling "disable native" in Settings (wasm). On the dev
+machine it sometimes loaded — the tell.
+
+**Root cause (experimentally proven, NOT guessed this time):** a **dependent-DLL search-path**
+problem, gated on the process's current working directory. Node loads a `.node` via
+`LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH)`. That flag **replaces the exe-directory
+entry** of the DLL search order with the directory of the `.node` itself. Our packaging stages
+`anyfs_native.node` in `resources/native/` but its transitive DLLs (`liblkl.dll`,
+`libanyfs-qemublk.dll` + glib/curl/zstd/…) next to `anyfs-demo.exe` at the top level
+(`copy-win64-dlls.sh`). So at load time Windows looks for the DLLs in `resources/native/` (none there)
+— it only finds them when the process cwd happens to be the exe dir. Launched from the Start menu, a
+shortcut, or Explorer (cwd elsewhere), the load fails with **err=126 "module not found"** and the app
+silently degrades to wasm. (`drivelist.node` is unaffected — it has no non-system DLL deps.)
+
+**Proven under wine with a minimal `LoadLibraryEx` probe** (electron itself won't run under this
+wine, but the probe replicates Node's exact load call):
+- cwd = a directory without the DLLs → `LOAD FAILED err=126 (0x7e): Module not found.`
+- cwd = the exe dir (DLLs present) → `LOAD OK, napi_register_module_v1=…`
+- cwd = empty, **but the DLL dir on PATH** → `LOAD OK` ← the fix.
+
+`PATH` is still consulted by the standard search even under `LOAD_WITH_ALTERED_SEARCH_PATH`, so
+putting the DLL directory on `PATH` makes the load cwd-independent.
+
+**Fix:** `ts/examples/electron-demo/src/native-loader.ts` `ensureDllSearchPath()` — on win32, before
+`require()`ing the addon, prepend `dirname(process.execPath)` (the exe dir, where DLLs ship) and the
+`.node`'s own dir to `process.env.PATH` (idempotent). Also wrapped `require` to log the real
+`err.code`/`err.message` so a future Windows load failure surfaces the underlying DLL error instead of
+main.ts's generic "addon not loadable".
+
+**Status:** root cause + fix verified by probe under wine. **NOT yet verified by running the actual
+packaged `anyfs-demo.exe` on real Windows** (electron wouldn't launch under the local wine). Needs a
+real-Windows confirmation run. If electron *can* be made to run under wine in CI, this is a candidate
+for the Playwright matrix (a wine-electron project that asserts `window.anyfsNative` loads).
+
+---
+
 ## Phase 7 — error / edge-case flow: NO new defects (graceful failure CONFIRMED on web + electron-wasm)
 
 `flows/errors.spec.ts` exercises two failure paths and asserts the app surfaces an error rather
