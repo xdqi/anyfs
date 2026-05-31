@@ -19,6 +19,7 @@
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
+#include "qemu/module.h"
 #include "qobject/qdict.h"
 #include "system/block-backend-global-state.h"
 #include "system/block-backend-io.h"
@@ -137,6 +138,11 @@ int qemu_blk_open(const char* image_path, uint32_t flags,
 		readonly, snapshot);
 	if (!qemu_initialized) {
 		fprintf(stderr, "[qemu_blk] bdrv_init…\n");
+		/* MODULE_INIT_QOM must be called before bdrv_init so that QOM
+		 * types like QIOChannelSocket are registered.  QEMU binaries
+		 * (qemu-img, qemu-nbd) do this explicitly; we must do the same
+		 * when embedding the block layer in a library. */
+		module_call_init(MODULE_INIT_QOM);
 		bdrv_init();
 		if (qemu_init_main_loop(&errp) < 0) {
 			fprintf(stderr, "qemu_init_main_loop failed: %s\n",
