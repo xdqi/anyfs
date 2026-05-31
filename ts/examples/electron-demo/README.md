@@ -13,10 +13,10 @@ SharedArrayBuffer + the streaming-download service worker).
 cd ts
 pnpm install
 
-# REQUIRED for native mode: build the addon against Electron's ABI (see below).
-# Skip this and the app falls back to wasm, logging "[anyfs-native] addon not
-# loadable" — Electron can't load a .node built against the host node's ABI.
-bash packages/anyfs-native/scripts/build-linux-electron.sh
+# REQUIRED for native mode: the native addon must be BUILT (the .node is a
+# gitignored local artifact). If build/Release/anyfs_native.node is missing the
+# app logs "[anyfs-native] addon not loadable" and falls back to wasm.
+bash packages/anyfs-native/scripts/build-linux-electron.sh   # or: pnpm --filter @anyfs/native build
 
 # dev mode (vite HMR + electron)
 pnpm --filter electron-demo dev
@@ -25,27 +25,37 @@ pnpm --filter electron-demo dev
 pnpm --filter electron-demo start
 ```
 
-## Native addon ABI (IMPORTANT)
+## Native addon (IMPORTANT)
 
-`anyfs_native.node` (and `drivelist.node`) must be compiled against **Electron's
-vendored node headers**, not the host node's. Electron N embeds a libnode whose
-module ABI differs from the host (host node v24 → ABI 137; Electron 42 → ABI 146).
-A `.node` built with a plain `node-gyp rebuild` (the `pnpm --filter @anyfs/native
-build` script, which targets the host) compiles fine but **fails to load inside
-Electron** — surfacing in the demo as native-mode silently degrading to wasm.
+`anyfs_native.node` just needs to **exist** at `build/Release/` — it's a
+gitignored artifact, so a fresh checkout has none and native mode silently falls
+back to wasm until you build it.
 
-Build the Electron-targeted addon with:
+`anyfs_native` is a **pure N-API / node-addon-api** module, so it is ABI-stable
+across NODE_MODULE_VERSION: a `.node` built for the host node (v24 → NMV 137)
+loads and runs fine inside Electron (NMV 146) because both expose **napi 10**.
+N-API validates the napi version, not NODE_MODULE_VERSION. (NMV tracks V8, not
+the node version string — Electron reskins node v24 with a newer V8, hence the
+different number; it does not matter here.) So **plain
+`pnpm --filter @anyfs/native build` (`node-gyp rebuild`, host-targeted) is
+sufficient**.
+
+`scripts/build-linux-electron.sh` (`node-gyp --runtime=electron`) is provided as
+a conventional builder and works too, but the `--runtime=electron` part is NOT
+required for this addon to load — it would only matter for a raw-V8 (non-N-API)
+addon, which this is not. `drivelist.node` ships its own build script.
 
 ```sh
-# from ts/
-bash packages/anyfs-native/scripts/build-linux-electron.sh   # writes build/Release/anyfs_native.node
-bash ../../drivelist-anyfs/scripts/build-linux-electron.sh    # writes build/Release/drivelist.node
+# from ts/ — either of these produces build/Release/anyfs_native.node:
+pnpm --filter @anyfs/native build
+bash packages/anyfs-native/scripts/build-linux-electron.sh
 ```
 
 Both dev (`native-loader.ts` resolves `build/Release/`) and the Linux package
-(`scripts/stage-native.sh` copies from the same dir) consume these. The win64
-package uses the cross-built `build-win64/anyfs_native.node` instead (see
-`scripts/build-win64.sh`), which is already linked against Electron's `node.lib`.
+(`scripts/stage-native.sh` copies from the same dir) consume it. The win64
+package uses the cross-built `build-win64/anyfs_native.node` (see
+`scripts/build-win64.sh`); it links Electron's `win-x64/node.lib` for the mingw
+cross-link, not for ABI reasons.
 
 ## Why a custom protocol
 

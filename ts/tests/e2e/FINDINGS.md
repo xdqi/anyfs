@@ -491,41 +491,54 @@ since commit `d7bbf51`; the real gap was the missing compile-time macro on `anyf
 
 ---
 
-## F11 — Electron **native** mode reports "native module not found" / silently falls back to wasm (✅ FIXED — build anyfs_native.node against Electron's node ABI, was High)
+## F11 — Electron **native** mode "native module not found" / silently falls back to wasm (✅ FIXED — the Linux .node was simply missing; ABI was a RED HERRING, was High)
 
-**Observed:** With native mode enabled (i.e. `ANYFS_DISABLE_NATIVE` unset, so `preload.ts` should
-inject `window.anyfsNative`), the Electron demo logged `[anyfs-native] addon not loadable: …` and
-degraded to the wasm backend. `main.ts`'s `loadNativeAddon()` caught the `require()` throw from
-`native-loader.ts` and returned `null`, so `window.anyfsNative` was never wired up.
+**Observed:** With native mode enabled (`ANYFS_DISABLE_NATIVE` unset, so `preload.ts` injects
+`window.anyfsNative`), the demo logged `[anyfs-native] addon not loadable: …` and degraded to wasm.
+`main.ts`'s `loadNativeAddon()` caught the `require()` throw from `native-loader.ts` and returned
+`null`, so the native bridge was never wired up.
 
-**Root cause:** a **node module-ABI mismatch**. `@anyfs/native`'s build script is plain
-`node-gyp rebuild`, which targets the **host node** (v24 → module ABI **137**). The Electron demo
-runs **Electron 42**, whose bundled libnode is module ABI **146**. A `.node` compiled for ABI 137
-loads fine under host `node` but `require()` inside Electron fails the ABI/version check — the addon
-"isn't found" only in the sense that it can't be loaded. (This is the same class of bug as
-`drivelist.node`, which already had a dedicated Electron-targeted build; `anyfs_native` did not.)
-Confirmed by printing `process.versions.modules` in both runtimes: host `node -e` → 137,
-`ELECTRON_RUN_AS_NODE=1 electron -e` → 146.
+**⚠️ Root cause — CORRECTED 2026-05-31 (the original ABI diagnosis below was WRONG):**
 
-**Fix:** added `ts/packages/anyfs-native/scripts/build-linux-electron.sh` (mirrors
-`drivelist-anyfs/scripts/build-linux-electron.sh`): runs `node-gyp install/rebuild
---runtime=electron --target=<electron-demo's electron version> --dist-url=https://electronjs.org/headers
---arch=x64`, writing `build/Release/anyfs_native.node` against Electron's headers. Both the dev
-loader (`native-loader.ts` → `build/Release/`) and the Linux package staging
-(`scripts/stage-native.sh`) consume that path. Documented the requirement (and that plain
-`pnpm build` targets host node, not Electron) in `electron-demo/README.md`. The win64 package was
-already correct — `scripts/build-win64.sh` links against Electron's `win-x64/node.lib`.
+> Original (incorrect) claim: a node module-ABI mismatch — host node v24 builds ABI **137**, Electron
+> 42 runs ABI **146**, so a host-built `.node` fails `require()` inside Electron.
+
+The ABI numbers are real (host node v24 → V8 13.6 → NODE_MODULE_VERSION **137**; Electron 42's node
+v24 → V8 14.8 → **146** — the ABI tracks V8, not the node version string), **but they are NOT why
+the addon failed to load.** `anyfs_native` is a **pure N-API / node-addon-api module**
+(`src/binding.cc` includes `<napi.h>`, no `v8::`/`node::` direct calls). N-API's whole purpose is
+ABI stability: the loader validates the **napi version** (host and Electron are both napi **10**),
+**not** NODE_MODULE_VERSION. **Proven by experiment (2026-05-31):** a host-ABI-137 `.node` built with
+plain `node-gyp rebuild`, loaded into Electron (ABI 146) via `ELECTRON_RUN_AS_NODE=1 electron`,
+**`require()`s successfully AND `kernelInit(64,0)` returns 0.** So 137↔146 is harmless here.
+
+The actual cause was mundane: **the Linux `build/Release/anyfs_native.node` was missing** (it's a
+gitignored local artifact and had never been built in that workspace), so `require()` threw
+`Cannot find module` and the loader fell back to wasm. Running a build that produced the file fixed
+it; the `--runtime=electron` flag was incidental, not the cure.
+
+**Fix (still useful, but the rationale is "build the file", not "match the ABI"):** added
+`ts/packages/anyfs-native/scripts/build-linux-electron.sh`. For a **pure N-API addon, plain
+`pnpm build` (`node-gyp rebuild`) is sufficient** to produce a loadable `.node` — the
+electron-targeted script is NOT required for loading/running. (It's kept as a harmless,
+conventional way to build the artifact, mirroring drivelist. Note drivelist may genuinely need it
+if it is *not* pure N-API — that's a separate question, not verified here.) The win64 package links
+Electron's `win-x64/node.lib` for other reasons (mingw cross-link), independent of this.
 
 **Verified (2026-05-31, `ELECTRON_RUN_AS_NODE=1 electron`, ABI 146):**
-- `require('anyfs_native.node')` **loads** (previously threw); exports `kernelInit, sessionOpen, …`.
-- `kernelInit(64,0)` → `rc=0` (native LKL/QEMU stack initialises inside Electron).
-- End-to-end native open of `debian.qcow2`: `meta.pt_type="gpt"`, logical_size 3 GiB, `listParts`
-  → 3 parts (idx 1 **ext4** root w/ blkid uuid, idx 14 BIOS-boot, idx 15 **vfat** EFI). i.e. native
-  qcow2 enumeration + the F5 blkid enrichment both work in Electron.
+- A host-ABI (137) `.node` **and** an electron-targeted (146) `.node` BOTH `require()` and run
+  `kernelInit(64,0)→0` inside Electron — confirming the N-API ABI independence.
+- End-to-end native open of `debian.qcow2` in the real Electron app: `pt_type="gpt"`, 3 GiB,
+  `listParts` → `[0,1,14,15]`, and entering partition #1 lists a real ext4 rootfs
+  (`boot dev etc home lost+found media mnt opt proc root run srv …`). No wasm `anyfs-url://`
+  rewrite fired → genuinely native.
+
+**Lesson:** before blaming ABI for a native-addon load failure, check (1) does the `.node` file
+actually exist at the resolved path, and (2) is it N-API (ABI-stable across NODE_MODULE_VERSION) or
+a raw-V8 addon (genuinely ABI-locked). Only the latter needs `--runtime=electron`.
 
 **Note:** the Linux native core archive (`build-anyfs-linux-amd64/libanyfs_core.a`) was also rebuilt
-so the addon links the F5 + F10-era core. The win64 native artifacts were rebuilt earlier the same
-day with the F5 core.
+so the addon links the F5 + F10-era core. The win64 native artifacts were rebuilt with the F5 core.
 
 ---
 

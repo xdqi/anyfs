@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
-# Build anyfs_native.node (linux x64) against Electron's vendored node headers
-# rather than the host node's. Required because Electron N's bundled libnode
-# uses a different module ABI than the host node — a .node built with a plain
-# `node-gyp rebuild` (host headers) compiles fine but FAILS to load inside
-# Electron with an ABI/version mismatch, surfacing as "native module not found"
-# in the demo. Mirrors drivelist-anyfs/scripts/build-linux-electron.sh.
-# See [[native-addon-vs-electron-headers]] in claude memory for background:
-#   host node v24 → module ABI 137; Electron 42 → module ABI 146.
+# Build anyfs_native.node (linux x64) against Electron's vendored node headers.
 #
-# `pnpm build` (plain `node-gyp rebuild`) still exists and targets the HOST
-# node — use that only for the Node-side smoke test / @anyfs/native consumers
-# running under node. For the Electron demo, use THIS script.
+# NOTE: this is NOT actually required for the addon to load in Electron.
+# anyfs_native is a PURE N-API / node-addon-api module (binding.cc includes
+# <napi.h>, no v8::/node:: calls), so it is ABI-stable across NODE_MODULE_VERSION:
+# a .node built with plain `node-gyp rebuild` against the host node (NMV 137)
+# loads and runs fine inside Electron 42 (NMV 146) because both expose napi 10.
+# Verified by experiment 2026-05-31 (require + kernelInit both succeed). The
+# earlier belief that a host-ABI .node "fails to load inside Electron" was wrong;
+# the F11 failure was simply a MISSING build/Release/anyfs_native.node file.
+#
+# So `pnpm --filter @anyfs/native build` (host-targeted node-gyp rebuild) is
+# sufficient for the Electron demo too. This script is kept as a conventional
+# electron-targeted builder (mirrors drivelist's); use whichever you like — the
+# important thing is that the .node FILE EXISTS at build/Release/.
+# (--runtime=electron would only matter for a raw-V8, non-N-API addon.)
 #
 # Default ELECTRON_TARGET tracks ts/examples/electron-demo's installed electron
 # (resolved from its package.json); override via env when bumping electron.
