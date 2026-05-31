@@ -16,7 +16,8 @@
 static void usage(FILE* f, const char* prog)
 {
 	fprintf(f,
-		"Usage: %s [--json] [--help] <image>[?<query>] [<image>...]\n"
+		"Usage: %s [--json] [--help] [--nbd-fd N | --nbd-port P] "
+		"<image>[?<query>] [<image>...]\n"
 		"\n"
 		"Open each image, list partitions, print a unified table.\n"
 		"PATH column is the canonical disk<N>/p<M> form (drops into\n"
@@ -34,6 +35,7 @@ int main(int argc, char** argv)
 	int json = 0;
 	const char* images[16];
 	int n_images = 0;
+	static char nbd_path[32]; /* holds a synthesized "nbd-fd:N"/"nbd-port:P" */
 
 	for (int i = 1; i < argc; i++) {
 		const char* a = argv[i];
@@ -43,6 +45,28 @@ int main(int argc, char** argv)
 		}
 		if (strcmp(a, "--json") == 0) {
 			json = 1;
+			continue;
+		}
+		if (strcmp(a, "--nbd-fd") == 0 || strcmp(a, "--nbd-port") == 0) {
+			if (nbd_path[0]) {
+				fprintf(stderr,
+					"only one --nbd-fd/--nbd-port allowed\n");
+				return 2;
+			}
+			if (i + 1 >= argc) {
+				fprintf(stderr, "%s needs an argument\n", a);
+				return 2;
+			}
+			/* a[6]: "--nbd-fd"[6]=='f', "--nbd-port"[6]=='p' */
+			const char* kind = (a[6] == 'f') ? "nbd-fd" : "nbd-port";
+			snprintf(nbd_path, sizeof(nbd_path), "%s:%s", kind,
+				 argv[++i]);
+			if (n_images >= (int)(sizeof(images) /
+					      sizeof(images[0]))) {
+				fprintf(stderr, "too many images\n");
+				return 2;
+			}
+			images[n_images++] = nbd_path;
 			continue;
 		}
 		if (a[0] == '-' && a[1] != '\0') {
