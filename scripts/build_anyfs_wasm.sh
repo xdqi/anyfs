@@ -72,6 +72,14 @@ CFLAGS=(
     -D_GNU_SOURCE
     -DLKL_HOST_CONFIG_POSIX=1
     -DLKL_HOST_CONFIG_WASM=1
+    # The bundle always links the QEMU block backend, so the whole core
+    # must see ANYFS_HAS_QEMU — not just anyfs_kernel.c (which registers
+    # qemu_backend_ops). anyfs_backend.c's auto-detect in anyfs_disk_add is
+    # #ifdef ANYFS_HAS_QEMU: without the macro here it falls back to the raw
+    # backend, so qcow2/vmdk/etc. open as raw bytes (wrong size, no inner
+    # partition table). Meson applies -DANYFS_HAS_QEMU=1 to the entire core
+    # for the same reason; mirror that here.
+    -DANYFS_HAS_QEMU=1
     -include sys/types.h -include limits.h
     -O2 -g
 )
@@ -142,12 +150,12 @@ for f in \
     [[ -f "$f" ]] || { echo "missing sysroot lib: $f" >&2; exit 1; }
 done
 
-# Rebuild anyfs_kernel.c with ANYFS_HAS_QEMU so qemu_backend_ops gets registered.
-ANYFS_QEMU_OBJ="$BLD/anyfs.qemu.${TARGET}.o"
-echo "  CC   src/core/anyfs_kernel.c (ANYFS_HAS_QEMU) -> $ANYFS_QEMU_OBJ"
-emcc "${CFLAGS[@]}" "${INC[@]}" \
-     -DANYFS_HAS_QEMU \
-     -c "$SRC_CORE/anyfs_kernel.c" -o "$ANYFS_QEMU_OBJ"
+# anyfs_kernel.c (qemu_backend_ops registration) and anyfs_backend.c
+# (auto-detect that PREFERS the QEMU backend) are already compiled with
+# -DANYFS_HAS_QEMU in Phase 1 — it's in the shared CFLAGS — so they live in
+# libanyfs_core.a with the macro on. No separate QEMU rebuild of
+# anyfs_kernel.c is needed; the only QEMU-specific translation units left to
+# compile here are qemu_backend.c (real QEMU block headers) and qemu_stubs.c.
 
 QEMU_BLK_OBJ="$BLD/qemu_blk_backend.${TARGET}.o"
 echo "  CC   src/core/qemu_backend.c -> $QEMU_BLK_OBJ"
@@ -198,7 +206,7 @@ EXPORTED_FUNCS='_main,_malloc,_free,'\
 
 EXPORTED_RUNTIME="ccall,cwrap,HEAPU8,HEAP32,HEAPU32,FS,${FS_RUNTIME},UTF8ToString,stringToUTF8,getValue,setValue"
 
-EXTRA_OBJS=("$ANYFS_QEMU_OBJ" "$QEMU_BLK_OBJ" "$QEMU_STUBS_OBJ")
+EXTRA_OBJS=("$QEMU_BLK_OBJ" "$QEMU_STUBS_OBJ")
 EXTRA_ARCHIVES=(
     "$QBLD/libblock.a" "$QBLD/libio.a" "$QBLD/libqom.a"
     "$QBLD/libauthz.a" "$QBLD/libcrypto.a"

@@ -31,23 +31,15 @@ test.beforeEach(({}, testInfo) => {
     );
 });
 
-// FINDING F10: a qcow2's MBR partition table is NOT enumerated — `listParts`
-// returns only the whole-disk synthetic index 0, never the real ext4 partition
-// (index 1, confirmed present via a host loop-mount). Entering index 0 then
-// probes the MBR-prefixed whole disk as a bare filesystem (exFAT/UDF probes
-// fail in dmesg) instead of the inner partition, so the mount never produces a
-// file list. This is NOT URLFS-specific: opening the SAME qcow2 as a local
-// <input> blob also lists only [0]. It is a real qcow2 partition-detection gap,
-// so we do not weaken the assertion — we fixme the URL flow until partition
-// enumeration over the qemu-decoded qcow2 disk is fixed. The CORS fix to
-// range-server.ts (cross-origin URLFS fetch) and the manifest's
-// index-1/etc-hostname entry (host-verified accurate) both stand. The URL open
-// itself works: the source attaches and the disk reaches 'ready'; only the
-// partition split is missing. See ts/tests/e2e/FINDINGS.md F10.
-test.fixme(
-    true,
-    'F10: qcow2 MBR partition table not enumerated (listParts returns only whole-disk [0]); blocks entering the ext4 partition. Not URLFS-specific.',
-);
+// FINDING F10 (FIXED 2026-05-31): a qcow2's partition table is now enumerated
+// on the wasm path. The bug was a build-script gap — build_anyfs_wasm.sh
+// compiled anyfs_backend.c (the QEMU-vs-raw auto-detect in anyfs_disk_add)
+// WITHOUT -DANYFS_HAS_QEMU, so qcow2 opened as raw bytes (wrong size, no PT).
+// Adding the macro to the shared Phase-1 CFLAGS lets auto-detect pick the QEMU
+// backend; the qcow2 now decodes to its virtual size and listParts reports the
+// real partition. The unconditional F10 fixme is therefore removed. (The F9
+// native-teardown gate above still applies and keeps electron-native off.)
+// See ts/tests/e2e/FINDINGS.md F10.
 
 test('@smoke open via URL (local Range server), browse known entry', async ({ driver }) => {
     await driver.openUrl(server.url);

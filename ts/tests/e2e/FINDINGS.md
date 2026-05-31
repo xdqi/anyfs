@@ -370,7 +370,7 @@ removed once F4 was fixed — web now downloads via the service-worker mechanism
 
 ---
 
-## F10 — qcow2 not decoded on the wasm attach/attachUrl path (raw bytes -> no PT); QEMU IS in the bundle but not selected for WORKERFS/URLFS opens (symptom CONFIRMED, root cause OPEN, Medium)
+## F10 — qcow2 not decoded on the wasm attach/attachUrl path (raw bytes -> no PT) (✅ FIXED — wasm core now built with -DANYFS_HAS_QEMU so auto-detect selects the QEMU backend, was Medium)
 
 **Observed (Phase 5, web + electron-wasm, url-load flow):** Opening the trusty `qcow2` fixture
 (either by URL through the local Range server *or* as a local `<input>` blob) attaches the source
@@ -417,9 +417,49 @@ into `anyfs_kernel.c` backend registration + `anyfs_session_open` backend select
 `ANYFS_HAS_QEMU`). Independent of URLFS — identical `[0]`-only result opening the same qcow2 as a
 local blob.
 
-**Status:** symptom CONFIRMED, precise root cause OPEN. Not blocking the URLFS *mechanism* (which
-works — source attaches, mounts, reaches ready). A raw-image URL fixture would give url-load a
-green gate independent of this (the partition scanner handles raw images, cf. multiRaw `[0,1,2]`).
+**Root cause — FOUND (2026-05-31):** A **wasm-build-script bug**, not a C-logic bug. The backend
+auto-detect lives in `anyfs_disk_add` (`src/core/anyfs_backend.c`):
+
+```c
+/* Auto-detect: prefer QEMU if available, else raw */
+if (!ops) {
+#ifdef ANYFS_HAS_QEMU
+        ops = &qemu_backend_ops;
+#else
+        ops = &raw_backend_ops;
+#endif
+}
+```
+
+`build_anyfs_wasm.sh` compiled the whole core in Phase 1 **without** `-DANYFS_HAS_QEMU`, then
+recompiled *only* `anyfs_kernel.c` with the macro (so `qemu_backend_ops` got *registered*). But
+`anyfs_backend.c` — which holds the `#ifdef` above — stayed in `libanyfs_core.a` with the macro
+**off**, so the auto-detect block was dead code and every no-flag open fell through to
+`raw_backend_ops`. The qcow2 was opened raw → device sized to the file length → no PT → `[0]`
+only. Native (meson) never hit this: meson applies `qemu_args = ['-DANYFS_HAS_QEMU=1']` to the
+**entire** `anyfs_core` static_library, so `anyfs_backend.o` was always QEMU-aware there — which
+is exactly why native logs showed `[qemu_blk] blk_new_open` decoding correctly while wasm didn't.
+
+**Fix:** add `-DANYFS_HAS_QEMU=1` to the shared Phase-1 `CFLAGS` in `build_anyfs_wasm.sh` so the
+whole core (incl. `anyfs_backend.c` and `anyfs_session.c`) sees it — mirroring meson. The separate
+`anyfs_kernel.c` QEMU rebuild + its `ANYFS_QEMU_OBJ` `EXTRA_OBJS` entry are now redundant (Phase 1
+builds `anyfs_kernel.o` with the macro into the archive) and were removed.
+
+**Verified (2026-05-31, node wasm bundle, `scripts/repro-qcow2-wasm.mjs` against `debian.qcow2`,
+3 GiB virtual / 324 MiB on disk):**
+
+| | before fix | after fix |
+|---|---|---|
+| `[qemu_blk] open(...)` ran | no (silent raw) | **yes** |
+| `[vda]` capacity | 325 MiB (file len) | **3.00 GiB (virtual)** |
+| `meta.pt_type` | `""` | **`"gpt"`** |
+| `listParts` | `[]` | **3 parts** (idx 1 ext4 root, idx 14 BIOS-boot, idx 15 vfat EFI) |
+
+**No regression:** raw `multi.img` (GPT, 3 parts) still enumerates `[1 (xfs), 2, 3 (ext2)]` with
+correct 512 MiB capacity and blkid fstype/label/uuid — QEMU's `raw` driver handles raw images
+identically to the old raw backend, and the F5 blkid enrichment runs on both paths. Both the
+**browser** (`anyfs.mjs`/`anyfs.wasm`, loaded by the demo) and **node** (`anyfs.node.*`) bundles
+rebuilt with the fix.
 
 **Repro (web):** `npx playwright test --project=web --grep-invert @network
 flows/url-load.spec.ts` (remove the `test.fixme` gate) → `enterPartition(1)` times out;
@@ -443,10 +483,49 @@ their own and are kept:
   partition is index 1 and `etc/hostname` (7 bytes, "ubuntu") exists, so the manifest's
   `{index:1, fs:'ext4', tree:[{path:'etc/hostname'}]}` is correct and unchanged.
 
-**Suggested fix:** build the `ANYFS_QEMU=1` wasm bundle and point `App.tsx` `wasmModuleName` at
-`anyfs.qemu.mjs` (or select it by image format). Once qcow2 decodes through the qemu block layer,
-`vda` becomes the 2.2 GiB virtual disk, the MBR is parsed, `listParts` reports index 1, and the
-ext4 partition mounts — at which point this spec's `test.fixme(true, …)` can be lifted.
+**E2E follow-up:** the qcow2 url-load spec's `test.fixme(true, …)` can now be lifted — the
+qcow2 decodes through the QEMU block layer, `vda` becomes the full virtual disk, the PT is parsed,
+and `listParts` reports the real partition(s). (The earlier "suggested fix" of pointing
+`wasmModuleName` at a separate `anyfs.qemu.mjs` was obsolete — there is only one unified bundle
+since commit `d7bbf51`; the real gap was the missing compile-time macro on `anyfs_backend.c`.)
+
+---
+
+## F11 — Electron **native** mode reports "native module not found" / silently falls back to wasm (✅ FIXED — build anyfs_native.node against Electron's node ABI, was High)
+
+**Observed:** With native mode enabled (i.e. `ANYFS_DISABLE_NATIVE` unset, so `preload.ts` should
+inject `window.anyfsNative`), the Electron demo logged `[anyfs-native] addon not loadable: …` and
+degraded to the wasm backend. `main.ts`'s `loadNativeAddon()` caught the `require()` throw from
+`native-loader.ts` and returned `null`, so `window.anyfsNative` was never wired up.
+
+**Root cause:** a **node module-ABI mismatch**. `@anyfs/native`'s build script is plain
+`node-gyp rebuild`, which targets the **host node** (v24 → module ABI **137**). The Electron demo
+runs **Electron 42**, whose bundled libnode is module ABI **146**. A `.node` compiled for ABI 137
+loads fine under host `node` but `require()` inside Electron fails the ABI/version check — the addon
+"isn't found" only in the sense that it can't be loaded. (This is the same class of bug as
+`drivelist.node`, which already had a dedicated Electron-targeted build; `anyfs_native` did not.)
+Confirmed by printing `process.versions.modules` in both runtimes: host `node -e` → 137,
+`ELECTRON_RUN_AS_NODE=1 electron -e` → 146.
+
+**Fix:** added `ts/packages/anyfs-native/scripts/build-linux-electron.sh` (mirrors
+`drivelist-anyfs/scripts/build-linux-electron.sh`): runs `node-gyp install/rebuild
+--runtime=electron --target=<electron-demo's electron version> --dist-url=https://electronjs.org/headers
+--arch=x64`, writing `build/Release/anyfs_native.node` against Electron's headers. Both the dev
+loader (`native-loader.ts` → `build/Release/`) and the Linux package staging
+(`scripts/stage-native.sh`) consume that path. Documented the requirement (and that plain
+`pnpm build` targets host node, not Electron) in `electron-demo/README.md`. The win64 package was
+already correct — `scripts/build-win64.sh` links against Electron's `win-x64/node.lib`.
+
+**Verified (2026-05-31, `ELECTRON_RUN_AS_NODE=1 electron`, ABI 146):**
+- `require('anyfs_native.node')` **loads** (previously threw); exports `kernelInit, sessionOpen, …`.
+- `kernelInit(64,0)` → `rc=0` (native LKL/QEMU stack initialises inside Electron).
+- End-to-end native open of `debian.qcow2`: `meta.pt_type="gpt"`, logical_size 3 GiB, `listParts`
+  → 3 parts (idx 1 **ext4** root w/ blkid uuid, idx 14 BIOS-boot, idx 15 **vfat** EFI). i.e. native
+  qcow2 enumeration + the F5 blkid enrichment both work in Electron.
+
+**Note:** the Linux native core archive (`build-anyfs-linux-amd64/libanyfs_core.a`) was also rebuilt
+so the addon links the F5 + F10-era core. The win64 native artifacts were rebuilt earlier the same
+day with the F5 core.
 
 ---
 
