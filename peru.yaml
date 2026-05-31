@@ -1,0 +1,39 @@
+# peru.yaml — pinned, reproducible build dependencies. `peru sync` fetches into ./deps/.
+# rev: pinned to resolved SHAs for reproducibility.
+# To update: re-run `git ls-remote <url> <ref>` for each module and edit the rev: field,
+# or run `peru reup` (requires internet access and all modules to be reachable).
+#
+# NOTE: OOT filesystem drivers (OpenZFS, APFS, NTFS+) are still staged via scripts/oot_fs.sh
+# which layers patch sets onto deps/linux after peru sync. Migrating oot_fs.sh modules into
+# peru is a P2 item (requires splitting each driver into its own peru module with its own rev).
+#
+# NOTE: drivelist-anyfs is NOT included here — the local checkout at ~/drivelist-anyfs tracks
+# balena-io-modules/drivelist upstream (anyfs/main is a local-only branch with no public fork URL).
+# Add a drivelist module once the fork is published at a stable public URL.
+imports:
+  linux:       deps/linux
+  qemu:        deps/qemu
+  util-linux:  deps/util-linux
+  ksmbd-tools: deps/ksmbd-tools
+  llvm-wasm:   deps/llvm-wasm
+  # drivelist: deps/drivelist-anyfs   # deferred: no confirmed public fork URL (see note above)
+
+git module linux:
+  url: https://github.com/xdqi/lkl.git
+  rev: 3d1672f57bbc3c8812f1bbbe37bec595491a304d  # branch lkl-anyfs (unified: linux-amd64 + mingw64 + wasm builds)
+
+git module qemu:
+  url: https://gitlab.com/qemu-project/qemu.git
+  rev: 98b060da3a4f92b2a994ead5b16a87e783baf77c  # tag v11.0.0 (annotated tag dereferenced to commit)
+
+git module util-linux:
+  url: https://github.com/util-linux/util-linux.git
+  rev: 0000ca30646d03f9dfbab9f62a5ce21a939c1018  # branch stable/v2.40
+
+git module ksmbd-tools:
+  url: https://github.com/cifsd-team/ksmbd-tools.git
+  rev: a9737289cdbb8c16ca06d6d0ff4e097841123256  # branch master (release 3.5.6)
+
+git module llvm-wasm:
+  url: https://github.com/xdqi/llvm-wasm.git
+  rev: 60596e221af5a6b28ff57aa9e4ed71dc4fed309e  # branch wasm-18.1.2-anyfs; only wasm-ld is consumed (built via build-llvm in CI/provisioning)
