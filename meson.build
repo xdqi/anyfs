@@ -144,6 +144,19 @@ if enable_qemu
     qemu_build = get_option('qemu_build')
     qemu_shared = get_option('qemu_shared')
 
+    # qemu_build is consumed two ways with conflicting path rules:
+    #   - include_directories() (below) rejects an absolute path that points
+    #     into the source tree, so it needs the relative form;
+    #   - cc.find_library(dirs: [...]) (the qemu shared/static link) requires
+    #     an absolute search directory.
+    # Keep qemu_build relative for the includes and derive qemu_build_abs for
+    # the find_library dirs — same split as lkl_root_rel vs lkl_root above.
+    if qemu_build.startswith('/')
+        qemu_build_abs = qemu_build
+    else
+        qemu_build_abs = meson.current_source_dir() / qemu_build
+    endif
+
     qemu_inc = include_directories(
         qemu_root / 'include',
         qemu_build,
@@ -169,7 +182,7 @@ if enable_qemu
 
     if qemu_shared
         # Dynamic linking: use pre-built libanyfs-qemublk.so / libanyfs-qemublk.dll
-        anyfs_qemu_lib = cc.find_library('anyfs-qemublk', dirs: [qemu_build])
+        anyfs_qemu_lib = cc.find_library('anyfs-qemublk', dirs: [qemu_build_abs])
         glib_sys_dep = dependency('glib-2.0', required: true)
         if host_machine.system() == 'windows'
             qemu_dep = declare_dependency(
@@ -193,7 +206,7 @@ if enable_qemu
         # Static linking: link individual QEMU archives
         qemu_libs = []
         foreach libname : ['qemuutil', 'io', 'qom', 'authz', 'crypto', 'event-loop-base']
-            qemu_libs += cc.find_library(libname, dirs: [qemu_build], static: true)
+            qemu_libs += cc.find_library(libname, dirs: [qemu_build_abs], static: true)
         endforeach
 
         # libblock.a needs --whole-archive to pull in format driver constructors
