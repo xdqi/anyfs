@@ -102,9 +102,15 @@ cfg -e PRINTK_TIME
 cfg -d 64BIT
 cfg --set-str OUTPUT_FORMAT "wasm32"
 
-# Networking: OFF — disk viewer doesn't need it
-cfg -d NET
-cfg -d INET
+# Networking: minimal (loopback only), matching the native anyfs targets.
+# The disk viewer doesn't use the network, but a NET-off kernel omits the
+# socket syscalls (socket/bind/sendto/recvfrom/...), which LKL's userspace lib
+# (lib/net.c, the lkl_sys_send/recv wrappers in lkl.h) and the self-harvested
+# syscall_defs.h all assume exist. Enabling NET+INET (lo, no real devices)
+# keeps the build self-consistent and lets lo_ifup succeed; the net core is
+# dead in the bundle (DCE'd at the final link).
+cfg -e NET
+cfg -e INET
 cfg -d IPV6
 cfg -d NETDEVICES
 cfg -d WIRELESS
