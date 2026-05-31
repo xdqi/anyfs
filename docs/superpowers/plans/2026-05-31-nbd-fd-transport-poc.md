@@ -577,12 +577,12 @@ export async function startNbdServer(socket, imageFd, size, onRead) {
 
 async function sendOptReply(write, opt, repType, payload) {
   const hdr = Buffer.alloc(20);
-  hdr.writeBigUInt64BE(0x3e889045565a9700n, 0); /* NBD_REP option-reply magic */
+  hdr.writeBigUInt64BE(0x0003e889045565a9n, 0); /* NBD_REP option-reply magic */
   hdr.writeUInt32BE(opt, 8);
   hdr.writeBigUInt64BE(repType, 12); /* 8 bytes: 4 rep type at off 12? */
   /* NBD option reply: magic(8) + opt(4) + reptype(4) + len(4) */
   const fixed = Buffer.alloc(16);
-  fixed.writeBigUInt64BE(0x3e889045565a9700n, 0);
+  fixed.writeBigUInt64BE(0x0003e889045565a9n, 0);
   fixed.writeUInt32BE(opt, 8);
   fixed.writeUInt32BE(Number(repType & 0xffffffffn), 12);
   const lenBuf = Buffer.alloc(4);
@@ -599,7 +599,7 @@ async function sendSimpleReply(write, error, handle, data) {
 }
 ```
 
-> NOTE: the NBD option-reply magic is `0x3e889045565a9700`. The `sendOptReply` helper
+> NOTE: the NBD option-reply magic is `0x0003e889045565a9`. The `sendOptReply` helper
 > above contains a leftover dead block; clean it to just the `fixed`/`lenBuf`/`payload`
 > path in Step 2.
 
@@ -611,7 +611,7 @@ Replace the `sendOptReply` function body with the correct single-path version:
 async function sendOptReply(write, opt, repType, payload) {
   /* NBD option reply: magic(8) + opt(4) + reptype(4) + len(4) + payload */
   const fixed = Buffer.alloc(16);
-  fixed.writeBigUInt64BE(0x3e889045565a9700n, 0);
+  fixed.writeBigUInt64BE(0x0003e889045565a9n, 0);
   fixed.writeUInt32BE(opt, 8);
   fixed.writeUInt32BE(Number(repType & 0xffffffffn), 12);
   const lenBuf = Buffer.alloc(4);
@@ -1056,12 +1056,15 @@ Create `scripts/poc-nbd/test-stage2.mjs`:
  *       byte-for-byte THROUGH the qcow2-over-NBD chain, using qemu-io as
  *       a real qcow2 client over a unix-socket NBD endpoint.
  */
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFileSync, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { serveOnFd, serveOnUnixSocket } from './launch.mjs';
+
+const execFileP = promisify(execFile);
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../..');
@@ -1114,7 +1117,9 @@ try {
    * meta.verifyOffset for the marker length and dump it as hex. */
   const len = Buffer.from(meta.verifyBytesHex, 'hex').length;
   const nbdUri = `json:{"driver":"qcow2","file":{"driver":"nbd","server":{"type":"unix","path":"${sockPath}"}}}`;
-  const out = execFileSync(
+  /* MUST be async: the in-process NBD server runs on this event loop, so a
+   * synchronous execFileSync would block it and deadlock the qemu-io read. */
+  const { stdout: out } = await execFileP(
     'qemu-io',
     ['-r', '-c', `read -v ${meta.verifyOffset} ${len}`, nbdUri],
     { encoding: 'utf8' },
