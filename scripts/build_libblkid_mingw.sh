@@ -46,6 +46,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 UL_SRC="${UL_SRC:-$HOME/util-linux}"
+# Resolve UL_SRC to absolute: we `cd "$UL_SRC"` below and pass -I"$UL_SRC/...",
+# so a relative UL_SRC (e.g. deps/util-linux) would break after the cd.
+[[ -d "$UL_SRC" ]] && UL_SRC="$(cd "$UL_SRC" && pwd)"
 SHIM="${SHIM:-$REPO_ROOT/patches/libblkid/shim}"
 OUT_DIR="${OUT_DIR:-$REPO_ROOT/build-blkid-$TARGET}"
 # Resolve OUT_DIR to absolute since we `cd "$UL_SRC"` below for compilation.

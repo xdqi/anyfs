@@ -74,6 +74,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Resolve src/root paths to absolute so relative inputs (e.g. --lkl-src=deps/linux
+# from CI) survive the `cd "$SRC_DIR"` before meson setup.
+for _v in LKL_SRC QEMU_ROOT KSMBD_ROOT; do
+    [[ -d "${!_v}" ]] && printf -v "$_v" '%s' "$(cd "${!_v}" && pwd)"
+done
+
 IFS=',' read -ra TARGETS_ARR  <<< "$TARGETS_REQ"
 IFS=',' read -ra COMPONENTS_ARR <<< "$COMPONENTS_REQ"
 

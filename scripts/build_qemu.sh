@@ -55,6 +55,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Resolve QEMU_SRC to absolute: build_one() does `cd "$builddir" && "$QEMU_SRC/configure"`,
+# so a relative --qemu-src (e.g. deps/qemu) would break after the cd.
+[[ -d "$QEMU_SRC" ]] && QEMU_SRC="$(cd "$QEMU_SRC" && pwd)"
+
 if [[ ! -f "$QEMU_SRC/configure" ]]; then
     echo "Error: $QEMU_SRC/configure not found." >&2
     exit 1
