@@ -18,8 +18,12 @@
 # with the companion script: gen_lkl_config.sh
 set -e
 
-LINUX_DIR="$HOME/linux"
-OUT_PARENT="$HOME/anyfs-reader"
+# shellcheck source=lib/config.sh
+source "$(dirname "$0")/lib/config.sh"
+
+# LINUX_DIR / OUT_PARENT: CLI --linux= / --out= win; config.sh provides defaults.
+LINUX_DIR="${LINUX_DIR:-$ANYFS_PATHS_LINUX_SRC}"
+OUT_PARENT="${OUT_PARENT:-$(cd "$(dirname "$0")/.." && pwd)}"
 TARGETS_REQ=""
 DO_CLEAN=0
 JOBS="$(nproc)"

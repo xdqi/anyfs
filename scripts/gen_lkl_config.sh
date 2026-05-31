@@ -22,14 +22,26 @@
 # To build the configured target(s), use the companion script: build_lkl.sh
 set -e
 
-LINUX_DIR="$HOME/linux"
-OUT_PARENT="$HOME/anyfs-reader"
-# Patched binutils-2.46 install (LKL weak-symbol fixes). The bundled
-# binutils under $LINUX_DIR/tools/lkl/bin is 2.25.1, below the 2.30
-# minimum kernel 6.13+ Kconfig requires. We override LD/AS/etc per-arch
-# below so the kernel sub-make uses the 2.46 install regardless of the
-# stale shadowed tools that the LKL Makefile prepends to PATH.
-BINUTILS_DIR="${BINUTILS_DIR:-$HOME/binutils-gdb/build-combined/install/bin}"
+# shellcheck source=lib/config.sh
+source "$(dirname "$0")/lib/config.sh"
+
+# LINUX_DIR: CLI --linux= wins; config.sh provides the default.
+LINUX_DIR="${LINUX_DIR:-$ANYFS_PATHS_LINUX_SRC}"
+OUT_PARENT="${OUT_PARENT:-$(cd "$(dirname "$0")/.." && pwd)}"
+
+# Binutils per target: msys2-cross for mingw (2.46 + PE patch),
+# system binutils for native ELF targets (>= 2.30; no PE patch needed).
+# The bundled tools/lkl/bin is 2.25.1, below the 2.30 minimum kernel 6.13+
+# Kconfig requires. We override LD/AS/etc per-arch below so the kernel
+# sub-make uses the correct install regardless of the stale shadowed tools
+# that the LKL Makefile prepends to PATH.
+binutils_dir_for() {  # $1 = target name
+    case "$1" in
+        mingw32|mingw64) echo "$ANYFS_TOOLCHAINS_MSYS2_CROSS/bin" ;;
+        *)               echo "$ANYFS_TOOLCHAINS_BINUTILS_NATIVE" ;;
+    esac
+}
+
 TARGETS_REQ=""
 
 while [[ $# -gt 0 ]]; do
@@ -384,6 +396,7 @@ EOF
 EOF
     elif [[ "$NAME" == mingw* ]]; then
         local ELFCLASS MSYS_ARCH LDFLAGS_EXTRA
+        local BINUTILS_DIR; BINUTILS_DIR="$(binutils_dir_for "$NAME")"
         local NT64_CONF="" NT64_AUTOCONF=""
         if [[ "$NAME" == "mingw64" ]]; then
             ELFCLASS="ELFCLASS64"
