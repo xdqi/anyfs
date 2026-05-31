@@ -74,11 +74,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Resolve src/root paths to absolute so relative inputs (e.g. --lkl-src=deps/linux
-# from CI) survive the `cd "$SRC_DIR"` before meson setup.
-for _v in LKL_SRC QEMU_ROOT KSMBD_ROOT; do
-    [[ -d "${!_v}" ]] && printf -v "$_v" '%s' "$(cd "${!_v}" && pwd)"
-done
+# NOTE: do NOT absolutize LKL_SRC/QEMU_ROOT/KSMBD_ROOT here. They are passed to
+# meson as -Dlkl_src/-Dqemu_root/-Dksmbd_tools_root and meson resolves relative
+# paths against the source root (we `cd "$SRC_DIR"` before `meson setup`). An
+# absolute path that points *inside* the source tree (e.g. the CI's deps/linux)
+# makes meson error: "Tried to form an absolute path to a dir in the source tree."
+# Relative deps/* paths are correct here (unlike build_qemu/build_libblkid, which
+# cd into a build dir and use the src path via the shell).
 
 IFS=',' read -ra TARGETS_ARR  <<< "$TARGETS_REQ"
 IFS=',' read -ra COMPONENTS_ARR <<< "$COMPONENTS_REQ"
