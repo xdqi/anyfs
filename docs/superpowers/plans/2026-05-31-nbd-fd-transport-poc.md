@@ -31,6 +31,13 @@
   **`server.type = "fd"`, `server.str = "<N>"`.**
 - QEMU's `util/qemu-sockets.c:socket_get_fd()` accepts a bare numeric fd when
   `monitor_cur() == NULL` (our case), then requires `fd_is_socket(fd)`.
+- **CONFIRMED IN STAGE 1:** `qemu_blk_open` must call `module_call_init(MODULE_INIT_QOM)`
+  (needs `#include "qemu/module.h"`) before `bdrv_init()`. The NBD client adopts the fd
+  via a `qio-channel-socket`, a QOM type registered under MODULE_INIT_QOM; `bdrv_init()`
+  alone (MODULE_INIT_BLOCK) leaves it unregistered → `unknown type 'qio-channel-socket'`.
+  QEMU's own tools call both. This is a latent anyfs-glue init gap, NOT a QEMU source
+  change — fix lives in `src/core/qemu_backend.c`, guarded by the one-time
+  `qemu_initialized` flag, harmless for plain-file/URL opens. (committed in e183b91)
 - Build: `scripts/build_anyfs.sh` runs `meson setup build-anyfs-linux-amd64` + ninja.
   lspart target: `src/lspart/meson.build` → executable `anyfs-lspart`.
 - Tooling present: `qemu-img`, `node v24.15.0`, `meson`, `ninja`. **`nbdinfo` is NOT
