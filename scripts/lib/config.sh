@@ -1,0 +1,39 @@
+# scripts/lib/config.sh — source this to load build.config.toml (+ build.user.toml override)
+# into ANYFS_* shell vars. Usage: source "$(dirname "$0")/lib/config.sh"
+# Requires python3 (tomllib, 3.11+) — the build host already has it.
+_anyfs_repo_root() { cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd; }
+
+anyfs_load_config() {
+    local root; root="$(_anyfs_repo_root)"
+    eval "$(python3 - "$root" <<'PY'
+import sys, tomllib, os, shlex
+root = sys.argv[1]
+def load(p):
+    try:
+        with open(p, "rb") as f: return tomllib.load(f)
+    except FileNotFoundError: return {}
+cfg = load(os.path.join(root, "build.config.toml"))
+usr = load(os.path.join(root, "build.user.toml"))
+def merge(a, b):
+    for k, v in b.items():
+        a[k] = merge(a.get(k, {}), v) if isinstance(v, dict) else v
+    return a
+cfg = merge(cfg, usr)
+def shq(v): return shlex.quote(str(v))
+def emit(prefix, d):
+    for k, v in d.items():
+        if isinstance(v, dict): emit(f"{prefix}{k.upper()}_", v)
+        else: print(f'export ANYFS_{prefix}{k.upper()}={shq(v)}')
+emit("", cfg)
+PY
+)"
+    local deps="${ANYFS_PATHS_DEPS_ROOT:-deps}"
+    : "${ANYFS_PATHS_LINUX_SRC:=$root/$deps/linux}"
+    : "${ANYFS_PATHS_QEMU_SRC:=$root/$deps/qemu}"
+    : "${ANYFS_PATHS_UTIL_LINUX:=$root/$deps/util-linux}"
+    : "${ANYFS_PATHS_KSMBD_TOOLS:=$root/$deps/ksmbd-tools}"
+    : "${ANYFS_TOOLCHAINS_EMSDK:=${EMSDK:-}}"
+    export ANYFS_PATHS_LINUX_SRC ANYFS_PATHS_QEMU_SRC ANYFS_PATHS_UTIL_LINUX \
+           ANYFS_PATHS_KSMBD_TOOLS ANYFS_TOOLCHAINS_EMSDK
+}
+anyfs_load_config
