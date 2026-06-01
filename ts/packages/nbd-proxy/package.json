@@ -1,0 +1,27 @@
+{
+  "name": "@anyfs/nbd-proxy",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "bin": {
+    "anyfs-nbd-proxy": "./dist/bin/anyfs-nbd-proxy.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "test": "node test/unit.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "tsup": "^8.3.0",
+    "@types/node": "^22.0.0"
+  }
+}
