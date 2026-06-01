@@ -22,7 +22,10 @@ export async function serveOnLoopback(
   const server = net.createServer((sock) => {
     serveNbd(sock, source, { size }).catch(() => {});
   });
-  await new Promise<void>((r) => server.listen(port, '127.0.0.1', r));
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', resolve);
+  });
   const addr = server.address() as net.AddressInfo;
   return {
     port: addr.port,
