@@ -123,4 +123,44 @@ await test('NbdServer replies keyed by handle under out-of-order completion', as
   assert.strictEqual(replies[0].handle, 65536, 'faster read replied first');
 });
 
+/* BlockDeviceSource: back a loop device with a test image if losetup is
+ * available (needs root); otherwise SKIP with a clear message. */
+await test('BlockDeviceSource reads via loop device (or skips)', async () => {
+  const { execFileSync } = await import('node:child_process');
+  if (os.platform() !== 'linux') {
+    console.log('  (skip: blockdev v1 is Linux-only)');
+    return;
+  }
+  let loopDev = null;
+  const img = path.join(os.tmpdir(), 'nbdproxy-blockdev-test.img');
+  try {
+    /* 1 MiB image with a marker at offset 4096. */
+    const data = Buffer.alloc(1 << 20);
+    data.write('BLOCKDEV-MARK', 4096, 'ascii');
+    fs.writeFileSync(img, data);
+    try {
+      loopDev = execFileSync('losetup', ['--find', '--show', img], {
+        encoding: 'utf8',
+      }).trim();
+    } catch {
+      console.log('  (skip: cannot create loop device — needs root/losetup)');
+      return;
+    }
+    const src = await createDataSource({ kind: 'blockdev', target: loopDev });
+    assert.ok((await src.size()) >= 1 << 20, 'size detected');
+    const slice = await src.read(4096, 13);
+    assert.strictEqual(slice.toString('ascii'), 'BLOCKDEV-MARK', 'marker read');
+    await src.close();
+  } finally {
+    if (loopDev) {
+      try {
+        (await import('node:child_process')).execFileSync('losetup', ['-d', loopDev]);
+      } catch {}
+    }
+    try {
+      fs.unlinkSync(img);
+    } catch {}
+  }
+});
+
 console.log(`\n${passed} test(s) passed`);
