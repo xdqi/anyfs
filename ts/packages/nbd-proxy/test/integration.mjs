@@ -120,5 +120,41 @@ try {
   console.log('HttpSource case done');
 }
 
+/* CLI smoke: spawn the built CLI in loopback mode, read its port from stdout,
+ * confirm qemu-img opens the fixture qcow2 through it, then shut it down. */
+{
+  const { spawn } = await import('node:child_process');
+  const cliPath = path.join(here, '..', 'dist', 'bin', 'anyfs-nbd-proxy.js');
+  const child = spawn(
+    'node',
+    [cliPath, '--source', 'file', '--target', meta.qcow2, '--port', '0'],
+    { stdio: ['pipe', 'pipe', 'inherit'] },
+  );
+  const port = await new Promise((resolve, reject) => {
+    let out = '';
+    child.stdout.on('data', (d) => {
+      out += d;
+      const m = /^(\d+)\s*$/m.exec(out);
+      if (m) resolve(Number(m[1]));
+    });
+    child.on('exit', (c) => reject(new Error(`CLI exited early: ${c}`)));
+    setTimeout(() => reject(new Error('CLI did not report a port')), 5000);
+  });
+  try {
+    const { stdout } = await execFileP('qemu-img', ['info', `nbd://127.0.0.1:${port}`], {
+      encoding: 'utf8',
+    });
+    if (!/file format:\s*qcow2/.test(stdout)) {
+      console.error('FAIL: CLI — qcow2 not detected');
+      fail = true;
+    } else {
+      console.log('CLI smoke: qcow2 detected through spawned proxy');
+    }
+  } finally {
+    child.stdin.end(); /* triggers lifecycle-bound shutdown */
+    child.kill('SIGTERM');
+  }
+}
+
 if (fail) process.exit(1);
-console.log(`\nINTEGRATION PASS: qcow2 detected + marker "${meta.verifyAscii}" verified through proxy (FileSource + HttpSource)`);
+console.log(`\nINTEGRATION PASS: qcow2 detected + marker "${meta.verifyAscii}" verified through proxy (FileSource + HttpSource + CLI)`);
