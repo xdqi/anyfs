@@ -61,5 +61,64 @@ try {
   await source.close();
 }
 
+/* HttpSource: local Range server backed by the fixture, served through the
+ * proxy; verify qcow2 detection + that range reads REUSE connections. */
+{
+  const http = await import('node:http');
+  const { createDataSource, serveOnLoopback } = await import(dist);
+  const raw = fs.readFileSync(meta.qcow2);
+  let connections = 0;
+  const upstream = http.createServer((req, res) => {
+    if (req.method === 'HEAD') {
+      res.writeHead(200, {
+        'content-length': String(raw.length),
+        'accept-ranges': 'bytes',
+      });
+      return res.end();
+    }
+    const m = /bytes=(\d+)-(\d+)/.exec(req.headers.range || '');
+    if (!m) {
+      res.writeHead(200, { 'content-length': String(raw.length) });
+      return res.end(raw);
+    }
+    const start = +m[1];
+    const end = +m[2];
+    res.writeHead(206, {
+      'content-range': `bytes ${start}-${end}/${raw.length}`,
+      'content-length': String(end - start + 1),
+      'accept-ranges': 'bytes',
+    });
+    res.end(raw.subarray(start, end + 1));
+  });
+  upstream.on('connection', () => connections++);
+  await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+  const upPort = upstream.address().port;
+
+  const src = await createDataSource({
+    kind: 'url',
+    target: `http://127.0.0.1:${upPort}/disk.qcow2`,
+  });
+  const { port, stop } = await serveOnLoopback(src);
+  try {
+    const { stdout } = await execFileP('qemu-img', ['info', `nbd://127.0.0.1:${port}`], {
+      encoding: 'utf8',
+    });
+    if (!/file format:\s*qcow2/.test(stdout)) {
+      console.error('FAIL: HttpSource — qcow2 not detected through proxy');
+      fail = true;
+    }
+    console.log(`HttpSource: upstream TCP connections opened = ${connections}`);
+    if (connections > 4) {
+      console.error(`FAIL: HttpSource opened ${connections} connections (no keep-alive reuse)`);
+      fail = true;
+    }
+  } finally {
+    await stop();
+    await src.close();
+    await new Promise((r) => upstream.close(r));
+  }
+  console.log('HttpSource case done');
+}
+
 if (fail) process.exit(1);
-console.log(`\nINTEGRATION PASS: qcow2 detected + marker "${meta.verifyAscii}" verified through proxy (FileSource)`);
+console.log(`\nINTEGRATION PASS: qcow2 detected + marker "${meta.verifyAscii}" verified through proxy (FileSource + HttpSource)`);
