@@ -29,5 +29,12 @@ export async function createDataSource(spec: DataSourceSpec): Promise<DataSource
       const { HttpSource } = await import('./sources/http.js');
       return HttpSource.open(spec.target);
     }
+    default: {
+      /* Reachable only when an invalid `kind` is forced past the type system
+       * (e.g. the CLI's `as DataSourceSpec` cast on unvalidated input). Fail
+       * with a clear message instead of returning undefined. */
+      const bad = spec as { kind?: unknown };
+      throw new Error(`createDataSource: unknown source kind: ${String(bad.kind)}`);
+    }
   }
 }

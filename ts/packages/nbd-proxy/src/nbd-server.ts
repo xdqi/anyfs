@@ -193,10 +193,21 @@ export async function serveNbd(
             return;
           }
           const data = await source.read(Number(offset), length);
+          /* A short read would desync the client (reply header claims success
+           * but carries fewer bytes than requested). The upstream bounds check
+           * + a fixed export size make this unreachable in normal operation;
+           * treat it as an IO error rather than emit a malformed frame. */
+          if (data.length !== length) throw new Error('short read');
           opts.onRead?.(Number(offset), length);
           await write(simpleReply(0, handle, data));
         } catch {
-          await write(simpleReply(EIO, handle, null));
+          /* The reply write itself can fail on a dead socket — swallow it so
+           * the job never becomes an unhandled rejection. */
+          try {
+            await write(simpleReply(EIO, handle, null));
+          } catch {
+            /* socket gone; nothing more to do for this request */
+          }
         } finally {
           inFlight--;
           if (slotWaiter) {
@@ -209,9 +220,17 @@ export async function serveNbd(
       pending.add(job);
       job.finally(() => pending.delete(job));
     } else if (type === NBD_CMD_FLUSH) {
-      await write(simpleReply(0, handle, null));
+      try {
+        await write(simpleReply(0, handle, null));
+      } catch {
+        break; /* socket died; stop reading and drain in-flight reads */
+      }
     } else {
-      await write(simpleReply(EINVAL, handle, null));
+      try {
+        await write(simpleReply(EINVAL, handle, null));
+      } catch {
+        break;
+      }
     }
   }
 
