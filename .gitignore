@@ -29,3 +29,4 @@ build.user.toml
 
 # Fetched prebuilt toolchain pieces (scripts/fetch_wasm_sysroot.sh etc.)
 .toolchain/
+__pycache__/
