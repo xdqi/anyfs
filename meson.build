@@ -368,6 +368,15 @@ test_nfsd_pseudo_root = executable('test_nfsd_pseudo_root',
     c_args: gio_args + qemu_args,
 )
 
+# --- Unit tests (pure userspace, no LKL boot; run via `meson test --suite unit`) ---
+test_path_dsl = executable('test_path_dsl',
+    'tests/unit/test_path_dsl.c',
+    'src/core/anyfs_path.c',
+    include_directories: [anyfs_inc],
+    install: false,
+)
+test('path_dsl', test_path_dsl, suite: 'unit')
+
 bench_backends = executable('bench_backends',
     'tests/bench_backends.c',
     include_directories: [anyfs_inc, include_directories('src/core')],
