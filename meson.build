@@ -377,6 +377,15 @@ test_path_dsl = executable('test_path_dsl',
 )
 test('path_dsl', test_path_dsl, suite: 'unit')
 
+test_share_helpers = executable('test_share_helpers',
+    'tests/unit/test_share_helpers.c',
+    include_directories: [anyfs_inc],
+    dependencies: [anyfs_dep],
+    c_args: gio_args + qemu_args,
+    install: false,
+)
+test('share_helpers', test_share_helpers, suite: 'unit')
+
 bench_backends = executable('bench_backends',
     'tests/bench_backends.c',
     include_directories: [anyfs_inc, include_directories('src/core')],
