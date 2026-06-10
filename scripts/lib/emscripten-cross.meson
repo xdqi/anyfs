@@ -1,0 +1,31 @@
+# scripts/lib/emscripten-cross.meson — meson cross file TEMPLATE for the
+# wasm sysroot builds (glib & friends). @SYSROOT@ is substituted by
+# scripts/build_wasm_sysroot.sh, which writes the resolved file into its
+# work dir before invoking meson.
+#
+# This replicates the cross file the known-good hand-built sysroot was
+# produced with (kept as <sysroot>/cross-wasm32.meson there): emcc/em++
+# with -O3 -pthread, warnings demoted for glib's K&R-isms, and the sysroot
+# include/lib dirs wired into the compiler/linker args so subprojects see
+# the freshly installed zlib/libffi. -sASYNCIFY only affects the .js tool
+# executables meson links as build by-products, not the static libs.
+
+[host_machine]
+system = 'emscripten'
+cpu_family = 'wasm32'
+cpu = 'wasm32'
+endian = 'little'
+
+[binaries]
+c = 'emcc'
+cpp = 'em++'
+ar = 'emar'
+ranlib = 'emranlib'
+pkgconfig = ['pkg-config', '--static']
+
+[built-in options]
+c_args = ['-O3', '-pthread', '-Wno-incompatible-function-pointer-types', '-Wno-incompatible-pointer-types', '-Wno-implicit-function-declaration', '-I@SYSROOT@/include']
+cpp_args = ['-O3', '-pthread', '-Wno-incompatible-function-pointer-types', '-Wno-incompatible-pointer-types', '-I@SYSROOT@/include']
+objc_args = ['-O3', '-pthread', '-Wno-incompatible-function-pointer-types', '-Wno-incompatible-pointer-types', '-I@SYSROOT@/include']
+c_link_args = ['-O3', '-pthread', '-sASYNCIFY=1', '-L@SYSROOT@/lib']
+cpp_link_args = ['-O3', '-pthread', '-sASYNCIFY=1', '-L@SYSROOT@/lib']
