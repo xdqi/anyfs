@@ -4,7 +4,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import http from 'node:http';
-import { CDPClient } from './diagnostics/common-cdp.mjs';
+import { CDPClient } from './common-cdp.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -19,7 +19,7 @@ function httpGet(url) {
   });
 }
 
-const viteDir = resolve(__dirname, '../ts/examples/vite-demo');
+const viteDir = resolve(__dirname, '../../ts/examples/vite-demo');
 const viteProc = spawn('npx', ['vite', '--port', '5209'], {
   cwd: viteDir,
   stdio: ['ignore', 'pipe', 'pipe'],
@@ -37,7 +37,7 @@ const xvfb = spawn('Xvfb', [':95', '-screen', '0', '1280x720x24'], { stdio: 'ign
 await sleep(500);
 
 const cdpPort = 9409;
-const electronDir = resolve(__dirname, '../ts/examples/electron-demo');
+const electronDir = resolve(__dirname, '../../ts/examples/electron-demo');
 const electronBin = resolve(electronDir, 'node_modules/.bin/electron');
 const electronProc = spawn(electronBin, [
   electronDir, `--remote-debugging-port=${cdpPort}`

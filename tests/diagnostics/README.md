@@ -16,7 +16,8 @@ dependencies beyond Node + a Chromium/Electron binary):
 - `run-all.mjs` — driver for all 6 combos
 - `common-cdp.mjs` — minimal dependency-free CDP client (WebSocket framing,
   `Runtime.evaluate`, console capture). Also imported by the boot/prewarm
-  debug scripts that still live in `tests/` (`../common.mjs` re-exports it).
+  debug scripts below (`common.mjs` re-exports it alongside the
+  Electron/vite/HTTP-server launchers).
 
 ### How to run
 
@@ -66,4 +67,24 @@ never observed F9 because it kills the Electron process instead of closing it
 
 ## Debug scripts
 
-(Reserved — later tasks move ad-hoc debug/repro scripts here.)
+Ad-hoc boot/prewarm repro scripts (moved here from `tests/` 2026-06-10). Each
+spawns its own vite dev server and/or Electron under Xvfb and `pkill`s stale
+ones first. One line per script — the regression it guards:
+
+- `test-atomics.mjs` — Atomics.wait-on-main-thread regressions: drives
+  `debug-atomics.html` in Electron and watches its log (wasm LKL must never
+  block the main thread; see the dedicated-Worker rule).
+- `test-async-boot.mjs` — the workeronly async boot path: Electron →
+  `anyfs.worker.js` → `anyfs.workeronly.mjs` must complete async kernel boot.
+- `test-prewarm-direct.mjs` — landing prewarm, direct harness: Electron on
+  `debug-worker.html`, watches the prewarm worker boot to completion.
+- `test-prewarm-e2e.mjs` — landing prewarm, end-to-end: vite-demo main page
+  must pre-boot the wasm LKL kernel during the landing screen.
+- `test-direct-module.mjs` — main-page module load failure mode: loads
+  `anyfs.mjs` directly on the main page (not in a Worker) and calls
+  `anyfs_ts_init`. **Expected to fail by design** — the wasm bundle must live
+  in a dedicated Web Worker (WORKERFS asserts, Atomics.wait forbidden on the
+  main thread); this script documents that failure signature.
+- `test-worker-debug.mjs` — worker boot logging: minimal Electron run against
+  `debug-worker.html` capturing verbose worker console output while waiting
+  for the prewarm result.

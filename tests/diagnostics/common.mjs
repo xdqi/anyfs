@@ -10,10 +10,10 @@ import { fileURLToPath } from 'node:url';
 import { existsSync, statSync, openSync, readSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { networkInterfaces } from 'node:os';
-import { CDPClient, sleep } from './diagnostics/common-cdp.mjs';
+import { CDPClient, sleep } from './common-cdp.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = resolve(__dirname, '..');
+const ROOT = resolve(__dirname, '../..');
 const TS = resolve(ROOT, 'ts');
 const ELECTRON_DIR = resolve(TS, 'examples', 'electron-demo');
 

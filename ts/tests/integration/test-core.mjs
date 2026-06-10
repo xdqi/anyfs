@@ -9,11 +9,11 @@
  * module loader (native addon vs WASM) and disk-open target (local path vs
  * http:// URL via QEMU curl) differ.
  *
- * Usage:
- *   node tests/test-core.mjs                    # all 4 combos
- *   node tests/test-core.mjs --only native      # native addon only
- *   node tests/test-core.mjs --only wasm        # WASM only
- *   node tests/test-core.mjs --image path.img   # custom disk image
+ * Usage (from ts/):
+ *   pnpm run test:integration                                # all 4 combos
+ *   node tests/integration/test-core.mjs --only native       # native addon only
+ *   node tests/integration/test-core.mjs --only wasm         # WASM only
+ *   node tests/integration/test-core.mjs --image path.img    # custom disk image
  */
 
 import { resolve, dirname } from 'node:path';
@@ -23,7 +23,7 @@ import { Worker } from 'node:worker_threads';
 import { createRequire } from 'node:module';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = resolve(__dirname, '..');
+const ROOT = resolve(__dirname, '../../..');  // repo root (this file lives in ts/tests/integration/)
 const NATIVE_NODE = resolve(ROOT, 'ts/packages/anyfs-native/build/Release/anyfs_native.node');
 const WASM_DIR = resolve(ROOT, 'ts/packages/core/wasm');
 const require_ = createRequire(import.meta.url);

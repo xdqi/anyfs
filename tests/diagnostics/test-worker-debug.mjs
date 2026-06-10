@@ -4,7 +4,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, execSync } from 'node:child_process';
 import { startVite, startElectron, connectCDP, GREEN, RED, BOLD, RST } from './common.mjs';
-import { sleep } from './diagnostics/common-cdp.mjs';
+import { sleep } from './common-cdp.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

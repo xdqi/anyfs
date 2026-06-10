@@ -27,7 +27,7 @@ import {
   findChrome, startChromium, startVite, startElectron,
   startHttpServer, connectCDP, waitForKernel,
   typeUrl, clickOpenImage, clickFirstPartition, waitForFileTree, findImage, checkJsErrors,
-} from '../common.mjs';
+} from './common.mjs';
 import { sleep } from './common-cdp.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
