@@ -17,6 +17,7 @@ scripts/build_anyfs.sh
 scripts/build_anyfs_wasm.sh
 scripts/build_wasm_sysroot.sh
 scripts/fetch_wasm_sysroot.sh
+scripts/fetch_wasm_ld.sh
 scripts/lib/wasm_exports.sh
 scripts/lint-no-hardcoded-paths.sh
 scripts/lint-shellcheck.sh

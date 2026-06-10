@@ -113,7 +113,7 @@ export CLANG_TARGET_FLAGS_lkl="wasm32-unknown-emscripten"
 JOEL_WASM_LD="${JOEL_WASM_LD:-$ANYFS_TOOLCHAINS_WASM_LD}"
 if [[ ! -x "$JOEL_WASM_LD" ]]; then
     echo "Error: patched wasm-ld not found at $JOEL_WASM_LD" >&2
-    echo "Fix: set toolchains.wasm_ld in build.user.toml, run scripts/fetch_wasm_ld.sh (coming soon)," >&2
+    echo "Fix: set toolchains.wasm_ld in build.user.toml, run scripts/fetch_wasm_ld.sh," >&2
     echo "     or build it from deps/llvm-wasm (./linux-wasm.sh build-llvm)" >&2
     exit 1
 fi

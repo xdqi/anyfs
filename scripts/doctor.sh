@@ -37,7 +37,7 @@ if [ -x "$wl" ]; then
     ver=$("$wl" --version 2>/dev/null | grep -oE 'LLD [0-9]+' | head -1)
     [ "$ver" = "LLD 18" ] && ok "$ver ($wl)" || bad "wasm-ld is '$ver', expected LLD 18 ($wl)"
 else
-    bad "patched wasm-ld not built — run: (cd deps/llvm-wasm && ./linux-wasm.sh build-llvm)"
+    bad "patched wasm-ld missing — run scripts/fetch_wasm_ld.sh (or build from source: cd deps/llvm-wasm && ./linux-wasm.sh build-llvm)"
 fi
 
 echo "== wasm sysroot (static libs for the wasm bundle; see scripts/lib/wasm_sysroot.manifest) =="
