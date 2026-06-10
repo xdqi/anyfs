@@ -395,12 +395,11 @@ EOF
 #define LKL_HOST_CONFIG_VIRTIO_NET_FD y
 EOF
     elif [[ "$NAME" == mingw* ]]; then
-        local ELFCLASS MSYS_ARCH LDFLAGS_EXTRA
+        local ELFCLASS LDFLAGS_EXTRA
         local BINUTILS_DIR; BINUTILS_DIR="$(binutils_dir_for "$NAME")"
         local NT64_CONF="" NT64_AUTOCONF=""
         if [[ "$NAME" == "mingw64" ]]; then
             ELFCLASS="ELFCLASS64"
-            MSYS_ARCH="mingw64"
             LDFLAGS_EXTRA="LDFLAGS += -Wl,--image-base,0x10000"
             # NT64 pulls in virtio_net_wintap.c so lkl_netdev_wintap_create
             # (referenced by tests/net-test.c) actually has a definition.
@@ -408,7 +407,6 @@ EOF
             NT64_AUTOCONF="#define LKL_HOST_CONFIG_NT64 y"
         else
             ELFCLASS="ELFCLASS32"
-            MSYS_ARCH="mingw32"
             LDFLAGS_EXTRA=""
         fi
         cat > "$CONF" <<EOF

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # scripts/lib/config.sh — source this to load build.config.toml (+ build.user.toml override)
 # into ANYFS_* shell vars. Usage: source "$(dirname "$0")/lib/config.sh"
 # Requires python3 (tomllib, 3.11+) — the build host already has it.

@@ -114,6 +114,11 @@ jobs:
       - name: Lint — no hardcoded paths in migrated build scripts
         run: ./scripts/lint-no-hardcoded-paths.sh
 
+      - name: Lint — shellcheck
+        run: |
+          sudo apt-get install -y --no-install-recommends shellcheck
+          ./scripts/lint-shellcheck.sh
+
       # ── Build ksmbd-tools (linux-amd64) ────────────────────────────────────
       - name: Build ksmbd-tools
         if: steps.cache-ksmbd-build.outputs.cache-hit != 'true'
