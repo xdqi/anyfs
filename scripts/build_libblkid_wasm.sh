@@ -2,16 +2,17 @@
 # Build libblkid.a for emscripten and install into the wasm sysroot.
 #
 # Inputs:
-#   - util-linux source tree (default: $HOME/util-linux; override via
-#     UL_SRC=...). Must contain a generated `configure` (run autogen.sh once
-#     if not).
-#   - emsdk on PATH (`source $HOME/emsdk/emsdk_env.sh` before running, or
-#     set EMSDK_ENV=/path/to/emsdk_env.sh).
+#   - util-linux source tree (default: util_linux from build.config.toml;
+#     falls back to deps/util-linux; override via UL_SRC=...). Must contain
+#     a generated `configure` (run autogen.sh once if not).
+#   - emsdk: toolchains.emsdk from build.config.toml (or set
+#     EMSDK_ENV=/path/to/emsdk_env.sh, or have emconfigure on PATH already).
 #
 # Output:
 #   $SYSROOT/lib/libblkid.a
 #   $SYSROOT/include/blkid/blkid.h
-#   (default sysroot: $HOME/wasm-sysroot)
+#   (default sysroot: wasm_sysroot from build.config.toml; falls back to
+#   <repo>/wasm-sysroot)
 #
 # Why a separate script: build_anyfs_wasm.sh expects libblkid.a +
 # blkid.h to already exist in the sysroot; this script provides the recipe
@@ -27,17 +28,20 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=lib/config.sh
+source "$SCRIPT_DIR/lib/config.sh"
 
-UL_SRC="${UL_SRC:-$HOME/util-linux}"
-SYSROOT="${SYSROOT:-$HOME/wasm-sysroot}"
+UL_SRC="${UL_SRC:-$ANYFS_PATHS_UTIL_LINUX}"
+SYSROOT="${SYSROOT:-$ANYFS_PATHS_WASM_SYSROOT}"
 BLD_DIR="${BLD_DIR:-$REPO_ROOT/build-blkid-wasm}"
 
+EMSDK_ENV="${EMSDK_ENV:-${ANYFS_TOOLCHAINS_EMSDK:+$ANYFS_TOOLCHAINS_EMSDK/emsdk_env.sh}}"
 if [[ -n "${EMSDK_ENV:-}" && -f "$EMSDK_ENV" ]]; then
     # shellcheck source=/dev/null
     source "$EMSDK_ENV"
 fi
 if ! command -v emconfigure >/dev/null 2>&1; then
-    echo "emconfigure not on PATH — \`source \$HOME/emsdk/emsdk_env.sh\` or set EMSDK_ENV first" >&2
+    echo "emconfigure not on PATH — set toolchains.emsdk in build.config.toml (or build.user.toml), or set EMSDK_ENV=/path/to/emsdk_env.sh" >&2
     exit 1
 fi
 

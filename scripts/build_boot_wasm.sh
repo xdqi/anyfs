@@ -24,9 +24,13 @@
 #       -sNODERAWFS=0           don't expose host fs (we don't need it)
 set -e
 
-LINUX_DIR="${LINUX_DIR:-$HOME/linux}"
-OUT="${OUT:-$HOME/anyfs-reader/lkl-wasm}"
-EMSDK_DIR="${EMSDK_DIR:-$HOME/emsdk}"
+# shellcheck source=lib/config.sh
+source "$(dirname "$0")/lib/config.sh"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+LINUX_DIR="${LINUX_DIR:-$ANYFS_PATHS_LINUX_SRC}"
+OUT="${OUT:-$REPO_ROOT/lkl-wasm}"
+EMSDK_DIR="${EMSDK_DIR:-$ANYFS_TOOLCHAINS_EMSDK}"
 
 LIBLKL="$OUT/tools/lkl/liblkl.a"
 if [[ ! -f "$LIBLKL" ]]; then
