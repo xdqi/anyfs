@@ -15,9 +15,10 @@
 #   --src=DIR           anyfs-reader source root (default: <script-parent>)
 #   --out-prefix=PFX    Build-dir prefix (default: build-anyfs)
 #                       Produces <src>/<PFX>-<target>/.
-#   --qemu-root=DIR     QEMU source tree (default: ~/qemu)
-#   --ksmbd-root=DIR    ksmbd-tools source tree (default: ~/ksmbd-tools)
-#   --lkl-src=DIR       Linux kernel source tree (default: ~/linux). Meson
+#   --qemu-root=DIR     QEMU source tree (default: from build.config.toml)
+#   --ksmbd-root=DIR    ksmbd-tools source tree (default: from build.config.toml)
+#   --lkl-src=DIR       Linux kernel source tree (default: from
+#                       build.config.toml). Meson
 #                       needs this for tools/lkl/include/{lkl.h,lkl_host.h};
 #                       the option default in meson_options.txt is the literal
 #                       string '${LINUX_SRC}' which cannot be auto-resolved,
@@ -38,12 +39,24 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# shellcheck source=lib/config.sh
+source "$SCRIPT_DIR/lib/config.sh"
+
+# Meson refuses absolute paths that point inside the source tree (see NOTE
+# below), so config defaults are re-relativized against SRC_DIR when inside it.
+rel_to_src() {
+    case "$1" in
+        "$SRC_DIR"/*) printf '%s\n' "${1#"$SRC_DIR"/}" ;;
+        *)            printf '%s\n' "$1" ;;
+    esac
+}
+
 TARGETS_REQ="linux-amd64,mingw32,mingw64"
 COMPONENTS_REQ="core,server,fuse"
 OUT_PFX="build-anyfs"
-QEMU_ROOT="$HOME/qemu"
-KSMBD_ROOT="$HOME/ksmbd-tools"
-LKL_SRC="$HOME/linux"
+QEMU_ROOT="$(rel_to_src "$ANYFS_PATHS_QEMU_SRC")"
+KSMBD_ROOT="$(rel_to_src "$ANYFS_PATHS_KSMBD_TOOLS")"
+LKL_SRC="$(rel_to_src "$ANYFS_PATHS_LINUX_SRC")"
 RECONFIGURE=0
 JOBS="$(nproc)"
 
@@ -372,8 +385,8 @@ for t in data:
 # Returns empty string for linux-amd64.
 mingw_sysroot_for() {
     case "$1" in
-        mingw32) echo "/opt/msys2-cross/mingw32" ;;
-        mingw64) echo "/opt/msys2-cross/mingw64" ;;
+        mingw32) echo "$ANYFS_TOOLCHAINS_MSYS2_CROSS/mingw32" ;;
+        mingw64) echo "$ANYFS_TOOLCHAINS_MSYS2_CROSS/mingw64" ;;
         *) echo "" ;;
     esac
 }
