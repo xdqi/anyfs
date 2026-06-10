@@ -4,9 +4,9 @@
 # Usage: ./build_lkl_wasm.sh [OPTIONS]
 #
 # Options:
-#   --linux=DIR   Kernel source tree (default: ~/linux)
-#   --out=DIR     Parent dir containing lkl-wasm/ (default: ~/anyfs-reader)
-#   --emsdk=DIR   emsdk install root (default: ~/emsdk)
+#   --linux=DIR   Kernel source tree (default: linux_src from build.config.toml; falls back to deps/linux)
+#   --out=DIR     Parent dir containing lkl-wasm/ (default: repo root)
+#   --emsdk=DIR   emsdk install root (default: toolchains.emsdk from build.config.toml)
 #   --clean       Run `make clean` before building
 #   -j N          Parallelism (default: nproc)
 #
@@ -21,9 +21,13 @@
 #   - No CROSS_COMPILE (it would prefix the tool names, defeating emcc/emar)
 set -e
 
-LINUX_DIR="$HOME/linux"
-OUT_PARENT="$HOME/anyfs-reader"
-EMSDK_DIR="$HOME/emsdk"
+# shellcheck source=lib/config.sh
+source "$(dirname "$0")/lib/config.sh"
+
+# CLI --linux=/--out=/--emsdk= win; config.sh provides the defaults.
+LINUX_DIR="${LINUX_DIR:-$ANYFS_PATHS_LINUX_SRC}"
+OUT_PARENT="${OUT_PARENT:-$(cd "$(dirname "$0")/.." && pwd)}"
+EMSDK_DIR="${EMSDK_DIR:-$ANYFS_TOOLCHAINS_EMSDK}"
 DO_CLEAN=0
 JOBS="$(nproc)"
 
@@ -89,10 +93,11 @@ export CLANG_TARGET_FLAGS_lkl="wasm32-unknown-emscripten"
 #      bracket symbols (__setup_start, init_thread_union, ...) actually get
 #      materialised into vmlinux.unstripped. Route the script link to Joel's
 #      wasm-ld; everything else still goes through emsdk's stock wasm-ld.
-JOEL_WASM_LD="$HOME/linux-wasm/workspace/install/llvm/bin/wasm-ld"
+JOEL_WASM_LD="${JOEL_WASM_LD:-$ANYFS_TOOLCHAINS_WASM_LD}"
 if [[ ! -x "$JOEL_WASM_LD" ]]; then
-    echo "Error: Joel's wasm-ld not found at $JOEL_WASM_LD" >&2
-    echo "Build it with: cd ~/linux-wasm && ./linux-wasm.sh build-llvm" >&2
+    echo "Error: patched wasm-ld not found at $JOEL_WASM_LD" >&2
+    echo "Fix: set toolchains.wasm_ld in build.user.toml, run scripts/fetch_wasm_ld.sh (coming soon)," >&2
+    echo "     or build it from deps/llvm-wasm (./linux-wasm.sh build-llvm)" >&2
     exit 1
 fi
 LD_WRAPPER="$OUT/wasm-ld-wrapper"

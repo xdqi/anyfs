@@ -3,7 +3,7 @@
 set -uo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 # Scripts that have been migrated to config (extend this allowlist as P1 progresses).
-migrated='scripts/gen_lkl_config.sh scripts/build_lkl.sh'
+migrated='scripts/gen_lkl_config.sh scripts/build_lkl.sh scripts/gen_lkl_config_wasm.sh scripts/build_lkl_wasm.sh'
 rc=0
 for f in $migrated; do
     if grep -nE '\$HOME|/opt/msys2|/home/[a-z]+/' "$root/$f"; then
