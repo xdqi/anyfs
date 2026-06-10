@@ -121,7 +121,7 @@ jobs:
             msys-cross-mingw64-gcc \
             msys-cross-cygwin-binutils \
             msys-cross-cygwin-gcc \
-            msys-cross-pkgconfig
+            msys-cross-mingw64-pkgconf
 
           # MSYS2 upstream sysroot libs under /opt/msys2-cross/mingw64.
           # QEMU block layer + DLL closure deps that package_mingw64.sh
