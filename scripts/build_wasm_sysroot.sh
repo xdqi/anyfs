@@ -238,8 +238,34 @@ build_glib() {
     # generated config.h after setup (verified: its preserved config.h lacks
     # exactly these two lines vs a fresh setup); replicate that. config.h is
     # written at setup time only, so the edit survives the compile.
+    #
+    # Guard: assert the lines are present before the deletion so a future
+    # glib bump that renames/removes these defines is caught loudly rather
+    # than silently producing a broken sysroot (the wasm-ld undefined-symbol
+    # failure would be cryptic and far removed from this edit).
+    grep -q 'HAVE_POSIX_SPAWN' _build/config.h || {
+        echo "ERROR: HAVE_POSIX_SPAWN not found in _build/config.h" >&2
+        echo "  A glib version bump may have renamed or dropped this define." >&2
+        echo "  Review config.h and update the sed deletion below accordingly." >&2
+        exit 1
+    }
+    grep -q 'HAVE_PTHREAD_GETNAME_NP' _build/config.h || {
+        echo "ERROR: HAVE_PTHREAD_GETNAME_NP not found in _build/config.h" >&2
+        echo "  A glib version bump may have renamed or dropped this define." >&2
+        echo "  Review config.h and update the sed deletion below accordingly." >&2
+        exit 1
+    }
     sed -i '/#define HAVE_POSIX_SPAWN 1/d;/#define HAVE_PTHREAD_GETNAME_NP 1/d' \
         _build/config.h
+    # Post-deletion guard: assert neither define survived (catches a sed
+    # pattern that no longer matches, e.g. if glib changes the comment style
+    # or the define value).
+    if grep -qE 'HAVE_POSIX_SPAWN|HAVE_PTHREAD_GETNAME_NP' _build/config.h; then
+        echo "ERROR: HAVE_POSIX_SPAWN or HAVE_PTHREAD_GETNAME_NP still present in _build/config.h after deletion" >&2
+        echo "  The sed pattern may no longer match the current glib config.h format." >&2
+        echo "  Review config.h and update the sed deletion above accordingly." >&2
+        exit 1
+    fi
     PKG_CONFIG_LIBDIR="$SYSROOT/lib/pkgconfig" meson compile -C _build
     meson install -C _build --no-rebuild
 }
