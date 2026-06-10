@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Gate for the generated wasm export list:
 #   1. the generator emits every known-core symbol,
-#   2. every ccall'd anyfs_ts_* name in the TS worker layer is exported
+#   2. every anyfs_ts_* string reference in the TS worker layer is exported
 #      (catches TS<->C drift that previously bit build_anyfs_browser_wasm.sh).
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -19,12 +19,12 @@ done
 n="$(tr ',' '\n' <<<"$list" | grep -c '^_anyfs_ts_')"
 [[ "$n" -ge 30 ]] || { echo "FAIL: only $n anyfs_ts_* exports (expected >= 30)"; exit 1; }
 
-# TS drift gate: every ccall('anyfs_ts_...') in the worker layer must be exported.
+# TS drift gate: every anyfs_ts_* string reference in the worker layer must be exported.
 missing=0
 while IFS= read -r sym; do
-    [[ ",$list," == *",_$sym,"* ]] || { echo "FAIL: worker ccalls $sym but it is not exported"; missing=1; }
-done < <(grep -rhoE "ccall\(\s*'(anyfs_ts_[a-z0-9_]+)'" \
-            "$root/ts/packages/core/src" | grep -oE 'anyfs_ts_[a-z0-9_]+' | sort -u)
+    [[ ",$list," == *",_$sym,"* ]] || { echo "FAIL: TS references $sym but it is not exported"; missing=1; }
+done < <(grep -rhoE "'anyfs_ts_[a-z0-9_]+'" \
+            "$root/ts/packages/core/src" | tr -d "'" | sort -u)
 [[ "$missing" -eq 0 ]]
 
-echo "OK: $n anyfs_ts_* exports, worker ccalls all covered"
+echo "OK: $n anyfs_ts_* exports, TS string references all covered"
