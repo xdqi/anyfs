@@ -5,7 +5,8 @@
 # Usage: ./build_qemu.sh [OPTIONS]
 #
 # Options:
-#   --qemu-src=DIR      QEMU source tree (default: ~/qemu)
+#   --qemu-src=DIR      QEMU source tree (default: qemu_src from
+#                       build.config.toml; falls back to deps/qemu)
 #   --out-prefix=PFX    Build-dir prefix inside qemu-src (default: build-anyfs)
 #                       Produces <qemu-src>/<PFX>-<target>/.
 #   --targets=LIST      Comma-separated subset of:
@@ -21,16 +22,19 @@
 # (mingw32/mingw64, supplied by msys-cross-pkgconfig) provide glib/zstd/zlib.
 #
 # Prereqs:
-#   - QEMU source tree at $QEMU_SRC (default ~/qemu). util/fdmon-poll.c must
-#     have 'static' removed from its __thread declarations so a shared object
-#     can resolve them — handled by the project's local patch.
+#   - QEMU source tree at $QEMU_SRC (qemu_src in build.config.toml).
+#     util/fdmon-poll.c must have 'static' removed from its __thread
+#     declarations so a shared object can resolve them — handled by the
+#     project's local patch.
 #   - For mingw: msys2-cross with mingw-w64-{i686,x86_64}-{glib2,zlib,zstd}
-#     installed under /opt/msys2-cross/{mingw32,mingw64}.
+#     installed under <toolchains.msys2_cross>/{mingw32,mingw64}.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/config.sh
+source "$SCRIPT_DIR/lib/config.sh"
 
-QEMU_SRC="$HOME/qemu"
+QEMU_SRC="${QEMU_SRC:-$ANYFS_PATHS_QEMU_SRC}"
 OUT_PFX="build-anyfs"
 TARGETS_REQ="linux-amd64,mingw32,mingw64"
 RECONFIGURE=0
@@ -117,16 +121,16 @@ configure_for() {
                 '--cpu=i386' \
                 '--disable-pixman' \
                 '--disable-png' \
-                "--extra-cflags=-I/opt/msys2-cross/mingw32/include" \
-                "--extra-ldflags=-L/opt/msys2-cross/mingw32/lib"
+                "--extra-cflags=-I$ANYFS_TOOLCHAINS_MSYS2_CROSS/mingw32/include" \
+                "--extra-ldflags=-L$ANYFS_TOOLCHAINS_MSYS2_CROSS/mingw32/lib"
             ;;
         mingw64)
             printf '%s\n' \
                 '--cross-prefix=x86_64-w64-mingw32-' \
                 '--disable-pixman' \
                 '--disable-png' \
-                "--extra-cflags=-I/opt/msys2-cross/mingw64/include" \
-                "--extra-ldflags=-L/opt/msys2-cross/mingw64/lib"
+                "--extra-cflags=-I$ANYFS_TOOLCHAINS_MSYS2_CROSS/mingw64/include" \
+                "--extra-ldflags=-L$ANYFS_TOOLCHAINS_MSYS2_CROSS/mingw64/lib"
             ;;
     esac
 }
