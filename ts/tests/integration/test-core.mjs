@@ -127,49 +127,74 @@ function startHttpWorker(filePath) {
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function mountAndReaddir(listFn, enterFn, mountWholeFn, readdirFn) {
-  const parts = JSON.parse(listFn());
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Session API: part 0 = whole disk (raw filesystem, no partition table);
+// part >= 1 = top-level partition by `index`. Replaces the old
+// diskEnter/mountWhole split.
+async function mountAndReaddir(listFn, enterFn, readdirFn) {
+  const parts = JSON.parse(await listFn());
   const label = parts.length > 0
-    ? parts.map(p => `${p.num}:${p.fstype || '?'}`).join(', ')
+    ? parts.map(p => `${p.index}:${p.fstype || '?'}`).join(', ')
     : '(raw filesystem)';
   console.log(`    partitions: ${label}`);
 
-  let mp;
-  if (parts.length === 0) {
-    mp = mountWholeFn('auto', 1);
-    assert(mp && typeof mp === 'string', `mountWhole → ${mp}`);
-  } else {
-    mp = enterFn(parts[0].num, 1);
-    assert(mp && typeof mp === 'string', `diskEnter → ${mp}`);
-  }
+  const part = parts.length === 0 ? 0 : parts[0].index;
+  const mp = await enterFn(part, 1);
+  assert(mp && typeof mp === 'string', `sessionEnter(part=${part}) → ${mp}`);
 
-  const entries = JSON.parse(readdirFn(mp));
+  const entries = JSON.parse(await readdirFn(mp));
   assert(entries.length > 0, `readdir → ${entries.length} entries`);
   const names = entries.filter(e => e.name !== '.' && e.name !== '..').map(e => e.name);
   console.log(`    files: ${names.join(', ')}`);
   return names;
 }
 
-function callJsonString(M, fnName, pathArg) {
-  let cap = 4096;
-  for (let i = 0; i < 6; i++) {
-    const buf = M._malloc(cap);
-    try {
-      const n = M.ccall(fnName, 'number', ['string', 'number', 'number'], [pathArg, buf, cap]);
-      if (n >= 0) return M.UTF8ToString(buf, n);
-      if (-n <= cap) throw new Error(`${fnName}(${pathArg}) rc=${n}`);
-      cap = Math.max(cap * 2, -n + 256);
-    } finally { M._free(buf); }
+// ── wasm async `_p` calling pattern (mirrors packages/core/test/smoke.node.mjs) ──
+//
+// Every entry point that can touch the QEMU block layer goes through the `_p`
+// out-pointer variant with ccall({async: true}): the block layer runs on
+// emscripten fibers, and a fiber swap discards the export's direct return
+// value, so the C side writes the result through a trailing int32_t* out
+// parameter. Sync ccall is only safe for calls that never reach the block
+// layer (init/poll/halt).
+
+function makeWasmCallers(M) {
+  const outp = M._malloc(4);
+  async function callP(name, argTypes, args) {
+    M.HEAP32[outp >> 2] = -0x7fffffff;
+    await M.ccall(name, null, [...argTypes, 'number'], [...args, outp], { async: true });
+    return M.HEAP32[outp >> 2];
   }
-  throw new Error(`${fnName}: overflow loop`);
+  async function callA(name, retType, argTypes, args) {
+    return await M.ccall(name, retType, argTypes, args, { async: true });
+  }
+  return { callP, callA, dispose: () => M._free(outp) };
 }
 
-function callJsonHandle(M, fnName, h) {
+// Boot: prefer the dedicated-pthread async path when the bundle exports it
+// (keeps this thread's event loop free to service kthread spawns).
+async function wasmBoot(M, callA, memMb, loglevel) {
+  if (M._anyfs_ts_init_async) {
+    const arc = M.ccall('anyfs_ts_init_async', 'number', ['number', 'number'], [memMb, loglevel]);
+    if (arc !== 0) return arc;
+    for (let i = 0; i < 600; i++) {
+      if (M.ccall('anyfs_ts_is_boot_complete', 'number', [], [])) break;
+      await sleep(100);
+    }
+    return M.ccall('anyfs_ts_boot_result', 'number', [], []);
+  }
+  return await callA('anyfs_ts_kernel_init', 'number', ['number', 'number'], [memMb, loglevel]);
+}
+
+// Buffer-grow JSON-out call through a `_p` variant. `argTypes`/`args` are the
+// leading args (handle or path); buf+cap are appended.
+async function wasmCallJson(M, callP, fnName, argTypes, args) {
   let cap = 4096;
   for (let i = 0; i < 6; i++) {
     const buf = M._malloc(cap);
     try {
-      const n = M.ccall(fnName, 'number', ['number', 'number', 'number'], [h, buf, cap]);
+      const n = await callP(fnName, [...argTypes, 'number', 'number'], [...args, buf, cap]);
       if (n >= 0) return M.UTF8ToString(buf, n);
       if (-n <= cap) throw new Error(`${fnName} rc=${n}`);
       cap = Math.max(cap * 2, -n + 256);
@@ -178,22 +203,39 @@ function callJsonHandle(M, fnName, h) {
   throw new Error(`${fnName}: overflow loop`);
 }
 
-function wasmCallMount(M, fnName, h, part, flags) {
-  const buf = M._malloc(128);
+// Prefer the dedicated-pthread enter (ext4's jbd2 kthread can't spawn while
+// the entering thread is blocked); fall back to the `_p` variant.
+async function wasmSessionEnter(M, callP, h, part, flags) {
+  const mountBuf = M._malloc(128);
   try {
-    const rc = M.ccall(fnName, 'number', ['number', 'number', 'number', 'number', 'number'], [h, part, flags, buf, 128]);
-    if (rc !== 0) throw new Error(`${fnName}(h=${h}) rc=${rc}`);
-    return M.UTF8ToString(buf);
-  } finally { M._free(buf); }
-}
-
-function wasmCallMountWhole(M, fnName, h, fstype, flags) {
-  const buf = M._malloc(128);
-  try {
-    const rc = M.ccall(fnName, 'number', ['number', 'string', 'number', 'number', 'number'], [h, fstype ?? '', flags, buf, 128]);
-    if (rc !== 0) throw new Error(`${fnName}(h=${h}) rc=${rc}`);
-    return M.UTF8ToString(buf);
-  } finally { M._free(buf); }
+    let rc;
+    if (M._anyfs_ts_session_enter_async) {
+      rc = M.ccall(
+        'anyfs_ts_session_enter_async',
+        'number',
+        ['number', 'number', 'number'],
+        [h, part, flags],
+      );
+      if (rc === 0) {
+        let done = 0;
+        for (let i = 0; i < 600; i++) {
+          done = M.ccall('anyfs_ts_session_enter_is_complete', 'number', [], []);
+          if (done) break;
+          await sleep(100);
+        }
+        if (!done) throw new Error('session_enter timed out');
+        rc = await callP('anyfs_ts_session_enter_result_p', ['number', 'number'], [mountBuf, 128]);
+      }
+    } else {
+      rc = await callP(
+        'anyfs_ts_session_enter_p',
+        ['number', 'number', 'number', 'number', 'number'],
+        [h, part, flags, mountBuf, 128],
+      );
+    }
+    if (rc !== 0) throw new Error(`session_enter(h=${h}, part=${part}) rc=${rc}`);
+    return M.UTF8ToString(mountBuf);
+  } finally { M._free(mountBuf); }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -202,20 +244,21 @@ function wasmCallMountWhole(M, fnName, h, fstype, flags) {
 
 async function testNative(imagePath) {
   const m = require_(NATIVE_NODE);
-  const rc = m.init(64, 7);
-  assert(rc === 0, `init(64,7) = ${rc}`);
+  // kernelInit/sessionOpen/sessionEnter/sessionClose/kernelHalt are sync;
+  // sessionListJson/readdirJson (AsyncWorker-based) return promises.
+  const rc = m.kernelInit(64, 7);
+  assert(rc === 0, `kernelInit(64,7) = ${rc}`);
 
   // ── file ──────────────────────────────────────────────────────────────
   console.log(`\n  ${BOLD}[native+file]${RST} ${imagePath}`);
-  let h = m.diskOpen(imagePath, 1);
-  assert(h >= 0, `diskOpen(file) = ${h}`);
-  mountAndReaddir(
-    () => m.diskListJson(h),
-    (p, f) => m.diskEnter(h, p, f),
-    (fs, f) => m.mountWhole(h, fs, f),
+  let h = m.sessionOpen(imagePath, 1);
+  assert(h >= 0, `sessionOpen(file) = ${h}`);
+  await mountAndReaddir(
+    () => m.sessionListJson(h),
+    (p, f) => m.sessionEnter(h, p, f),
     (p) => m.readdirJson(p),
   );
-  m.diskClose(h);
+  m.sessionClose(h);
 
   // ── URL ────────────────────────────────────────────────────────────────
   console.log(`\n  ${BOLD}[native+url]${RST} ${imagePath}`);
@@ -226,15 +269,14 @@ async function testNative(imagePath) {
     const url = `http://127.0.0.1:${r.port}/disk`;
     console.log(`    http server: ${url}`);
 
-    h = m.diskOpen(url, 1);
-    assert(h >= 0, `diskOpen(url) = ${h}`);
-    mountAndReaddir(
-      () => m.diskListJson(h),
-      (p, f) => m.diskEnter(h, p, f),
-      (fs, f) => m.mountWhole(h, fs, f),
+    h = m.sessionOpen(url, 1);
+    assert(h >= 0, `sessionOpen(url) = ${h}`);
+    await mountAndReaddir(
+      () => m.sessionListJson(h),
+      (p, f) => m.sessionEnter(h, p, f),
       (p) => m.readdirJson(p),
     );
-    m.diskClose(h);
+    m.sessionClose(h);
   } finally {
     if (worker) worker.postMessage('stop');
   }
@@ -266,22 +308,23 @@ async function testWasmFile(imagePath) {
   });
   pass('WASM module loaded');
 
-  const rc = M.ccall('anyfs_ts_init', 'number', ['number', 'number'], [64, 7]);
-  assert(rc === 0, `anyfs_ts_init = ${rc}`);
+  const { callP, callA, dispose } = makeWasmCallers(M);
+  const rc = await wasmBoot(M, callA, 64, 7);
+  assert(rc === 0, `kernel boot = ${rc}`);
 
   const fsPath = `/work/${imgName}`;
-  const dk = M.ccall('anyfs_ts_disk_open', 'number', ['string', 'number'], [fsPath, 1]);
-  assert(dk >= 0, `diskOpen(${fsPath}) = ${dk}`);
+  const dk = await callP('anyfs_ts_session_open_p', ['string', 'number'], [fsPath, 1]);
+  assert(dk >= 0, `sessionOpen(${fsPath}) = ${dk}`);
 
-  mountAndReaddir(
-    () => callJsonHandle(M, 'anyfs_ts_disk_list_json', dk),
-    (p, f) => wasmCallMount(M, 'anyfs_ts_disk_enter', dk, p, f),
-    (fs, f) => wasmCallMountWhole(M, 'anyfs_ts_mount_whole', dk, fs, f),
-    (p) => callJsonString(M, 'anyfs_ts_readdir_json', p),
+  await mountAndReaddir(
+    () => wasmCallJson(M, callP, 'anyfs_ts_session_list_json_p', ['number'], [dk]),
+    (p, f) => wasmSessionEnter(M, callP, dk, p, f),
+    (p) => wasmCallJson(M, callP, 'anyfs_ts_readdir_json_p', ['string'], [p]),
   );
 
-  M.ccall('anyfs_ts_disk_close', 'number', ['number'], [dk]);
-  M.ccall('anyfs_ts_kernel_halt', 'number', [], []);
+  await callA('anyfs_ts_session_close', 'number', ['number'], [dk]);
+  await callA('anyfs_ts_kernel_halt', 'number', [], []);
+  dispose();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -531,26 +574,27 @@ async function testWasmUrl(imagePath) {
     const M = await factory();
     pass('WASM module loaded');
 
-    const rc = M.ccall('anyfs_ts_init', 'number', ['number', 'number'], [64, 7]);
-    assert(rc === 0, `anyfs_ts_init = ${rc}`);
+    const { callP, callA, dispose } = makeWasmCallers(M);
+    const rc = await wasmBoot(M, callA, 64, 7);
+    assert(rc === 0, `kernel boot = ${rc}`);
 
     // Mount URLFS at /work — the kernel sees /work/disk as a regular file.
     const URLFS = createUrlFsNode(M);
     M.FS.mkdir('/work');
     M.FS.mount(URLFS, { url, name: 'disk' }, '/work');
 
-    const dk = M.ccall('anyfs_ts_disk_open', 'number', ['string', 'number'], ['/work/disk', 1]);
-    assert(dk >= 0, `diskOpen(/work/disk) = ${dk}`);
+    const dk = await callP('anyfs_ts_session_open_p', ['string', 'number'], ['/work/disk', 1]);
+    assert(dk >= 0, `sessionOpen(/work/disk) = ${dk}`);
 
-    mountAndReaddir(
-      () => callJsonHandle(M, 'anyfs_ts_disk_list_json', dk),
-      (p, f) => wasmCallMount(M, 'anyfs_ts_disk_enter', dk, p, f),
-      (fs, f) => wasmCallMountWhole(M, 'anyfs_ts_mount_whole', dk, fs, f),
-      (p) => callJsonString(M, 'anyfs_ts_readdir_json', p),
+    await mountAndReaddir(
+      () => wasmCallJson(M, callP, 'anyfs_ts_session_list_json_p', ['number'], [dk]),
+      (p, f) => wasmSessionEnter(M, callP, dk, p, f),
+      (p) => wasmCallJson(M, callP, 'anyfs_ts_readdir_json_p', ['string'], [p]),
     );
 
-    M.ccall('anyfs_ts_disk_close', 'number', ['number'], [dk]);
-    M.ccall('anyfs_ts_kernel_halt', 'number', [], []);
+    await callA('anyfs_ts_session_close', 'number', ['number'], [dk]);
+    await callA('anyfs_ts_kernel_halt', 'number', [], []);
+    dispose();
   } finally {
     worker.postMessage('stop');
   }
@@ -585,7 +629,10 @@ async function main() {
   }
 
   console.log(`\n${BOLD}[test-core]${RST} ${GREEN}${passed} pass${RST}, ${failed > 0 ? RED : ''}${failed} fail${RST}`);
-  if (failed > 0) process.exit(1);
+  // Explicit exit: lingering LKL/QEMU host threads (and the HTTP worker)
+  // keep the event loop alive after kernelHalt — known teardown behavior,
+  // all assertions have already run by this point.
+  process.exit(failed > 0 ? 1 : 0);
 }
 
 main();
