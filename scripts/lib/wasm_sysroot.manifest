@@ -1,0 +1,56 @@
+# scripts/lib/wasm_sysroot.manifest — contract for the wasm sysroot
+# ($ANYFS_PATHS_WASM_SYSROOT, default <repo>/wasm-sysroot; see build.config.toml
+# [paths].wasm_sysroot). Non-comment lines are the static libs (.a) expected
+# under <sysroot>/lib — the hand-built set the wasm bundle links against.
+#
+# Consumed by:
+#   - scripts/doctor.sh: presence check of every listed lib.
+#   - scripts/build_wasm_sysroot.sh (future rebuild recipe): acceptance diff —
+#     the freshly built lib set must match this manifest exactly.
+#
+# '# <pkgconfig-name> <version>' comment lines record the version pins of the
+# known-good sysroot's pkgconfig files; the recipe script must build these
+# exact versions. Snapshot taken 2026-06-10 from the known-good local sysroot.
+#
+# Version pins (from <sysroot>/lib/pkgconfig/*.pc):
+# blkid 2.40.4
+# gio-2.0 2.88.0
+# gio-unix-2.0 2.88.0
+# girepository-2.0 2.88.0
+# glib-2.0 2.88.0
+# gmodule-2.0 2.88.0
+# gmodule-export-2.0 2.88.0
+# gmodule-no-export-2.0 2.88.0
+# gobject-2.0 2.88.0
+# gthread-2.0 2.88.0
+# libffi 3.5.2
+# libpcre2-16 10.46
+# libpcre2-32 10.46
+# libpcre2-8 10.46
+# libzstd 1.5.7
+# uuid 2.40.4
+# zlib 1.3.1
+#
+# Expected static libs under <sysroot>/lib:
+libblkid.a
+libbz2.a
+libffi.a
+libgio-2.0.a
+# NOTE: nothing in scripts/, meson.build or ts/native/ links libgirepository-2.0
+# today (checked 2026-06-10) — possibly prunable, but it is part of the
+# known-good sysroot; pruning is the build_wasm_sysroot.sh recipe task's call.
+libgirepository-2.0.a
+libglib-2.0.a
+libgmodule-2.0.a
+libgobject-2.0.a
+libgthread-2.0.a
+libpcre2-16.a
+libpcre2-32.a
+libpcre2-8.a
+# NOTE: nothing in scripts/, meson.build or ts/native/ links libpcre2-posix
+# today (checked 2026-06-10) — possibly prunable, same caveat as above.
+libpcre2-posix.a
+libresolv.a
+libuuid.a
+libz.a
+libzstd.a
