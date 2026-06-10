@@ -40,7 +40,8 @@ jobs:
             libfuse3-dev libnl-3-dev libnl-genl-3-dev \
             libcurl4-openssl-dev \
             patchelf ca-certificates \
-            smbclient nfs-common curl
+            smbclient nfs-common curl \
+            shellcheck
 
       # ── Caches ──────────────────────────────────────────────────────────────
       # All source deps (linux, qemu, ksmbd-tools) are now managed by peru and
@@ -115,9 +116,7 @@ jobs:
         run: ./scripts/lint-no-hardcoded-paths.sh
 
       - name: Lint — shellcheck
-        run: |
-          sudo apt-get install -y --no-install-recommends shellcheck
-          ./scripts/lint-shellcheck.sh
+        run: ./scripts/lint-shellcheck.sh
 
       # ── Build ksmbd-tools (linux-amd64) ────────────────────────────────────
       - name: Build ksmbd-tools
@@ -173,6 +172,12 @@ jobs:
             --qemu-root=deps/qemu \
             --ksmbd-root=deps/ksmbd-tools \
             -j"$(nproc)"
+
+      - name: Run C unit tests
+        run: meson test -C build-anyfs-linux-amd64 --suite unit --print-errorlogs
+
+      - name: Wasm export drift gate
+        run: ./tests/test_wasm_exports.sh
 
       # ── Integration smoke test ──────────────────────────────────────────────
       # Boots each anyfs binary against a Debian 13 generic-cloud qcow2 and
