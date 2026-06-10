@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Vendored from ~/lklftpd (canonical copy for anyfs-reader builds since 2026-06-10).
 """Convert WASM_SYM_ABSOLUTE data symbols in a relocatable .o to
 segment-relative symbols, when the symbol's absolute value falls inside
 (or on the boundary of) one of the file's data segments.

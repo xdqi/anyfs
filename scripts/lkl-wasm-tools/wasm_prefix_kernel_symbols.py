@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Vendored from ~/lklftpd (canonical copy for anyfs-reader builds since 2026-06-10).
 """Add a prefix to non-public kernel symbols in a relocatable wasm .o,
 so they stop colliding with libc at final-link time.
 

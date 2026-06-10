@@ -44,7 +44,7 @@ while [[ $# -gt 0 ]]; do
         -j)          JOBS="$2"; shift 2 ;;
         -j*)         JOBS="${1#-j}"; shift ;;
         -h|--help)
-            sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+            awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"
             exit 0
             ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;

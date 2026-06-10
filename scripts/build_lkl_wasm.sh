@@ -68,6 +68,23 @@ if [[ ! -f "$PRESEED_SYSCALL_DEFS_H" ]]; then
 fi
 export PRESEED_SYSCALL_DEFS_H
 
+# Post-processing tools vendored in scripts/lkl-wasm-tools/. Check early so a
+# missing tool fails BEFORE any kernel compile rather than after liblkl.a is
+# built, which would leave a half-processed archive that crashes at boot.
+# FIXER/PREFIXER env vars override the vendored copies.
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TOOLS_DIR="$REPO_ROOT/scripts/lkl-wasm-tools"
+FIXER="${FIXER:-$TOOLS_DIR/wasm_fix_absolute_brackets.py}"
+PREFIXER="${PREFIXER:-$TOOLS_DIR/wasm_prefix_kernel_symbols.py}"
+for tool in "$FIXER" "$PREFIXER"; do
+    if [[ ! -f "$tool" ]]; then
+        echo "Error: required post-processing tool not found: $tool" >&2
+        echo "Skipping it would produce a liblkl.a that crashes at boot" >&2
+        echo "(absolute SECTIONS{} brackets dereference garbage)." >&2
+        exit 1
+    fi
+done
+
 # Activate emsdk environment so emcc/emar resolve from $PATH.
 # shellcheck disable=SC1091
 source "$EMSDK_DIR/emsdk_env.sh" >/dev/null 2>&1
@@ -250,17 +267,7 @@ OUTPUT="$OUT" make -C "$LINUX_DIR/tools/lkl" -j"$JOBS" ARCH=lkl "${TOOLS[@]}" \
 # force-selected by `config LKL` in arch/lkl/Kconfig, so it can't be
 # config'd away; __initcallN brackets are equally load-bearing). The tools
 # are vendored in scripts/lkl-wasm-tools/; FIXER/PREFIXER env vars override.
-TOOLS_DIR="$(cd "$(dirname "$0")" && pwd)/lkl-wasm-tools"
-FIXER="${FIXER:-$TOOLS_DIR/wasm_fix_absolute_brackets.py}"
-PREFIXER="${PREFIXER:-$TOOLS_DIR/wasm_prefix_kernel_symbols.py}"
-for tool in "$FIXER" "$PREFIXER"; do
-    if [[ ! -f "$tool" ]]; then
-        echo "Error: required post-processing tool not found: $tool" >&2
-        echo "Skipping it would produce a liblkl.a that crashes at boot" >&2
-        echo "(absolute SECTIONS{} brackets dereference garbage)." >&2
-        exit 1
-    fi
-done
+# (FIXER/PREFIXER/TOOLS_DIR are set and checked in the preflight section above.)
 LKLO="$OUT/tools/lkl/lib/lkl.o"
 LIBA="$OUT/tools/lkl/liblkl.a"
 echo
