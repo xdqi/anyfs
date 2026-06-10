@@ -19,7 +19,7 @@
 #   - LD=emcc, since the kernel uses partial linking ($(LD) -r vmlinux); emcc
 #     forwards -r to wasm-ld and keeps the output in wasm format
 #   - No CROSS_COMPILE (it would prefix the tool names, defeating emcc/emar)
-set -e
+set -e -o pipefail
 
 # shellcheck source=lib/config.sh
 source "$(dirname "$0")/lib/config.sh"
@@ -242,16 +242,31 @@ OUTPUT="$OUT" make -C "$LINUX_DIR/tools/lkl" -j"$JOBS" ARCH=lkl "${TOOLS[@]}" \
 # absolute values that don't match where it actually places the segments,
 # and any segment whose only references are these absolute brackets gets
 # DCE'd. See wasm_fix_absolute_brackets.py for details.
-FIXER="${FIXER:-${LKLFTPD_SRC}/wasm_fix_absolute_brackets.py}"
-PREFIXER="${PREFIXER:-${LKLFTPD_SRC}/wasm_prefix_kernel_symbols.py}"
+#
+# These two rewrites are NOT optional. A liblkl.a built without the bracket
+# fixer boots into `RuntimeError: table index is out of bounds` the moment
+# the kernel iterates a bracketed section (first hit: trace_event_init
+# walking __start_ftrace_events..__stop_ftrace_events — CONFIG_TRACING is
+# force-selected by `config LKL` in arch/lkl/Kconfig, so it can't be
+# config'd away; __initcallN brackets are equally load-bearing). The tools
+# are vendored in scripts/lkl-wasm-tools/; FIXER/PREFIXER env vars override.
+TOOLS_DIR="$(cd "$(dirname "$0")" && pwd)/lkl-wasm-tools"
+FIXER="${FIXER:-$TOOLS_DIR/wasm_fix_absolute_brackets.py}"
+PREFIXER="${PREFIXER:-$TOOLS_DIR/wasm_prefix_kernel_symbols.py}"
+for tool in "$FIXER" "$PREFIXER"; do
+    if [[ ! -f "$tool" ]]; then
+        echo "Error: required post-processing tool not found: $tool" >&2
+        echo "Skipping it would produce a liblkl.a that crashes at boot" >&2
+        echo "(absolute SECTIONS{} brackets dereference garbage)." >&2
+        exit 1
+    fi
+done
 LKLO="$OUT/tools/lkl/lib/lkl.o"
 LIBA="$OUT/tools/lkl/liblkl.a"
-if [[ -f "$FIXER" ]]; then
-    echo
-    echo "  FIX  $LKLO (absolute -> segment-relative brackets)"
-    python3 "$FIXER" "$LKLO" "$LKLO.fixed" | tail -20
-    mv "$LKLO.fixed" "$LKLO"
-fi
+echo
+echo "  FIX  $LKLO (absolute -> segment-relative brackets)"
+python3 "$FIXER" "$LKLO" "$LKLO.fixed" | tail -20
+mv "$LKLO.fixed" "$LKLO"
 # Namespace kernel symbols so they stop colliding with libc at final-link.
 # Without this, the kernel's vsnprintf / memcpy / etc. outrank musl's weak
 # copies and any libc caller in user code ends up running the kernel
@@ -259,12 +274,10 @@ fi
 # PAGE_SIZE. ELF/PE LKL solves the same problem with `objcopy
 # --prefix-symbols=_`; llvm-objcopy advertises that flag but actually
 # rejects it on wasm objects, so we do the rewrite ourselves.
-if [[ -f "$PREFIXER" ]]; then
-    echo
-    echo "  NS   $LKLO (prefix kernel symbols)"
-    python3 "$PREFIXER" "$LKLO" "$LKLO.prefixed" | tail -10
-    mv "$LKLO.prefixed" "$LKLO"
-fi
+echo
+echo "  NS   $LKLO (prefix kernel symbols)"
+python3 "$PREFIXER" "$LKLO" "$LKLO.prefixed" | tail -10
+mv "$LKLO.prefixed" "$LKLO"
 if [[ -f "$LKLO" ]]; then
     "${EMSDK_DIR}/upstream/bin/llvm-ar" rs "$LIBA" "$LKLO" >/dev/null
 fi
