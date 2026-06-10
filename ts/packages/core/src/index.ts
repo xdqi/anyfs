@@ -22,6 +22,7 @@ export { NativeSession, getAnyfsNative } from './native-session.js';
 export type { AnyfsNativeBridge } from './native-session.js';
 export { NodeWasmSession } from './node-wasm-session.js';
 export type { AnyfsSession } from './session.js';
+export { AnyfsSessionBase } from './session-base.js';
 export { applyUrlProxy, getUrlProxyPrefix } from './electron-proxy.js';
 export { createSession } from './dispatch.js';
 export type { WasmCaps, SessionEnv, SessionBackend, DispatchResult } from './dispatch.js';
