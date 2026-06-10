@@ -34,6 +34,12 @@ PY
     : "${ANYFS_PATHS_QEMU_SRC:=$pfx$deps/qemu}"
     : "${ANYFS_PATHS_UTIL_LINUX:=$pfx$deps/util-linux}"
     : "${ANYFS_PATHS_KSMBD_TOOLS:=$pfx$deps/ksmbd-tools}"
+    # Prefer a fetched sysroot (scripts/fetch_wasm_sysroot.sh) when nothing
+    # was configured; an explicit build.user.toml paths.wasm_sysroot arrives
+    # non-empty above and still wins.
+    if [[ -z "${ANYFS_PATHS_WASM_SYSROOT:-}" && -d "$root/.toolchain/wasm-sysroot/lib" ]]; then
+        ANYFS_PATHS_WASM_SYSROOT="$root/.toolchain/wasm-sysroot"
+    fi
     : "${ANYFS_PATHS_WASM_SYSROOT:=$root/wasm-sysroot}"
     : "${ANYFS_TOOLCHAINS_WASM_LD:=$pfx$deps/llvm-wasm/workspace/install/llvm/bin/wasm-ld}"
     : "${ANYFS_TOOLCHAINS_EMSDK:=${EMSDK:-}}"

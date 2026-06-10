@@ -26,3 +26,6 @@ node_modules/
 
 # Machine-local build config override (see build.config.toml / build.user.toml.example)
 build.user.toml
+
+# Fetched prebuilt toolchain pieces (scripts/fetch_wasm_sysroot.sh etc.)
+.toolchain/
