@@ -52,3 +52,28 @@ test('@network open the real remote URL directly', async ({ driver }) => {
     await driver.enterPartition(part.index);
     await expectKnownTree(driver, part);
 });
+
+// The "Open URL…" DIALOG UI: the legacy CDP suite's typeUrl() fallback proved a
+// user can open an image by clicking the picker's "Open URL…" button, typing
+// into the aria-label="Disk image URL" input, and clicking the dialog's Open
+// button — a real user journey the driver.openUrl() bridge hook bypasses.
+// Ported here so the dialog UI keeps a regression guard. Scoped to web: the
+// dialog is renderer DOM from the same vite-demo bundle on every shell, and
+// only the web project exposes the Playwright `page` for direct DOM driving
+// (electron projects get their window inside ElectronDriver).
+test('open via the "Open URL…" dialog UI, browse known entry', async ({ driver, page }, testInfo) => {
+    test.skip(
+        testInfo.project.name !== 'web',
+        'dialog DOM is identical across shells (same vite-demo bundle); proven once on web',
+    );
+    void driver; // fixture already navigated the page to /?e2e=1 and awaited the bridge
+    await page.getByTestId('open-url-button').click();
+    const input = page.getByLabel('Disk image URL');
+    await input.waitFor({ state: 'visible', timeout: 30_000 });
+    await input.fill(server.url);
+    // The Open button probes the URL (HEAD via probeUrlAhead) before submitting;
+    // the Range server answers HEAD with Accept-Ranges + CORS, so it enables.
+    await page.getByTestId('url-dialog-submit').click();
+    await driver.enterPartition(part.index);
+    await expectKnownTree(driver, part);
+});

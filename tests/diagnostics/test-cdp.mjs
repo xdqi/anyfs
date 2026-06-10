@@ -5,11 +5,14 @@
  * Simulates user clicks/typing through CDP to open a disk image and verify
  * the file tree appears. Covers all 6 target×source combinations.
  *
+ * DEMOTED to manual diagnostics (see tests/diagnostics/README.md): the
+ * Playwright suite at ts/tests/e2e is the primary regression gate.
+ *
  * Usage:
- *   node tests/test-cdp.mjs --target electron --source local  [--image ...]
- *   node tests/test-cdp.mjs --target electron --source http   [--image ...]
- *   node tests/test-cdp.mjs --target web      --source local  [--image ...]
- *   node tests/test-cdp.mjs --target web      --source http   [--image ...]
+ *   node tests/diagnostics/test-cdp.mjs --target electron --source local  [--image ...]
+ *   node tests/diagnostics/test-cdp.mjs --target electron --source http   [--image ...]
+ *   node tests/diagnostics/test-cdp.mjs --target web      --source local  [--image ...]
+ *   node tests/diagnostics/test-cdp.mjs --target web      --source http   [--image ...]
  *
  * For Electron targets, --mode native (default) and --mode wasm control
  * whether the native addon or WASM worker is used. Web targets always use
@@ -24,7 +27,7 @@ import {
   findChrome, startChromium, startVite, startElectron,
   startHttpServer, connectCDP, waitForKernel,
   typeUrl, clickOpenImage, clickFirstPartition, waitForFileTree, findImage, checkJsErrors,
-} from './common.mjs';
+} from '../common.mjs';
 import { sleep } from './common-cdp.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

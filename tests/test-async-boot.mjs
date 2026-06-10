@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import http from 'node:http';
 import fs from 'node:fs';
-import { CDPClient } from './common-cdp.mjs';
+import { CDPClient } from './diagnostics/common-cdp.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
