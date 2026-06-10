@@ -30,13 +30,7 @@ mw="$ANYFS_TOOLCHAINS_MSYS2_CROSS/bin/x86_64-w64-mingw32-ld"
 [ -x "$mw" ] && ok "$($mw --version | head -1)" || bad "mingw64 ld missing: $mw"
 
 echo "== wasm-ld (patched, from xdqi/llvm-wasm — only this binary is consumed) =="
-wl="${ANYFS_TOOLCHAINS_WASM_LD:-}"
-if [ -z "$wl" ]; then
-    case "$ANYFS_PATHS_DEPS_ROOT" in
-        /*) wl="$ANYFS_PATHS_DEPS_ROOT/llvm-wasm/workspace/install/llvm/bin/wasm-ld" ;;
-        *)  wl="$_root/$ANYFS_PATHS_DEPS_ROOT/llvm-wasm/workspace/install/llvm/bin/wasm-ld" ;;
-    esac
-fi
+wl="$ANYFS_TOOLCHAINS_WASM_LD"
 if [ -x "$wl" ]; then
     ver=$("$wl" --version 2>/dev/null | grep -oE 'LLD [0-9]+' | head -1)
     [ "$ver" = "LLD 18" ] && ok "$ver ($wl)" || bad "wasm-ld is '$ver', expected LLD 18 ($wl)"
