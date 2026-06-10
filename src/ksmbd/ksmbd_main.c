@@ -33,6 +33,7 @@
 #include "../host_proxy/host_proxy.h"
 #include "anyfs.h"
 #include "fastsync_win.h"
+#include "server_common.h"
 #include <lkl.h>
 
 #include <config_parser.h>
@@ -62,19 +63,7 @@
 #define GUEST_USER "guest"
 
 /* ── Share descriptor ─────────────────────────────────────────────────── */
-typedef struct {
-	char name[64]; /* SMB share name (section header in smb.conf) */
-	char lkl_path[ANYFS_LKL_PATH_MAX]; /* absolute LKL path returned by
-					      anyfs_session_enter */
-} ShareInfo;
-
-static volatile int running = 1;
-
-static void sigint_handler(int sig)
-{
-	(void)sig;
-	running = 0;
-}
+typedef AnyfsShareEntry ShareInfo;
 
 /* ── Runtime-tunable knobs ───────────────────────────────────────────── */
 /*
@@ -699,9 +688,7 @@ int main(int argc, char** argv)
 
 	/* ── Signals / stdio ────────────────────────────────────────────────
 	 */
-	setbuf(stdout, NULL);
-	signal(SIGINT, sigint_handler);
-	signal(SIGTERM, sigint_handler);
+	anyfs_server_install_signals();
 
 	pr_logger_init(PR_LOGGER_STDIO);
 	set_log_level(log_level);
@@ -714,21 +701,12 @@ int main(int argc, char** argv)
 	    .mem_mb = mem_mb,
 	    .loglevel = (log_level >= PR_DEBUG) ? 8 : 4,
 	};
-	int ret = anyfs_kernel_init(&kern_opts);
+	int ret = anyfs_server_boot(&kern_opts);
 	if (ret) {
 		pr_err("Failed to start kernel\n");
 		return 1;
 	}
 	pr_info("LKL kernel started (ksmbd built-in)\n");
-
-	/*
-	 * No virtio-net / slirp: the data path is host TCP -> host_proxy
-	 * threads -> lkl_sys_read/write -> LKL TCP on lo. We just need lo
-	 * up so ksmbd's netdev notifier creates the listener socket bound
-	 * to it. (lo is auto-up after boot, but the call is idempotent and
-	 * documents intent.)
-	 */
-	lkl_if_up(1); /* loopback is always ifindex 1 in LKL */
 
 	if (log_level >= PR_DEBUG) {
 		long dfd = lkl_sys_open("/sys/class/ksmbd-control/debug",
@@ -761,17 +739,14 @@ int main(int argc, char** argv)
 
 	/* ── 5. Resolve --share specs to LKL paths ───────────────────────── */
 	ShareInfo shares[ANYFS_MAX_SHARES];
-	int n_shares = 0;
-
-	for (int si = 0; si < n_share_specs; si++) {
-		ShareInfo* sh = &shares[n_shares];
-		if (anyfs_share_resolve(share_specs[si], disks, n_images, 0,
-					sh->name, sizeof(sh->name),
-					sh->lkl_path, sizeof(sh->lkl_path)) < 0)
-			goto halt;
-		pr_info("Share [%s] -> %s\n", sh->name, sh->lkl_path);
-		n_shares++;
-	}
+	int n_shares = anyfs_server_resolve_shares(share_specs, n_share_specs,
+						   disks, n_images, 0, shares,
+						   ANYFS_MAX_SHARES);
+	if (n_shares < 0)
+		goto halt;
+	for (int i = 0; i < n_shares; i++)
+		pr_info("Share [%s] -> %s\n", shares[i].name,
+			shares[i].lkl_path);
 
 	if (n_shares == 0) {
 		pr_err("No shares could be mounted.\n");
@@ -812,7 +787,7 @@ int main(int argc, char** argv)
 
 	/* ── 7. Event loop ──────────────────────────────────────────────────
 	 */
-	while (running) {
+	while (anyfs_server_running) {
 		ret = ipc_process_event();
 		if (ret < 0)
 			break;
@@ -830,13 +805,7 @@ cleanup:
 	usm_destroy();
 
 halt:
-	/* Close all disk sessions (atexit handler inside anyfs_session_close
-	 * will unmount any LKL-pinned mounts). */
-	for (int i = 0; i < n_images; i++) {
-		if (disks[i])
-			anyfs_session_close(disks[i]);
-	}
-	anyfs_kernel_halt();
+	anyfs_server_shutdown(disks, n_images);
 	pr_info("Done\n");
 	return 0;
 }
