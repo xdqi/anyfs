@@ -33,8 +33,11 @@ PY
     : "${ANYFS_PATHS_QEMU_SRC:=$pfx$deps/qemu}"
     : "${ANYFS_PATHS_UTIL_LINUX:=$pfx$deps/util-linux}"
     : "${ANYFS_PATHS_KSMBD_TOOLS:=$pfx$deps/ksmbd-tools}"
+    : "${ANYFS_PATHS_WASM_SYSROOT:=$root/wasm-sysroot}"
+    : "${ANYFS_TOOLCHAINS_WASM_LD:=$pfx$deps/llvm-wasm/workspace/install/llvm/bin/wasm-ld}"
     : "${ANYFS_TOOLCHAINS_EMSDK:=${EMSDK:-}}"
     export ANYFS_PATHS_LINUX_SRC ANYFS_PATHS_QEMU_SRC ANYFS_PATHS_UTIL_LINUX \
-           ANYFS_PATHS_KSMBD_TOOLS ANYFS_TOOLCHAINS_EMSDK
+           ANYFS_PATHS_KSMBD_TOOLS ANYFS_PATHS_WASM_SYSROOT \
+           ANYFS_TOOLCHAINS_WASM_LD ANYFS_TOOLCHAINS_EMSDK
 }
 anyfs_load_config
