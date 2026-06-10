@@ -2,8 +2,8 @@
 # Cross-build libblkid.a for mingw (i686 or x86_64).
 #
 # Inputs:
-#   - util-linux source tree (default: $HOME/util-linux; override
-#     with UL_SRC=...)
+#   - util-linux source tree (default: util_linux from build.config.toml;
+#     falls back to deps/util-linux; override with UL_SRC=...)
 #   - shim headers + TUs under <repo-root>/patches/libblkid/shim/
 #
 # Output:
@@ -25,16 +25,19 @@
 
 set -euo pipefail
 
+# shellcheck source=lib/config.sh
+source "$(dirname "$0")/lib/config.sh"
+
 # ---------------------------------------------------------------------------
 # Target selection
 # ---------------------------------------------------------------------------
 TARGET="${1:-mingw64}"
 case "$TARGET" in
     mingw64)
-        CROSS_PREFIX="${CROSS_PREFIX:-/opt/msys2-cross/bin/x86_64-w64-mingw32}"
+        CROSS_PREFIX="${CROSS_PREFIX:-$ANYFS_TOOLCHAINS_MSYS2_CROSS/bin/x86_64-w64-mingw32}"
         ;;
     mingw32)
-        CROSS_PREFIX="${CROSS_PREFIX:-/opt/msys2-cross/bin/i686-w64-mingw32}"
+        CROSS_PREFIX="${CROSS_PREFIX:-$ANYFS_TOOLCHAINS_MSYS2_CROSS/bin/i686-w64-mingw32}"
         ;;
     *)
         echo "Usage: $0 [mingw32|mingw64]" >&2
@@ -45,7 +48,7 @@ esac
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-UL_SRC="${UL_SRC:-$HOME/util-linux}"
+UL_SRC="${UL_SRC:-$ANYFS_PATHS_UTIL_LINUX}"
 # Resolve UL_SRC to absolute: we `cd "$UL_SRC"` below and pass -I"$UL_SRC/...",
 # so a relative UL_SRC (e.g. deps/util-linux) would break after the cd.
 [[ -d "$UL_SRC" ]] && UL_SRC="$(cd "$UL_SRC" && pwd)"
