@@ -23,7 +23,10 @@ jobs:
   # Ephemeral sccache-dist compile farm. Workers serve the coordinator
   # (the build job) and exit when it goes offline. Skipped on PRs —
   # fork PRs have no TS_OAUTH_SECRET and same-repo PRs don't need the
-  # farm for cache-warm builds.
+  # farm for cache-warm builds. Also skipped (per-step; job-level `if`
+  # cannot read the secrets context) when TS_OAUTH_SECRET is not
+  # configured, so missing-secret runs stay green instead of failing
+  # the worker jobs.
   sccache-workers:
     name: sccache worker ${{ matrix.idx }}
     if: ${{ github.event_name != 'pull_request' }}
@@ -33,7 +36,11 @@ jobs:
       matrix:
         idx: [1, 2]
     steps:
+      - name: Farm disabled — TS_OAUTH_SECRET not configured
+        if: ${{ secrets.TS_OAUTH_SECRET == '' }}
+        run: echo "TS_OAUTH_SECRET is not set; skipping farm worker (build compiles locally)."
       - uses: xdqi/sccache-dist-action@v0.0.4
+        if: ${{ secrets.TS_OAUTH_SECRET != '' }}
         with:
           mode: worker
           worker-index: '${{ matrix.idx }}'
@@ -138,8 +145,11 @@ jobs:
         run: ./scripts/lint-shellcheck.sh
 
       # ── sccache-dist farm (best-effort; build proceeds locally if absent) ──
+      # Gated on TS_OAUTH_SECRET: without it the farm cannot come up, so skip
+      # the whole block (sccache never lands on PATH and the build uses plain
+      # gcc, exactly like the PR path).
       - name: Cache sccache objects
-        if: ${{ github.event_name != 'pull_request' }}
+        if: ${{ github.event_name != 'pull_request' && secrets.TS_OAUTH_SECRET != '' }}
         uses: actions/cache@v4
         with:
           path: ~/.cache/sccache
@@ -148,7 +158,7 @@ jobs:
             sccache-linux-amd64-
 
       - name: Bring up sccache-dist farm
-        if: ${{ github.event_name != 'pull_request' }}
+        if: ${{ github.event_name != 'pull_request' && secrets.TS_OAUTH_SECRET != '' }}
         continue-on-error: true
         uses: xdqi/sccache-dist-action@v0.0.4
         with:
@@ -224,7 +234,7 @@ jobs:
             -j"$(nproc)"
 
       - name: sccache stats
-        if: ${{ github.event_name != 'pull_request' }}
+        if: ${{ github.event_name != 'pull_request' && secrets.TS_OAUTH_SECRET != '' }}
         continue-on-error: true
         run: sccache --show-stats || true
 

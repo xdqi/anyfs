@@ -30,7 +30,12 @@ jobs:
         run: sudo apt-get install -y --no-install-recommends qemu-utils
       - name: Install
         working-directory: ts
-        run: pnpm install --frozen-lockfile
+        # electron-demo depends on a sibling checkout (drivelist via
+        # file:../../../../drivelist-anyfs) and @anyfs/native's node-gyp
+        # install script compiles against the LKL tree — neither exists on a
+        # bare CI runner. Exclude both; electron-demo is the only dependent of
+        # @anyfs/native, and none of the CI-tested packages need either.
+        run: pnpm install --frozen-lockfile --filter '!electron-demo' --filter '!@anyfs/native'
       - name: Build packages
         working-directory: ts
         run: pnpm -r --filter './packages/*' --filter '!@anyfs/native' build
