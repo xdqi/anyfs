@@ -13,6 +13,8 @@
 #                         linux-amd64,mingw32,mingw64
 #                       (default: linux-amd64,mingw32,mingw64)
 #   --reconfigure       Wipe build dir and re-run configure
+#   --cc=CMD            C compiler override passed to configure as --cc= for
+#                       linux-amd64 only; switching compilers needs --reconfigure
 #   -j N                Parallelism (default: nproc)
 #   -h, --help
 #
@@ -39,6 +41,7 @@ OUT_PFX="build-anyfs"
 TARGETS_REQ="linux-amd64,mingw32,mingw64"
 RECONFIGURE=0
 JOBS="$(nproc)"
+CC_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -49,6 +52,8 @@ while [[ $# -gt 0 ]]; do
         --targets=*)    TARGETS_REQ="${1#--targets=}"; shift ;;
         --targets)      TARGETS_REQ="$2"; shift 2 ;;
         --reconfigure)  RECONFIGURE=1; shift ;;
+        --cc=*)         CC_OVERRIDE="${1#--cc=}"; shift ;;
+        --cc)           CC_OVERRIDE="$2"; shift 2 ;;
         -j)             JOBS="$2"; shift 2 ;;
         -j*)            JOBS="${1#-j}"; shift ;;
         -h|--help)
@@ -223,11 +228,14 @@ build_one() {
 
     mapfile -t target_cfg < <(configure_for "$target")
 
+    local cc_cfg=()
+    [[ -n "$CC_OVERRIDE" && "$target" == "linux-amd64" ]] && cc_cfg=("--cc=$CC_OVERRIDE")
+
     if [[ ! -f "$builddir/build.ninja" ]]; then
         rm -rf "$builddir"
         mkdir -p "$builddir"
         ( cd "$builddir" && "$QEMU_SRC/configure" \
-              "${COMMON_CONFIGURE[@]}" "${target_cfg[@]}" )
+              "${COMMON_CONFIGURE[@]}" "${target_cfg[@]}" "${cc_cfg[@]}" )
         # b_pie=false matches the -fno-pie/-fPIC flags; needed for the shared
         # link on Linux and harmless on mingw. werror=false keeps the build
         # from tripping over glibc-vs-QEMU prototype drift (e.g.

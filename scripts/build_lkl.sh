@@ -11,6 +11,7 @@
 #                         linux-amd64,linux-arm64,mingw32,mingw64
 #                       (default: linux-amd64,mingw32,mingw64)
 #   --clean             Run `make clean` in each target before building
+#   --cc=CMD            C compiler override passed to make as CC= (e.g. "sccache gcc")
 #   -j N                Parallelism (default: nproc)
 #
 # Expects each lkl-<target>/ to already contain a .config and (for mingw
@@ -27,6 +28,7 @@ OUT_PARENT="${OUT_PARENT:-$(cd "$(dirname "$0")/.." && pwd)}"
 TARGETS_REQ=""
 DO_CLEAN=0
 JOBS="$(nproc)"
+CC_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -37,6 +39,8 @@ while [[ $# -gt 0 ]]; do
         --targets=*) TARGETS_REQ="${1#--targets=}"; shift ;;
         --targets)   TARGETS_REQ="$2"; shift 2 ;;
         --clean)     DO_CLEAN=1; shift ;;
+        --cc=*)      CC_OVERRIDE="${1#--cc=}"; shift ;;
+        --cc)        CC_OVERRIDE="$2"; shift 2 ;;
         -j)          JOBS="$2"; shift 2 ;;
         -j*)         JOBS="${1#-j}"; shift ;;
         -h|--help)
@@ -83,16 +87,19 @@ build_one() {
     local cross_arg=()
     [[ -n "$CROSS" ]] && cross_arg=(CROSS_COMPILE="$CROSS")
 
+    local cc_arg=()
+    [[ -n "$CC_OVERRIDE" ]] && cc_arg=(CC="$CC_OVERRIDE")
+
     # OUTPUT must go through the environment, not as a make CLI arg — the
     # tools/lkl Makefile rewrites OUTPUT to "$OUTPUT/tools/lkl/", and a CLI
     # assignment would defeat that rewrite (GNU make precedence).
     if [[ $DO_CLEAN -eq 1 ]]; then
         OUTPUT="$OUT" make -C "$LINUX_DIR/tools/lkl" \
-             ARCH=lkl "${cross_arg[@]}" clean || true
+             ARCH=lkl "${cross_arg[@]}" "${cc_arg[@]}" clean || true
     fi
 
     OUTPUT="$OUT" make -C "$LINUX_DIR/tools/lkl" -j"$JOBS" \
-         ARCH=lkl "${cross_arg[@]}"
+         ARCH=lkl "${cross_arg[@]}" "${cc_arg[@]}"
 
     echo
     echo "Output for lkl-$NAME:"
