@@ -53,12 +53,14 @@ jobs:
       - name: Farm disabled — TS_OAUTH_SECRET not configured
         if: ${{ env.FARM_SECRET_SET == 'false' }}
         run: echo "TS_OAUTH_SECRET is not set; skipping farm worker (build compiles locally)."
-      - uses: xdqi/sccache-dist-action@v0.0.4
+      - uses: xdqi/sccache-dist-action@v0.0.5
         if: ${{ env.FARM_SECRET_SET == 'true' }}
         with:
           mode: worker
           worker-index: '${{ matrix.idx }}'
           oauth-secret: '${{ secrets.TS_OAUTH_SECRET }}'
+          # The OAuth client owns tag:ci (not the action default tag:ci-sccache).
+          tags: 'tag:ci'
 
   build:
     name: mingw64
@@ -161,13 +163,15 @@ jobs:
       - name: Bring up sccache-dist farm
         if: ${{ github.event_name != 'pull_request' && env.FARM_SECRET_SET == 'true' }}
         continue-on-error: true
-        uses: xdqi/sccache-dist-action@v0.0.4
+        uses: xdqi/sccache-dist-action@v0.0.5
         with:
           mode: coordinator
           expected-workers: 2
           min-workers: 1
           wait-timeout: 180s
           oauth-secret: '${{ secrets.TS_OAUTH_SECRET }}'
+          # The OAuth client owns tag:ci (not the action default tag:ci-sccache).
+          tags: 'tag:ci'
 
       # ── Caches ──────────────────────────────────────────────────────────────
       # All source deps (linux, qemu, ksmbd-tools, util-linux) are now managed
