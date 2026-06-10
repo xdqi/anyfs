@@ -32,6 +32,25 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Ephemeral sccache-dist compile farm. Workers serve the coordinator
+  # (the build job) and exit when it goes offline. Skipped on PRs —
+  # fork PRs have no TS_OAUTH_SECRET and same-repo PRs don't need the
+  # farm for cache-warm builds.
+  sccache-workers:
+    name: sccache worker ${{ matrix.idx }}
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      matrix:
+        idx: [1, 2]
+    steps:
+      - uses: xdqi/sccache-dist-action@v0.0.4
+        with:
+          mode: worker
+          worker-index: '${{ matrix.idx }}'
+          oauth-secret: '${{ secrets.TS_OAUTH_SECRET }}'
+
   build:
     name: mingw64
     runs-on: ubuntu-24.04
@@ -110,6 +129,32 @@ jobs:
           "${MSYS_CROSS_PREFIX}/bin/x86_64-w64-mingw32-ld" --version | head -1
           "${MSYS_CROSS_PREFIX}/bin/x86_64-w64-mingw32-pkg-config" \
             --modversion glib-2.0
+
+      # ── sccache-dist farm (best-effort; build proceeds locally if absent) ──
+      # EXPERIMENTAL on this leg: sccache-dist must package the msys2-cross
+      # x86_64-w64-mingw32-gcc toolchain (under /opt/msys2-cross) and ship it
+      # to the workers. The engine supports arbitrary-toolchain packaging, but
+      # a plain cross-gcc + sysroot is unproven here. On any farm failure the
+      # build falls back to local compilation exactly as before.
+      - name: Cache sccache objects
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-mingw64-${{ github.sha }}
+          restore-keys: |
+            sccache-mingw64-
+
+      - name: Bring up sccache-dist farm
+        if: ${{ github.event_name != 'pull_request' }}
+        continue-on-error: true
+        uses: xdqi/sccache-dist-action@v0.0.4
+        with:
+          mode: coordinator
+          expected-workers: 2
+          min-workers: 1
+          wait-timeout: 180s
+          oauth-secret: '${{ secrets.TS_OAUTH_SECRET }}'
 
       # ── Caches ──────────────────────────────────────────────────────────────
       # All source deps (linux, qemu, ksmbd-tools, util-linux) are now managed
@@ -202,11 +247,19 @@ jobs:
 
       - name: Build LKL kernel (mingw64)
         run: |
+          # Absolute compiler path so sccache-dist hashes and ships the
+          # msys2-cross toolchain (not whatever "x86_64-w64-mingw32-gcc"
+          # resolves to on a worker).
+          CC_ARGS=()
+          if command -v sccache >/dev/null 2>&1; then
+            CC_ARGS=(--cc="sccache /opt/msys2-cross/bin/x86_64-w64-mingw32-gcc")
+          fi
           ./scripts/build_lkl.sh \
             --linux=deps/linux \
             --out="$GITHUB_WORKSPACE" \
             --targets=mingw64 \
-            -j"$(nproc)"
+            "${CC_ARGS[@]}" \
+            -j"${SCCACHE_J:-$(nproc)}"
           test -f "$GITHUB_WORKSPACE/lkl-mingw64/tools/lkl/lib/liblkl.dll" \
             || { echo "::error::liblkl.dll missing"; exit 1; }
 
@@ -232,6 +285,11 @@ jobs:
             --qemu-root=deps/qemu \
             --ksmbd-root=deps/ksmbd-tools \
             -j"$(nproc)"
+
+      - name: sccache stats
+        if: ${{ github.event_name != 'pull_request' }}
+        continue-on-error: true
+        run: sccache --show-stats || true
 
       - name: Package Win64 distribution tarball
         run: |
