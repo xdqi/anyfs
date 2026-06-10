@@ -45,6 +45,11 @@ jobs:
       - name: React unit tests
         working-directory: ts
         run: pnpm --filter @anyfs/react test
+      # The nbd-proxy integration test opens the PoC fixture qcow2 through the
+      # proxy with real qemu-img; the fixture is deterministic and generated
+      # on the fly (8 MiB pattern image + qemu-img convert).
+      - name: Generate nbd-proxy test fixture
+        run: node scripts/poc-nbd/make-test-image.mjs
       - name: nbd-proxy tests
         working-directory: ts
         run: pnpm --filter @anyfs/nbd-proxy test
