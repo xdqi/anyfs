@@ -57,13 +57,49 @@ if [[ ! -d "$LINUX_DIR/tools/lkl" ]]; then
     exit 1
 fi
 
+# Establish REPO_ROOT early; needed by the preseed fallback below as well as
+# the post-processing tool paths that follow.
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
 # Pre-generated syscall_defs.h. The wasm assembler silently merges custom
 # sections, so the kernel's in-band extraction via objcopy yields an empty
-# section. Reuse the mingw32 build's header — same 32-bit syscall ABI and
-# same Kconfig-driven __NR_* set as wasm32.
-PRESEED_SYSCALL_DEFS_H="$OUT_PARENT/lkl-mingw32/arch/lkl/include/generated/uapi/asm/syscall_defs.h"
+# section. Reuse a 32-bit build's header — same 32-bit syscall ABI and same
+# Kconfig-driven __NR_* set as wasm32.
+#
+# 3-level fallback:
+#   1. $PRESEED_SYSCALL_DEFS_H env override (explicit, wins over everything)
+#   2. Live lkl-mingw32 tree when present (local dev keeps using the freshest
+#      artifact without any extra steps)
+#   3. Vendored copy in scripts/lkl-wasm-tools/syscall_defs_preseed.h (bare
+#      CI runners have no sibling build tree; this is the CI path)
+#
+# The vendored copy was generated from the lkl-mingw32 build of the
+# peru-pinned kernel revision. Every entry is guarded by #ifdef __NR_*,
+# so config-based filtering still happens at compile time; the file is safe
+# to vendor. After a kernel pin bump: rebuild lkl-mingw32, then
+#   cp lkl-mingw32/arch/lkl/include/generated/uapi/asm/syscall_defs.h \
+#      scripts/lkl-wasm-tools/syscall_defs_preseed.h
+# and commit the updated vendored copy.
+_LIVE_SYSCALL_DEFS="$OUT_PARENT/lkl-mingw32/arch/lkl/include/generated/uapi/asm/syscall_defs.h"
+_VENDORED_SYSCALL_DEFS="$REPO_ROOT/scripts/lkl-wasm-tools/syscall_defs_preseed.h"
+if [[ -n "${PRESEED_SYSCALL_DEFS_H:-}" ]]; then
+    echo "syscall_defs.h preseed: env override -> $PRESEED_SYSCALL_DEFS_H"
+elif [[ -f "$_LIVE_SYSCALL_DEFS" ]]; then
+    PRESEED_SYSCALL_DEFS_H="$_LIVE_SYSCALL_DEFS"
+    echo "syscall_defs.h preseed: live mingw32 tree -> $PRESEED_SYSCALL_DEFS_H"
+elif [[ -f "$_VENDORED_SYSCALL_DEFS" ]]; then
+    PRESEED_SYSCALL_DEFS_H="$_VENDORED_SYSCALL_DEFS"
+    echo "syscall_defs.h preseed: vendored copy -> $PRESEED_SYSCALL_DEFS_H"
+else
+    echo "Error: syscall_defs.h preseed not found." >&2
+    echo "  tried env PRESEED_SYSCALL_DEFS_H: not set" >&2
+    echo "  tried live tree: $_LIVE_SYSCALL_DEFS" >&2
+    echo "  tried vendored:  $_VENDORED_SYSCALL_DEFS" >&2
+    echo "Refresh the vendored copy: build lkl-mingw32, cp the generated header." >&2
+    exit 1
+fi
 if [[ ! -f "$PRESEED_SYSCALL_DEFS_H" ]]; then
-    echo "Error: $PRESEED_SYSCALL_DEFS_H not found. Build lkl-mingw32 first." >&2
+    echo "Error: PRESEED_SYSCALL_DEFS_H set but file missing: $PRESEED_SYSCALL_DEFS_H" >&2
     exit 1
 fi
 export PRESEED_SYSCALL_DEFS_H
@@ -72,7 +108,7 @@ export PRESEED_SYSCALL_DEFS_H
 # missing tool fails BEFORE any kernel compile rather than after liblkl.a is
 # built, which would leave a half-processed archive that crashes at boot.
 # FIXER/PREFIXER env vars override the vendored copies.
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# (REPO_ROOT already set above.)
 TOOLS_DIR="$REPO_ROOT/scripts/lkl-wasm-tools"
 FIXER="${FIXER:-$TOOLS_DIR/wasm_fix_absolute_brackets.py}"
 PREFIXER="${PREFIXER:-$TOOLS_DIR/wasm_prefix_kernel_symbols.py}"
