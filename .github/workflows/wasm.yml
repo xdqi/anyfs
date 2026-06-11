@@ -101,6 +101,11 @@ jobs:
         with:
           version: 5.0.7
 
+      # QEMU's bz2 comes from emscripten's port (bzlib.h + libbz2.a in the
+      # emsdk cache sysroot); a fresh emsdk install hasn't built it.
+      - name: Build emscripten ports (bzip2, zlib)
+        run: embuilder build bzip2 zlib
+
       # config.sh auto-prefers .toolchain/wasm-ld + .toolchain/wasm-sysroot,
       # and ANYFS_TOOLCHAINS_EMSDK falls back to $EMSDK (set by setup-emsdk).
       - name: Fetch patched wasm-ld + wasm sysroot
