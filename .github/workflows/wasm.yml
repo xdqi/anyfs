@@ -289,9 +289,22 @@ jobs:
         run: |
           mkdir -p ts/examples/vite-demo/dist
           tar -xzf anyfs-web-dist.tar.gz -C ts/examples/vite-demo/dist
+      # DEBUG tracing stays on permanently: electron-packager has exited 0
+      # without writing out/ on CI (runs 27338704662, 27345017292) while
+      # every local reproduction succeeds; the @electron/get trace is the
+      # evidence when it recurs. The explicit out/ assertion converts the
+      # silent failure into a loud one at the step that owns it.
       - name: Package (${{ matrix.platform }}, wasm-only)
         working-directory: ts/examples/electron-demo
-        run: pnpm run ${{ matrix.script }}
+        env:
+          DEBUG: 'electron-packager,@electron/get:*'
+        run: |
+          pnpm run ${{ matrix.script }}
+          test -x "out/${{ matrix.outdir }}/anyfs-demo" -o -f "out/${{ matrix.outdir }}/anyfs-demo.exe" || {
+            echo "::error::electron-packager exited 0 but out/${{ matrix.outdir }} is missing"
+            ls -la out/ 2>/dev/null || true
+            exit 1
+          }
       - name: Smoke test packaged app (linux)
         if: matrix.platform == 'linux'
         run: |
