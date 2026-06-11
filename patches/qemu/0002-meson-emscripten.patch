@@ -1,0 +1,40 @@
+diff --git a/meson.build b/meson.build
+index ab3e97eb9f..dd674ad827 100644
+--- a/meson.build
++++ b/meson.build
+@@ -55,7 +55,7 @@ qapi_trace_events = []
+ bsd_oses = ['gnu/kfreebsd', 'freebsd', 'netbsd', 'openbsd', 'dragonfly', 'darwin']
+ supported_oses = ['windows', 'freebsd', 'netbsd', 'openbsd', 'darwin', 'sunos', 'linux', 'emscripten']
+ supported_cpus = ['ppc64', 's390x', 'riscv64', 'x86_64',
+-  'aarch64', 'loongarch64', 'mips64', 'sparc64', 'wasm64']
++  'aarch64', 'loongarch64', 'mips64', 'sparc64', 'wasm32', 'wasm64']
+ 
+ cpu = host_machine.cpu_family()
+ 
+@@ -255,7 +255,7 @@ have_ga = get_option('guest_agent') \
+   .require(host_os in ['sunos', 'linux', 'windows', 'freebsd', 'netbsd', 'openbsd'],
+            error_message: 'unsupported OS for QEMU guest agent') \
+   .allowed()
+-have_block = have_system or have_tools
++have_block = have_system or have_tools or cpu in ['wasm32', 'wasm64']
+ 
+ enable_modules = get_option('modules') \
+   .require(host_os != 'windows',
+@@ -914,7 +914,7 @@ if have_tcg
+     if not get_option('tcg_interpreter')
+       error('Unsupported CPU @0@, try --enable-tcg-interpreter'.format(cpu))
+     endif
+-  elif host_arch == 'wasm64'
++  elif host_arch == 'wasm32' or host_arch == 'wasm64'
+     if not get_option('tcg_interpreter')
+       error('WebAssembly host requires --enable-tcg-interpreter')
+     endif
+@@ -4241,7 +4241,7 @@ if have_rust
+     bindgen_args_common += ['--merge-extern-blocks']
+   endif
+   bindgen_c_args = []
+-  if host_arch == 'wasm64'
++  if host_arch == 'wasm32' or host_arch == 'wasm64'
+     bindgen_c_args += ['-fvisibility=default']
+   endif
+   subdir('rust')

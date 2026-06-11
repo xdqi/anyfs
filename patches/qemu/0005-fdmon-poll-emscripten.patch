@@ -1,0 +1,26 @@
+diff --git a/util/fdmon-poll.c b/util/fdmon-poll.c
+index 0ae755cc13..dc7ec33f31 100644
+--- a/util/fdmon-poll.c
++++ b/util/fdmon-poll.c
+@@ -21,10 +21,17 @@
+  * any lock, the arrays cannot be stored in AioContext.  Thread-local data
+  * has none of the disadvantages of these three options.
+  */
+-static __thread GPollFD *pollfds;
+-static __thread AioHandler **nodes;
+-static __thread unsigned npfd, nalloc;
+-static __thread Notifier pollfds_cleanup_notifier;
++__thread GPollFD *fdmon_poll_pollfds;
++__thread AioHandler **fdmon_poll_nodes;
++__thread unsigned fdmon_poll_npfd, fdmon_poll_nalloc;
++__thread Notifier fdmon_poll_cleanup_notifier;
++
++/* Aliases for local use */
++#define pollfds fdmon_poll_pollfds
++#define nodes fdmon_poll_nodes
++#define npfd fdmon_poll_npfd
++#define nalloc fdmon_poll_nalloc
++#define pollfds_cleanup_notifier fdmon_poll_cleanup_notifier
+ 
+ static void pollfds_cleanup(Notifier *n, void *unused)
+ {

@@ -1,0 +1,33 @@
+XFS: stub __this_address on wasm32
+
+Clang's wasm32 backend does not implement the GCC "address-of-label"
+operator (&&label) — it emits
+
+    fatal error: error in backend: WebAssembly hasn't implemented
+    computed gotos
+
+for any code path that evaluates &&label. XFS' __this_address macro
+relies on &&__here to capture a diagnostic source location, which is
+threaded into XFS error/warning printk calls as a void* and never
+dereferenced. On wasm we replace it with ((void *)0); the kernel still
+compiles, XFS messages just lose the per-callsite address (they keep
+__func__ context).
+
+Applied only to the wasm LKL build by scripts/oot_fs.sh stage --wasm.
+
+--- a/fs/xfs/xfs_linux.h
++++ b/fs/xfs/xfs_linux.h
+@@ -130,8 +130,14 @@
+  * Return the address of a label.  Use barrier() so that the optimizer
+  * won't reorder code to refactor the error jumpouts into a single
+  * return, which throws off the reported address.
++ *
++ * wasm32 (clang) has no &&label operator -- fall back to a null address.
+  */
++#if defined(__wasm__) || defined(__wasm32__)
++#define __this_address	((void *)0)
++#else
+ #define __this_address	({ __label__ __here; __here: barrier(); &&__here; })
++#endif
+
+ #define howmany(x, y)	(((x)+((y)-1))/(y))

@@ -1,0 +1,55 @@
+diff --git a/util/oslib-posix.c b/util/oslib-posix.c
+index dc001da66d..6392884ce0 100644
+--- a/util/oslib-posix.c
++++ b/util/oslib-posix.c
+@@ -710,7 +710,9 @@ char *qemu_get_pid_name(pid_t pid)
+ void *qemu_alloc_stack(size_t *sz)
+ {
+     void *ptr;
++#ifndef __EMSCRIPTEN__
+     int flags;
++#endif
+ #ifdef CONFIG_DEBUG_STACK_USAGE
+     void *ptr2;
+ #endif
+@@ -725,6 +727,19 @@ void *qemu_alloc_stack(size_t *sz)
+     /* allocate one extra page for the guard page */
+     *sz += pagesz;
+ 
++#ifdef __EMSCRIPTEN__
++    /* Under emscripten the host mmap is implemented on top of malloc anyway,
++     * and mprotect() is a no-op syscall that the runtime proxies to the main
++     * thread via _emscripten_receive_on_main_thread_js. With ASYNCIFY=1 that
++     * proxy cannot sit inside an asyncify unwind (the QEMU coroutine yield
++     * IS an asyncify unwind), so the first lazy coroutine stack allocation
++     * inside a pread aborts the runtime. Plain posix_memalign sidesteps both
++     * the proxy and the (useless) guard page. */
++    if (posix_memalign(&ptr, pagesz, *sz) != 0) {
++        perror("failed to allocate memory for stack");
++        abort();
++    }
++#else
+     flags = MAP_PRIVATE | MAP_ANONYMOUS;
+ #if defined(MAP_STACK) && defined(__OpenBSD__)
+     /* Only enable MAP_STACK on OpenBSD. Other OS's such as
+@@ -747,6 +762,7 @@ void *qemu_alloc_stack(size_t *sz)
+         perror("failed to set up stack guard page");
+         abort();
+     }
++#endif /* __EMSCRIPTEN__ */
+ 
+ #ifdef CONFIG_DEBUG_STACK_USAGE
+     for (ptr2 = ptr + pagesz; ptr2 < ptr + *sz; ptr2 += sizeof(uint32_t)) {
+@@ -781,7 +797,12 @@ void qemu_free_stack(void *stack, size_t sz)
+     }
+ #endif
+ 
++#ifdef __EMSCRIPTEN__
++    /* Paired with the posix_memalign in qemu_alloc_stack. */
++    free(stack);
++#else
+     munmap(stack, sz);
++#endif
+ }
+ 
+ /*

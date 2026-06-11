@@ -1,0 +1,22 @@
+diff --git a/qapi/meson.build b/qapi/meson.build
+index a46269b5a0..dd8b4934f9 100644
+--- a/qapi/meson.build
++++ b/qapi/meson.build
+@@ -13,7 +13,7 @@ util_ss.add(files(
+ if have_system
+   util_ss.add(files('qapi-type-helpers.c'))
+ endif
+-if have_system or have_tools or have_ga
++if have_system or have_tools or have_ga or have_block
+   util_ss.add(files(
+     'qmp-dispatch.c',
+     'qmp-event.c',
+@@ -101,7 +101,7 @@ foreach module : qapi_all_modules
+     'qapi-visit-@0@.c'.format(module),
+     'qapi-visit-@0@.h'.format(module),
+   ]
+-  if have_system or have_tools
++  if have_system or have_tools or have_block
+     qapi_module_outputs += [
+       'qapi-events-@0@.c'.format(module),
+       'qapi-events-@0@.h'.format(module),

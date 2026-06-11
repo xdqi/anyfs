@@ -1,0 +1,11 @@
+diff --git a/.gitignore b/.gitignore
+index 61fa39967b..352cdff47e 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,5 +1,5 @@
+ /GNUmakefile
+-/build/
++/build*/
+ /.cache/
+ /.vscode/
+ *.pyc

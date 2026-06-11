@@ -1,0 +1,27 @@
+diff --git a/util/thread-pool.c b/util/thread-pool.c
+index 8f8cb38d5c..2151c5b06b 100644
+--- a/util/thread-pool.c
++++ b/util/thread-pool.c
+@@ -285,11 +285,22 @@ static void thread_pool_co_cb(void *opaque, int ret)
+ 
+ int coroutine_fn thread_pool_submit_co(ThreadPoolFunc *func, void *arg)
+ {
++#ifdef __EMSCRIPTEN__
++    /* Under -pthread + Asyncify, dispatching work to a worker thread and
++     * receiving the reply via the cross-thread mailbox triggers
++     * `_emscripten_receive_on_main_thread_js was not in ASYNCIFY_IMPORTS,
++     * but changed the state`: the mailbox check fires inside an Asyncify
++     * rewind, and the JS-side proxy isn't safe to run mid-rewind. Since
++     * the wasm bundle has only one cpu of useful parallelism anyway, run
++     * the work inline on the calling coroutine. */
++    return func(arg);
++#else
+     ThreadPoolCo tpc = { .co = qemu_coroutine_self(), .ret = -EINPROGRESS };
+     assert(qemu_in_coroutine());
+     thread_pool_submit_aio(func, arg, thread_pool_co_cb, &tpc);
+     qemu_coroutine_yield();
+     return tpc.ret;
++#endif
+ }
+ 
+ void thread_pool_update_params(ThreadPoolAio *pool, AioContext *ctx)
