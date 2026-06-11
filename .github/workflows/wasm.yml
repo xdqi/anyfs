@@ -64,9 +64,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: lkl-wasm
-          key: lkl-wasm-${{ hashFiles('peru.yaml', 'scripts/gen_lkl_config_wasm.sh', 'scripts/build_lkl_wasm.sh', 'scripts/oot_fs.sh', 'patches/linux/wasm/**', '.github/workflows/wasm.yml') }}
+          key: lkl-wasm-v2-${{ hashFiles('peru.yaml', 'scripts/gen_lkl_config_wasm.sh', 'scripts/build_lkl_wasm.sh', 'scripts/oot_fs.sh', 'patches/linux/wasm/**', '.github/workflows/wasm.yml') }}
           restore-keys: |
-            lkl-wasm-
+            lkl-wasm-v2-
 
       - name: Cache OOT FS sources (NTFS PLUS + APFS + OpenZFS)
         id: cache-oot
@@ -81,9 +81,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: deps/qemu/build-anyfs-wasm
-          key: qemu-wasm-${{ hashFiles('peru.yaml', 'scripts/build_qemu_wasm.sh', 'patches/qemu/**') }}
+          key: qemu-wasm-v2-${{ hashFiles('peru.yaml', 'scripts/build_qemu_wasm.sh', 'patches/qemu/**') }}
           restore-keys: |
-            qemu-wasm-
+            qemu-wasm-v2-
 
       - name: Install peru
         run: |
@@ -96,10 +96,16 @@ jobs:
 
       # Pinned to the emcc the bundle was validated with (same as
       # wasm-sysroot.yml). Bump deliberately and re-validate.
+      # actions-cache-folder pins emsdk at a STABLE workspace path. Without
+      # it the action installs under a per-run $RUNNER_TEMP/<uuid>/ dir,
+      # and every absolute emsdk path baked into cached build trees (make
+      # .d prerequisites, meson cross files, build.ninja rules) dangles on
+      # the next run ("No rule to make target .../sysroot/include/...").
       - name: Set up emsdk
         uses: mymindstorm/setup-emsdk@v14
         with:
           version: 5.0.7
+          actions-cache-folder: emsdk-cache
 
       # QEMU's bz2 comes from emscripten's port (bzlib.h + libbz2.a in the
       # emsdk cache sysroot); a fresh emsdk install hasn't built it.
