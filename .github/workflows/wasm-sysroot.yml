@@ -40,9 +40,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            meson ninja-build pkg-config python3 \
+            ninja-build pkg-config python3 pipx \
             autoconf automake libtool autopoint gettext bison flex \
             curl ca-certificates xz-utils git
+
+      # glib 2.88 requires meson >= 1.4.0; ubuntu-24.04 apt ships 1.3.2.
+      # pipx gives a current meson (same provisioning pattern as peru in
+      # linux.yml).
+      - name: Install meson via pipx
+        run: |
+          pipx install meson
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # Pinned to the emcc version the recipe was validated with (5.0.7,
       # 2026-06-10). Bump deliberately and re-validate manifest parity.
