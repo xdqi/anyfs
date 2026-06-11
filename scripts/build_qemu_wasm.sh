@@ -13,7 +13,7 @@
 #   WASM_SYSROOT  wasm static-libs sysroot  (default: paths.wasm_sysroot)
 #   BLD           build dir                 (default: $QEMU_ROOT/build-anyfs-wasm)
 #
-# Usage: ./build_qemu_wasm.sh [-j N]
+# Usage: ./build_qemu_wasm.sh [-j N] [-h|--help]
 set -euo pipefail
 
 # shellcheck source=lib/config.sh
@@ -28,9 +28,10 @@ JOBS="$(nproc)"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -j)  JOBS="$2"; shift 2 ;;
-        -j*) JOBS="${1#-j}"; shift ;;
-        *)   echo "unknown argument: $1" >&2; exit 2 ;;
+        -j)        JOBS="$2"; shift 2 ;;
+        -j*)       JOBS="${1#-j}"; shift ;;
+        -h|--help) awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"; exit 0 ;;
+        *)         echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
 
@@ -55,6 +56,9 @@ for p in "$REPO_ROOT"/patches/qemu/*.patch; do
 done
 
 # ── Configure (skipped when the build dir is already configured) ─────
+# argv frozen from the v11.0.0 reference build's config.status; on a QEMU
+# version bump, reconfigure once by hand and re-derive (meson introspect
+# --buildoptions / meson-logs/meson-log.txt records the effective -D options).
 if [[ ! -f "$BLD/config-host.mak" ]]; then
     mkdir -p "$BLD"
     # zstd resolves via pkg-config from the wasm sysroot; bz2 via
