@@ -29,4 +29,17 @@ curl -fsSL --retry 3 -o "$tmp" "$url" || {
 }
 tar -xJf "$tmp" -C "$dest"
 complete || { echo "fetched sysroot fails the manifest check" >&2; exit 1; }
+# Relocate pkg-config metadata: the tarball bakes the publisher's
+# build-time prefix (e.g. /home/runner/work/anyfs/anyfs/out-sysroot) into
+# every .pc, so -I/-L would point at a path that doesn't exist here and
+# consumers (QEMU's meson glib probe) fail with misleading errors. Rewrite
+# each .pc's recorded prefix — including absolute libdir/includedir
+# occurrences — to this checkout's install path.
+for pc in "$dest"/lib/pkgconfig/*.pc; do
+    [[ -f "$pc" ]] || continue
+    old_prefix="$(sed -n 's/^prefix=//p' "$pc" | head -1)"
+    [[ -n "$old_prefix" && "$old_prefix" != "$dest" ]] || continue
+    sed -i "s|$old_prefix|$dest|g" "$pc"
+done
+echo "relocated $(ls "$dest"/lib/pkgconfig/*.pc 2>/dev/null | wc -l) .pc files to $dest"
 echo "OK: $dest"
