@@ -23,13 +23,6 @@ importers:
         version: 5.9.3
 
   examples/electron-demo:
-    dependencies:
-      '@anyfs/native':
-        specifier: workspace:*
-        version: link:../../packages/anyfs-native
-      drivelist:
-        specifier: file:../../../../drivelist-anyfs
-        version: file:../../drivelist-anyfs
     devDependencies:
       '@electron/packager':
         specifier: ^18.3.6
@@ -52,6 +45,13 @@ importers:
       wait-on:
         specifier: ^8.0.0
         version: 8.0.5
+    optionalDependencies:
+      '@anyfs/native':
+        specifier: workspace:*
+        version: link:../../packages/anyfs-native
+      drivelist:
+        specifier: file:../../../../drivelist-anyfs
+        version: file:../../drivelist-anyfs
 
   examples/vite-demo:
     dependencies:
@@ -4465,12 +4465,14 @@ snapshots:
   bindings@1.5.0:
     dependencies:
       file-uri-to-path: 1.0.0
+    optional: true
 
   bl@4.1.0:
     dependencies:
       buffer: 5.7.1
       inherits: 2.0.4
       readable-stream: 3.6.2
+    optional: true
 
   bluebird@3.7.2: {}
 
@@ -4504,6 +4506,7 @@ snapshots:
     dependencies:
       base64-js: 1.5.1
       ieee754: 1.2.1
+    optional: true
 
   bundle-require@5.1.0(esbuild@0.27.7):
     dependencies:
@@ -4635,7 +4638,8 @@ snapshots:
       - react-native
       - typescript
 
-  chownr@1.1.4: {}
+  chownr@1.1.4:
+    optional: true
 
   chownr@3.0.0: {}
 
@@ -4749,7 +4753,8 @@ snapshots:
 
   deep-eql@5.0.2: {}
 
-  deep-extend@0.6.0: {}
+  deep-extend@0.6.0:
+    optional: true
 
   deepmerge@4.3.1: {}
 
@@ -4773,7 +4778,8 @@ snapshots:
 
   dequal@2.0.3: {}
 
-  detect-libc@2.1.2: {}
+  detect-libc@2.1.2:
+    optional: true
 
   detect-node@2.1.0:
     optional: true
@@ -4808,6 +4814,7 @@ snapshots:
       prebuild-install: 7.1.3
     transitivePeerDependencies:
       - supports-color
+    optional: true
 
   dunder-proto@1.0.1:
     dependencies:
@@ -4969,7 +4976,8 @@ snapshots:
 
   exact-trie@1.0.13: {}
 
-  expand-template@2.0.3: {}
+  expand-template@2.0.3:
+    optional: true
 
   expect-type@1.3.0: {}
 
@@ -5007,7 +5015,8 @@ snapshots:
     optionalDependencies:
       picomatch: 4.0.4
 
-  file-uri-to-path@1.0.0: {}
+  file-uri-to-path@1.0.0:
+    optional: true
 
   filename-reserved-regex@2.0.0: {}
 
@@ -5057,7 +5066,8 @@ snapshots:
 
   fraction.js@5.3.4: {}
 
-  fs-constants@1.0.0: {}
+  fs-constants@1.0.0:
+    optional: true
 
   fs-extra@10.1.0:
     dependencies:
@@ -5143,7 +5153,8 @@ snapshots:
     dependencies:
       pump: 3.0.4
 
-  github-from-package@0.0.0: {}
+  github-from-package@0.0.0:
+    optional: true
 
   glob-parent@5.1.2:
     dependencies:
@@ -5270,7 +5281,8 @@ snapshots:
     dependencies:
       safer-buffer: 2.1.2
 
-  ieee754@1.2.1: {}
+  ieee754@1.2.1:
+    optional: true
 
   immer@9.0.21: {}
 
@@ -5283,7 +5295,8 @@ snapshots:
 
   inherits@2.0.4: {}
 
-  ini@1.3.8: {}
+  ini@1.3.8:
+    optional: true
 
   intl-messageformat@9.13.0:
     dependencies:
@@ -5621,7 +5634,8 @@ snapshots:
     dependencies:
       minipass: 7.1.3
 
-  mkdirp-classic@0.5.3: {}
+  mkdirp-classic@0.5.3:
+    optional: true
 
   mlly@1.8.2:
     dependencies:
@@ -5642,13 +5656,15 @@ snapshots:
 
   nanoid@3.3.12: {}
 
-  napi-build-utils@2.0.0: {}
+  napi-build-utils@2.0.0:
+    optional: true
 
   negotiator@1.0.0: {}
 
   node-abi@3.92.0:
     dependencies:
       semver: 7.8.0
+    optional: true
 
   node-addon-api@8.7.0: {}
 
@@ -5843,6 +5859,7 @@ snapshots:
       simple-get: 4.0.1
       tar-fs: 2.1.4
       tunnel-agent: 0.6.0
+    optional: true
 
   prettier@3.8.3: {}
 
@@ -5886,6 +5903,7 @@ snapshots:
       ini: 1.3.8
       minimist: 1.2.8
       strip-json-comments: 2.0.1
+    optional: true
 
   react-display-name@0.2.5: {}
 
@@ -6001,6 +6019,7 @@ snapshots:
       inherits: 2.0.4
       string_decoder: 1.3.0
       util-deprecate: 1.0.2
+    optional: true
 
   readdirp@3.6.0:
     dependencies:
@@ -6100,7 +6119,8 @@ snapshots:
     dependencies:
       tslib: 2.8.1
 
-  safe-buffer@5.2.1: {}
+  safe-buffer@5.2.1:
+    optional: true
 
   safer-buffer@2.1.2: {}
 
@@ -6144,13 +6164,15 @@ snapshots:
 
   signal-exit@4.1.0: {}
 
-  simple-concat@1.0.1: {}
+  simple-concat@1.0.1:
+    optional: true
 
   simple-get@4.0.1:
     dependencies:
       decompress-response: 6.0.0
       once: 1.4.0
       simple-concat: 1.0.1
+    optional: true
 
   smart-buffer@4.2.0: {}
 
@@ -6211,6 +6233,7 @@ snapshots:
   string_decoder@1.3.0:
     dependencies:
       safe-buffer: 5.2.1
+    optional: true
 
   strip-ansi@6.0.1:
     dependencies:
@@ -6222,7 +6245,8 @@ snapshots:
 
   strip-bom@3.0.0: {}
 
-  strip-json-comments@2.0.1: {}
+  strip-json-comments@2.0.1:
+    optional: true
 
   strip-literal@3.1.0:
     dependencies:
@@ -6318,6 +6342,7 @@ snapshots:
       mkdirp-classic: 0.5.3
       pump: 3.0.4
       tar-stream: 2.2.0
+    optional: true
 
   tar-stream@2.2.0:
     dependencies:
@@ -6326,6 +6351,7 @@ snapshots:
       fs-constants: 1.0.0
       inherits: 2.0.4
       readable-stream: 3.6.2
+    optional: true
 
   tar@7.5.15:
     dependencies:
@@ -6429,6 +6455,7 @@ snapshots:
   tunnel-agent@0.6.0:
     dependencies:
       safe-buffer: 5.2.1
+    optional: true
 
   type-fest@0.13.1:
     optional: true
