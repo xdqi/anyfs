@@ -4,9 +4,11 @@ set -uo pipefail
 _root="$(cd "$(dirname "$0")/.." && pwd)"
 # Capture env overrides before config.sh (which exports toml defaults, overwriting env vars).
 _pre_wasm_ld="${ANYFS_TOOLCHAINS_WASM_LD:-}"
+_pre_wasm_sysroot="${ANYFS_PATHS_WASM_SYSROOT:-}"
 source "$(dirname "$0")/lib/config.sh"
 # Restore env override if caller set it explicitly before running doctor.
 [ -n "$_pre_wasm_ld" ] && ANYFS_TOOLCHAINS_WASM_LD="$_pre_wasm_ld"
+[ -n "$_pre_wasm_sysroot" ] && ANYFS_PATHS_WASM_SYSROOT="$_pre_wasm_sysroot"
 fail=0
 ok()   { printf '  \033[32mok\033[0m   %s\n' "$1"; }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=1; }
@@ -30,19 +32,25 @@ mw="$ANYFS_TOOLCHAINS_MSYS2_CROSS/bin/x86_64-w64-mingw32-ld"
 [ -x "$mw" ] && ok "$($mw --version | head -1)" || bad "mingw64 ld missing: $mw"
 
 echo "== wasm-ld (patched, from xdqi/llvm-wasm — only this binary is consumed) =="
-wl="${ANYFS_TOOLCHAINS_WASM_LD:-}"
-if [ -z "$wl" ]; then
-    case "$ANYFS_PATHS_DEPS_ROOT" in
-        /*) wl="$ANYFS_PATHS_DEPS_ROOT/llvm-wasm/workspace/install/llvm/bin/wasm-ld" ;;
-        *)  wl="$_root/$ANYFS_PATHS_DEPS_ROOT/llvm-wasm/workspace/install/llvm/bin/wasm-ld" ;;
-    esac
-fi
+wl="$ANYFS_TOOLCHAINS_WASM_LD"
 if [ -x "$wl" ]; then
     ver=$("$wl" --version 2>/dev/null | grep -oE 'LLD [0-9]+' | head -1)
     [ "$ver" = "LLD 18" ] && ok "$ver ($wl)" || bad "wasm-ld is '$ver', expected LLD 18 ($wl)"
 else
-    bad "patched wasm-ld not built — run: (cd deps/llvm-wasm && ./linux-wasm.sh build-llvm)"
+    bad "patched wasm-ld missing — run scripts/fetch_wasm_ld.sh (or build from source: cd deps/llvm-wasm && ./linux-wasm.sh build-llvm)"
 fi
+
+echo "== wasm sysroot (static libs for the wasm bundle; see scripts/lib/wasm_sysroot.manifest) =="
+_manifest="$_root/scripts/lib/wasm_sysroot.manifest"
+_missing=0
+while IFS= read -r lib; do
+    case "$lib" in ''|'#'*) continue ;; esac
+    if [ ! -f "$ANYFS_PATHS_WASM_SYSROOT/lib/$lib" ]; then
+        bad "missing $ANYFS_PATHS_WASM_SYSROOT/lib/$lib — run scripts/fetch_wasm_sysroot.sh (or scripts/build_wasm_sysroot.sh)"
+        _missing=1
+    fi
+done < "$_manifest"
+[ "$_missing" -eq 0 ] && ok "all manifest libs present in $ANYFS_PATHS_WASM_SYSROOT/lib"
 
 echo "== deps synced + at locked SHA =="
 if [ -d "$ANYFS_PATHS_LINUX_SRC/.git" ]; then

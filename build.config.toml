@@ -10,11 +10,16 @@ linux_src   = ""            # "" => <deps_root>/linux
 qemu_src    = ""            # "" => <deps_root>/qemu
 util_linux  = ""            # "" => <deps_root>/util-linux
 ksmbd_tools = ""            # "" => <deps_root>/ksmbd-tools
+# Sysroot holding wasm static libs (libblkid/libz/libbz2/libzstd/glib...)
+# produced by scripts/build_wasm_sysroot.sh. "" => .toolchain/wasm-sysroot/ when
+# fetched (scripts/fetch_wasm_sysroot.sh), else <repo>/wasm-sysroot
+wasm_sysroot= ""            # "" => <repo>/wasm-sysroot
 
 [toolchains]
 emsdk        = ""           # "" => discover via $EMSDK or `which emcc`
 msys2_cross  = "/opt/msys2-cross"   # mingw cross toolchain + sysroot + binutils 2.46
-# Patched wasm-ld (built from xdqi/llvm-wasm). "" => <deps_root>/llvm-wasm/.../wasm-ld
+# Patched wasm-ld (built from xdqi/llvm-wasm). "" => .toolchain/wasm-ld/ when
+# fetched (scripts/fetch_wasm_ld.sh), else <deps_root>/llvm-wasm/.../wasm-ld
 wasm_ld      = ""
 # Native binutils for the LKL kernel link (bypasses the stale tools/lkl/bin 2.25.1).
 binutils_native = "/usr/bin"        # system binutils (>= 2.30); PE patch not needed for ELF

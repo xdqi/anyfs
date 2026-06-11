@@ -13,7 +13,7 @@ import { networkInterfaces } from 'node:os';
 import { CDPClient, sleep } from './common-cdp.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = resolve(__dirname, '..');
+const ROOT = resolve(__dirname, '../..');
 const TS = resolve(ROOT, 'ts');
 const ELECTRON_DIR = resolve(TS, 'examples', 'electron-demo');
 

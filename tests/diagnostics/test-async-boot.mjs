@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// End-to-end test: vite-demo main page with prewarm
+// Test async boot: Electron → anyfs.worker.js → anyfs.workeronly.mjs (async boot)
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import http from 'node:http';
+import fs from 'node:fs';
 import { CDPClient } from './common-cdp.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -19,8 +20,11 @@ function httpGet(url) {
   });
 }
 
-const viteDir = resolve(__dirname, '../ts/examples/vite-demo');
-const viteProc = spawn('npx', ['vite', '--port', '5209'], {
+// Clean up any leftover processes
+try { process.kill(parseInt(fs.readFileSync('/tmp/xvfb_96.pid','utf8'))); } catch(e) {}
+
+const viteDir = resolve(__dirname, '../../ts/examples/vite-demo');
+const viteProc = spawn('npx', ['vite', '--port', '5204'], {
   cwd: viteDir,
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -33,18 +37,19 @@ const viteUrl = await new Promise((res, rej) => {
 });
 console.log('vite:', viteUrl);
 
-const xvfb = spawn('Xvfb', [':95', '-screen', '0', '1280x720x24'], { stdio: 'ignore' });
+const xvfb = spawn('Xvfb', [':96', '-screen', '0', '1280x720x24'], { stdio: 'ignore' });
+xvfb.pid && fs.writeFileSync('/tmp/xvfb_96.pid', String(xvfb.pid));
 await sleep(500);
 
-const cdpPort = 9409;
-const electronDir = resolve(__dirname, '../ts/examples/electron-demo');
+const cdpPort = 9404;
+const electronDir = resolve(__dirname, '../../ts/examples/electron-demo');
 const electronBin = resolve(electronDir, 'node_modules/.bin/electron');
 const electronProc = spawn(electronBin, [
   electronDir, `--remote-debugging-port=${cdpPort}`
 ], {
   cwd: electronDir,
   stdio: ['ignore', 'pipe', 'pipe'],
-  env: { ...process.env, DISPLAY: ':95', ELECTRON_DEV: '1', ANYFS_DISABLE_NATIVE: '1' }
+  env: { ...process.env, DISPLAY: ':96', ELECTRON_DEV: '1', ANYFS_DISABLE_NATIVE: '1' }
 });
 electronProc.stderr.on('data', c => process.stderr.write(c));
 
@@ -69,56 +74,61 @@ await client.connect();
 await client.send('Runtime.enable');
 await client.send('Page.enable');
 
-// Navigate to main page (with prewarm enabled)
-console.log('navigating to main page...');
-await client.send('Page.navigate', { url: viteUrl + '/' });
-await sleep(2000);
+// Navigate to debug-worker.html
+console.log('navigating to debug-worker.html...');
+await client.send('Page.navigate', { url: viteUrl + '/debug-worker.html' });
+await sleep(3000);
 
-// Drain startup console
+// Drain startup console events
 for (const e of client.events) {
   if (e.method === 'Runtime.consoleAPICalled') {
     const text = e.params?.args?.map(a => a.value ?? '').join(' ') || '';
-    console.log(`  [startup] ${text.substring(0, 300)}`);
+    console.log(`  [console-startup] ${text.substring(0, 400)}`);
   }
 }
 client.events.length = 0;
 
-// Poll for prewarm completion
+// Poll for result
 let hasResult = false;
-for (let i = 0; i < 30; i++) {
+for (let i = 0; i < 90; i++) {
   await sleep(1000);
 
+  let logText = 'eval-failed';
+  try {
+    logText = await Promise.race([
+      client.evaluate('document.getElementById("log")?.textContent || "no-log"'),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))
+    ]);
+  } catch(e) {}
+
+  // Drain console events
   for (const e of client.events) {
     if (e.method === 'Runtime.consoleAPICalled') {
       const text = e.params?.args?.map(a => a.value ?? '').join(' ') || '';
       console.log(`  [console] ${text.substring(0, 400)}`);
-      if (text.includes('[PREWARM] boot complete')) {
-        console.log('\n>>> PREWARM SUCCESS');
-        hasResult = true;
-      }
-      if (text.includes('PREWARM') && text.includes('error')) {
-        console.log('\n>>> PREWARM ERROR');
-        hasResult = true;
-      }
     }
   }
   client.events.length = 0;
 
-  if (hasResult) break;
+  const short = (logText || '').replace(/\n/g, ' | ');
+  if (short.length > 300) {
+    console.log(`  [${i+1}s] ${short.substring(0, 150)}...${short.substring(short.length - 150)}`);
+  } else {
+    console.log(`  [${i+1}s] ${short}`);
+  }
 
-  // Also check page status text
-  try {
-    const status = await Promise.race([
-      client.evaluate('document.body?.textContent?.substring(0, 200) || "no-body"'),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000))
-    ]);
-    console.log(`  [${i+1}s] body: ${(status || '').replace(/\n/g, ' ').substring(0, 150)}`);
-  } catch(e) {
-    console.log(`  [${i+1}s] eval timeout`);
+  if (logText?.includes('"ok":true') || logText?.includes('boot_result=0')) {
+    console.log('\n>>> SUCCESS');
+    hasResult = true;
+    break;
+  }
+  if (logText?.includes('BOOT ERROR') || logText?.includes('WORKER ERROR') || logText?.includes('TIMEOUT') || logText?.includes('boot_result=-')) {
+    console.log('\n>>> FAILURE');
+    hasResult = true;
+    break;
   }
 }
-
-if (!hasResult) console.log('\n>>> NO RESULT after 30s');
+if (!hasResult) console.log('\n>>> NO RESULT after 90s');
 
 electronProc.kill();
 xvfb.kill();

@@ -22,9 +22,9 @@ const IMAGE = process.env.IMAGE || '/home/kosaka/debian-13.5.0-amd64-netinst.iso
 let passed = 0;
 let failed = 0;
 
-function test(name, fn) {
+async function test(name, fn) {
     try {
-        fn();
+        await fn();
         passed++;
         console.log(`  ✓ ${name}`);
     } catch (err) {
@@ -45,22 +45,22 @@ console.log(`Exports: ${Object.keys(addon).sort().join(', ')}\n`);
 
 let handle = -1;
 
-test('kernelInit(256, 7) returns 0', () => {
+await test('kernelInit(256, 7) returns 0', () => {
     const rc = addon.kernelInit(256, 7);
     strictEqual(rc, 0);
 });
 
 // ── 2. Session open ───────────────────────────────
 
-test('sessionOpen(path, 1) returns handle >= 0', () => {
+await test('sessionOpen(path, 1) returns handle >= 0', () => {
     handle = addon.sessionOpen(IMAGE, 1);
     assert(handle >= 0, `handle=${handle} expected >= 0`);
 });
 
 // ── 3. List parts ─────────────────────────────────
 
-test('sessionListJson returns array', () => {
-    const json = addon.sessionListJson(handle);
+await test('sessionListJson returns array', async () => {
+    const json = await addon.sessionListJson(handle);
     const list = JSON.parse(json);
     assert(Array.isArray(list), 'expected array');
     console.log(`    ${list.length} partition entries`);
@@ -74,8 +74,8 @@ test('sessionListJson returns array', () => {
 
 // ── 4. Meta ───────────────────────────────────────
 
-test('sessionMetaJson returns expected shape', () => {
-    const json = addon.sessionMetaJson(handle);
+await test('sessionMetaJson returns expected shape', async () => {
+    const json = await addon.sessionMetaJson(handle);
     const meta = JSON.parse(json);
     assert(typeof meta.logical_size === 'number', 'expected logical_size');
     assert(typeof meta.pt_type === 'string', 'expected pt_type');
@@ -84,13 +84,13 @@ test('sessionMetaJson returns expected shape', () => {
 
 // ── 5. Enter partition ──────────────────────
 
-test('sessionEnter(handle, 2, 0) mounts partition', () => {
+await test('sessionEnter(handle, 2, 0) mounts partition', async () => {
     const mp = addon.sessionEnter(handle, 2, 0);
     assert(mp && mp.length > 0, `mount path empty: "${mp}"`);
     console.log(`    mount path: "${mp}"`);
 
     // readdir the mount point
-    const json = addon.readdirJson(mp);
+    const json = await addon.readdirJson(mp);
     const entries = JSON.parse(json);
     assert(Array.isArray(entries), 'expected entries array');
     console.log(`    ${entries.length} root entries`);
@@ -101,7 +101,7 @@ test('sessionEnter(handle, 2, 0) mounts partition', () => {
 
 // ── 6. Close ──────────────────────────────────────
 
-test('sessionClose(handle) returns 0', () => {
+await test('sessionClose(handle) returns 0', () => {
     const rc = addon.sessionClose(handle);
     strictEqual(rc, 0);
     handle = -1;
@@ -109,7 +109,7 @@ test('sessionClose(handle) returns 0', () => {
 
 // ── 7. Halt ───────────────────────────────────────
 
-test('kernelHalt succeeds', () => {
+await test('kernelHalt succeeds', () => {
     addon.kernelHalt();
     // kernelHalt is void
     assert(true, 'kernelHalt completed');

@@ -32,6 +32,36 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Ephemeral sccache-dist compile farm. Workers serve the coordinator
+  # (the build job) and exit when it goes offline. Skipped on PRs —
+  # fork PRs have no TS_OAUTH_SECRET and same-repo PRs don't need the
+  # farm for cache-warm builds. Also skipped when TS_OAUTH_SECRET is not
+  # configured, so missing-secret runs stay green instead of failing the
+  # worker jobs. (The secrets context is not allowed in `if` expressions,
+  # so its presence is laundered through job-level env.)
+  sccache-workers:
+    name: sccache worker ${{ matrix.idx }}
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      matrix:
+        idx: [1, 2]
+    env:
+      FARM_SECRET_SET: ${{ secrets.TS_OAUTH_SECRET != '' }}
+    steps:
+      - name: Farm disabled — TS_OAUTH_SECRET not configured
+        if: ${{ env.FARM_SECRET_SET == 'false' }}
+        run: echo "TS_OAUTH_SECRET is not set; skipping farm worker (build compiles locally)."
+      - uses: xdqi/sccache-dist-action@v0.0.5
+        if: ${{ env.FARM_SECRET_SET == 'true' }}
+        with:
+          mode: worker
+          worker-index: '${{ matrix.idx }}'
+          oauth-secret: '${{ secrets.TS_OAUTH_SECRET }}'
+          # The OAuth client owns tag:ci (not the action default tag:ci-sccache).
+          tags: 'tag:ci'
+
   build:
     name: mingw64
     runs-on: ubuntu-24.04
@@ -40,6 +70,7 @@ jobs:
     env:
       MSYS_CROSS_REPO: https://msys.kosaka.moe/repo
       MSYS_CROSS_PREFIX: /opt/msys2-cross
+      FARM_SECRET_SET: ${{ secrets.TS_OAUTH_SECRET != '' }}
 
     steps:
       - name: Checkout anyfs-reader
@@ -90,7 +121,7 @@ jobs:
             msys-cross-mingw64-gcc \
             msys-cross-cygwin-binutils \
             msys-cross-cygwin-gcc \
-            msys-cross-pkgconfig
+            msys-cross-mingw64-pkgconf
 
           # MSYS2 upstream sysroot libs under /opt/msys2-cross/mingw64.
           # QEMU block layer + DLL closure deps that package_mingw64.sh
@@ -110,6 +141,37 @@ jobs:
           "${MSYS_CROSS_PREFIX}/bin/x86_64-w64-mingw32-ld" --version | head -1
           "${MSYS_CROSS_PREFIX}/bin/x86_64-w64-mingw32-pkg-config" \
             --modversion glib-2.0
+
+      # ── sccache-dist farm (best-effort; build proceeds locally if absent) ──
+      # EXPERIMENTAL on this leg: sccache-dist must package the msys2-cross
+      # x86_64-w64-mingw32-gcc toolchain (under /opt/msys2-cross) and ship it
+      # to the workers. The engine supports arbitrary-toolchain packaging, but
+      # a plain cross-gcc + sysroot is unproven here. On any farm failure the
+      # build falls back to local compilation exactly as before.
+      # Gated on TS_OAUTH_SECRET: without it the farm cannot come up, so skip
+      # the whole block (sccache never lands on PATH and the build uses the
+      # plain cross-gcc, exactly like the PR path).
+      - name: Cache sccache objects
+        if: ${{ github.event_name != 'pull_request' && env.FARM_SECRET_SET == 'true' }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-mingw64-${{ github.sha }}
+          restore-keys: |
+            sccache-mingw64-
+
+      - name: Bring up sccache-dist farm
+        if: ${{ github.event_name != 'pull_request' && env.FARM_SECRET_SET == 'true' }}
+        continue-on-error: true
+        uses: xdqi/sccache-dist-action@v0.0.5
+        with:
+          mode: coordinator
+          expected-workers: 2
+          min-workers: 1
+          wait-timeout: 180s
+          oauth-secret: '${{ secrets.TS_OAUTH_SECRET }}'
+          # The OAuth client owns tag:ci (not the action default tag:ci-sccache).
+          tags: 'tag:ci'
 
       # ── Caches ──────────────────────────────────────────────────────────────
       # All source deps (linux, qemu, ksmbd-tools, util-linux) are now managed
@@ -202,11 +264,19 @@ jobs:
 
       - name: Build LKL kernel (mingw64)
         run: |
+          # Absolute compiler path so sccache-dist hashes and ships the
+          # msys2-cross toolchain (not whatever "x86_64-w64-mingw32-gcc"
+          # resolves to on a worker).
+          CC_ARGS=()
+          if command -v sccache >/dev/null 2>&1; then
+            CC_ARGS=(--cc="sccache /opt/msys2-cross/bin/x86_64-w64-mingw32-gcc")
+          fi
           ./scripts/build_lkl.sh \
             --linux=deps/linux \
             --out="$GITHUB_WORKSPACE" \
             --targets=mingw64 \
-            -j"$(nproc)"
+            "${CC_ARGS[@]}" \
+            -j"${SCCACHE_J:-$(nproc)}"
           test -f "$GITHUB_WORKSPACE/lkl-mingw64/tools/lkl/lib/liblkl.dll" \
             || { echo "::error::liblkl.dll missing"; exit 1; }
 
@@ -232,6 +302,11 @@ jobs:
             --qemu-root=deps/qemu \
             --ksmbd-root=deps/ksmbd-tools \
             -j"$(nproc)"
+
+      - name: sccache stats
+        if: ${{ github.event_name != 'pull_request' && env.FARM_SECRET_SET == 'true' }}
+        continue-on-error: true
+        run: sccache --show-stats || true
 
       - name: Package Win64 distribution tarball
         run: |

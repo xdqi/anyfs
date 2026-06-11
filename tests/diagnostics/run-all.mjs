@@ -2,8 +2,11 @@
 /*
  * run-all.mjs — Run all 6 CDP-based UI tests for anyfs reader.
  *
+ * DEMOTED to manual diagnostics (see README.md in this directory): the
+ * Playwright suite at ts/tests/e2e is the primary regression gate.
+ *
  * Usage:
- *   node tests/run-all.mjs [--image path/to/disk.iso]
+ *   node tests/diagnostics/run-all.mjs [--image path/to/disk.iso]
  *
  * The 6 combinations:
  *   1. web      + WASM   + local file

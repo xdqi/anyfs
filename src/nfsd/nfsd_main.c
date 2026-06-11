@@ -46,6 +46,7 @@
 
 #include "../host_proxy/host_proxy.h"
 #include "anyfs.h"
+#include "server_common.h"
 #include <lkl.h>
 
 /* ── Compile-time limits ─────────────────────────────────────────────── */
@@ -76,14 +77,6 @@ typedef struct {
 	 */
 	char bind_path[80];
 } ExportInfo;
-
-static volatile int running = 1;
-
-static void sigint_handler(int sig)
-{
-	(void)sig;
-	running = 0;
-}
 
 /* Write a string to a file inside LKL */
 static int lkl_write_file(const char* path, const char* data)
@@ -443,7 +436,7 @@ static void* cache_handler_thread(void* arg)
 		}
 	}
 
-	while (running) {
+	while (anyfs_server_running) {
 		struct lkl_pollfd pfds[NUM_CHANNELS];
 		int nfds = 0;
 		int fd_map[NUM_CHANNELS];
@@ -715,28 +708,18 @@ int main(int argc, char** argv)
 
 	/* ── Signals / stdio ────────────────────────────────────────────────
 	 */
-	setbuf(stdout, NULL);
-	signal(SIGINT, sigint_handler);
-	signal(SIGTERM, sigint_handler);
+	anyfs_server_install_signals();
 
 	/* ── 1. Boot LKL kernel ─────────────────────────────────────────────
 	 */
 	AnyfsKernelOpts kern_opts = {.mem_mb = 0 /* anyfs default (32M) */,
 				     .loglevel = 4};
-	int ret = anyfs_kernel_init(&kern_opts);
+	int ret = anyfs_server_boot(&kern_opts);
 	if (ret) {
 		fprintf(stderr, "Failed to start kernel\n");
 		return 1;
 	}
 	printf("LKL kernel started (nfsd built-in)\n");
-
-	/*
-	 * No virtio-net / slirp: the data path is host TCP -> host_proxy
-	 * threads -> lkl_sys_read/write -> LKL TCP on lo. We just need lo
-	 * up so nfsd's listener binds to it. (lo is auto-up after boot,
-	 * but the call is idempotent and documents intent.)
-	 */
-	lkl_if_up(1); /* loopback is always ifindex 1 in LKL */
 
 	/* ── 4. Open disk images ────────────────────────────────────────────
 	 */
@@ -749,16 +732,23 @@ int main(int argc, char** argv)
 	}
 
 	/* ── 5. Resolve --share specs to LKL paths ───────────────────────── */
-	for (int si = 0; si < n_share_specs; si++) {
-		ExportInfo* ex = &g_exports[g_n_exports];
+	{
+		AnyfsShareEntry ents[ANYFS_MAX_SHARES];
 		uint32_t eflags = read_only ? ANYFS_SESSION_READONLY : 0;
-		if (anyfs_share_resolve(share_specs[si], disks, n_images,
-					eflags, ex->name, sizeof(ex->name),
-					ex->lkl_path, sizeof(ex->lkl_path)) < 0)
+		int n = anyfs_server_resolve_shares(share_specs, n_share_specs,
+						    disks, n_images, eflags,
+						    ents, ANYFS_MAX_SHARES);
+		if (n < 0)
 			goto halt;
-		printf("Export [%d] /%s -> %s\n", g_n_exports, ex->name,
-		       ex->lkl_path);
-		g_n_exports++;
+		for (int i = 0; i < n; i++) {
+			ExportInfo* ex = &g_exports[g_n_exports];
+			memcpy(ex->name, ents[i].name, sizeof(ex->name));
+			memcpy(ex->lkl_path, ents[i].lkl_path,
+			       sizeof(ex->lkl_path));
+			printf("Export [%d] /%s -> %s\n", g_n_exports, ex->name,
+			       ex->lkl_path);
+			g_n_exports++;
+		}
 	}
 
 	if (g_n_exports == 0) {
@@ -846,7 +836,7 @@ int main(int argc, char** argv)
 
 	/* ── 8. Serve until interrupted ─────────────────────────────────────
 	 */
-	while (running) {
+	while (anyfs_server_running) {
 		usleep(100000);
 	}
 
@@ -855,11 +845,7 @@ int main(int argc, char** argv)
 	pthread_join(cache_tid, NULL);
 
 halt:
-	for (int i = 0; i < n_images; i++) {
-		if (disks[i])
-			anyfs_session_close(disks[i]);
-	}
-	anyfs_kernel_halt();
+	anyfs_server_shutdown(disks, n_images);
 	printf("Done\n");
 	return 0;
 }

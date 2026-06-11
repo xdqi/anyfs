@@ -1,0 +1,18 @@
+# glib 2.88.0 emscripten port patch, applied by scripts/build_wasm_sysroot.sh.
+# glib-unix.c's g_unix_fd_query_path() has per-platform implementations and
+# a hard #error fallback; emscripten has no F_GETPATH / /proc/self/fd, so
+# report G_FILE_ERROR_NOSYS like the HURD branch does. This is the same
+# (uncommitted) patch the known-good hand-built sysroot's glib tree carried.
+--- a/glib/glib-unix.c
++++ b/glib/glib-unix.c
+@@ -1006,6 +1006,10 @@ g_unix_fd_query_path (int      fd,
+   g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_NOSYS,
+                "g_unix_fd_query_path() not supported on HURD");
+   return NULL;
++#elif defined (__EMSCRIPTEN__)
++  g_set_error (error, G_FILE_ERROR, G_FILE_ERROR_NOSYS,
++               "g_unix_fd_query_path() not supported on emscripten");
++  return NULL;
+ #else
+   #error "g_unix_fd_query_path() not supported on this platform"
+ #endif

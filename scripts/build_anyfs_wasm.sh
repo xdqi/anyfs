@@ -5,10 +5,10 @@
 # and libblkid-based fstype probing.
 #
 # Inputs:
-#   - $LINUX_DIR                      kernel source tree (default: ~/linux)
+#   - $LINUX_DIR                      kernel source tree (default: paths.linux_src)
 #   - $OUT/tools/lkl/liblkl.a         pre-built LKL wasm (build_lkl_wasm.sh)
-#   - $HOME/anyfs-reader/src/core/    core C sources
-#   - $HOME/anyfs-reader/ts/native/anyfs_ts.c   TypeScript glue
+#   - <repo>/src/core/                core C sources
+#   - <repo>/ts/native/anyfs_ts.c     TypeScript glue
 #   - $QEMU_ROOT/build-anyfs-wasm/    pre-built QEMU wasm archives
 #   - $WASM_SYSROOT                   sysroot with libblkid/libz/libbz2/libzstd etc.
 #
@@ -25,15 +25,21 @@
 #     the asyncify unwinding happens on the dedicated pthread.
 set -euo pipefail
 
-LINUX_DIR="${LINUX_DIR:-$HOME/linux}"
-OUT="${OUT:-$HOME/anyfs-reader/lkl-wasm}"
-EMSDK_DIR="${EMSDK_DIR:-$HOME/emsdk}"
-BLD="${BLD:-$HOME/anyfs-reader/build-anyfs-wasm}"
-TS="${TS:-$HOME/anyfs-reader/ts}"
-QEMU_ROOT="${QEMU_ROOT:-$HOME/qemu}"
+# shellcheck source=lib/config.sh
+source "$(dirname "$0")/lib/config.sh"
+# shellcheck source=lib/wasm_exports.sh
+source "$(dirname "$0")/lib/wasm_exports.sh"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+LINUX_DIR="${LINUX_DIR:-$ANYFS_PATHS_LINUX_SRC}"
+OUT="${OUT:-$REPO_ROOT/lkl-wasm}"
+EMSDK_DIR="${EMSDK_DIR:-$ANYFS_TOOLCHAINS_EMSDK}"
+BLD="${BLD:-$REPO_ROOT/build-anyfs-wasm}"
+TS="${TS:-$REPO_ROOT/ts}"
+QEMU_ROOT="${QEMU_ROOT:-$ANYFS_PATHS_QEMU_SRC}"
 QBLD="${QBLD:-$QEMU_ROOT/build-anyfs-wasm}"
-SYS="${WASM_SYSROOT:-$HOME/wasm-sysroot}"
-SRC_CORE="${SRC_CORE:-$HOME/anyfs-reader/src/core}"
+SYS="${WASM_SYSROOT:-$ANYFS_PATHS_WASM_SYSROOT}"
+SRC_CORE="${SRC_CORE:-$REPO_ROOT/src/core}"
 GLUE="$TS/native/anyfs_ts.c"
 LIBLKL="$OUT/tools/lkl/liblkl.a"
 TARGET="${ANYFS_TARGET:-browser}"
@@ -43,12 +49,14 @@ source "$EMSDK_DIR/emsdk_env.sh" >/dev/null 2>&1
 
 case "$TARGET" in
     browser)
+        # shellcheck disable=SC2054  # comma is part of the emcc value, not an element separator
         ENV_FLAG=(-sENVIRONMENT=web,worker)
         FS_FLAG=(-lworkerfs.js)
         FS_RUNTIME="WORKERFS"
         OUT_STEM="anyfs"
         ;;
     node)
+        # shellcheck disable=SC2054  # comma is part of the emcc value, not an element separator
         ENV_FLAG=(-sENVIRONMENT=node,worker)
         FS_FLAG=(-lnodefs.js)
         FS_RUNTIME="NODEFS"
@@ -63,7 +71,7 @@ esac
 INC=(
     -I "$LINUX_DIR/tools/lkl/include"
     -I "$OUT/tools/lkl/include"
-    -I "$HOME/anyfs-reader/include"
+    -I "$REPO_ROOT/include"
     -I "$SRC_CORE"
 )
 
@@ -161,7 +169,7 @@ QEMU_BLK_OBJ="$BLD/qemu_blk_backend.${TARGET}.o"
 echo "  CC   src/core/qemu_backend.c -> $QEMU_BLK_OBJ"
 emcc -pthread -O2 -g \
      -I "$SRC_CORE" \
-     -I "$HOME/anyfs-reader/include" \
+     -I "$REPO_ROOT/include" \
      -I "$QEMU_ROOT" -I "$QEMU_ROOT/include" \
      -I "$QBLD" -I "$QBLD/qapi" \
      -I "$SYS/include" -I "$SYS/include/glib-2.0" \
@@ -189,20 +197,7 @@ mkdir -p "$TS/packages/core/wasm"
 OUT_DIR="$TS/packages/core/wasm"
 OUT_JS="$OUT_DIR/${OUT_STEM}.mjs"
 
-EXPORTED_FUNCS='_main,_malloc,_free,'\
-'_anyfs_ts_kernel_init,_anyfs_ts_init_async,_anyfs_ts_is_boot_complete,_anyfs_ts_boot_result,_anyfs_ts_kernel_halt,'\
-'_anyfs_ts_session_open,_anyfs_ts_session_close,'\
-'_anyfs_ts_session_list_json,_anyfs_ts_session_meta_json,'\
-'_anyfs_ts_session_enter,'\
-'_anyfs_ts_session_enter_async,_anyfs_ts_session_enter_is_complete,_anyfs_ts_session_enter_result_p,'\
-'_anyfs_ts_readdir_json,_anyfs_ts_lstat_json,_anyfs_ts_stat_json,'\
-'_anyfs_ts_realpath,_anyfs_ts_readlink,_anyfs_ts_read_kernel_file,'\
-'_anyfs_ts_open,_anyfs_ts_pread,_anyfs_ts_close,'\
-'_anyfs_ts_session_open_p,_anyfs_ts_session_list_json_p,_anyfs_ts_session_meta_json_p,'\
-'_anyfs_ts_session_enter_p,'\
-'_anyfs_ts_readdir_json_p,_anyfs_ts_lstat_json_p,_anyfs_ts_stat_json_p,'\
-'_anyfs_ts_realpath_p,_anyfs_ts_readlink_p,_anyfs_ts_read_kernel_file_p,'\
-'_anyfs_ts_open_p,_anyfs_ts_pread_p,_anyfs_ts_close_p'
+EXPORTED_FUNCS="$(anyfs_wasm_exports "$GLUE")"
 
 EXPORTED_RUNTIME="ccall,cwrap,HEAPU8,HEAP32,HEAPU32,FS,${FS_RUNTIME},UTF8ToString,stringToUTF8,getValue,setValue"
 
@@ -220,6 +215,7 @@ EXTRA_ARCHIVES=(
     "$SYS/lib/libblkid.a" "$SYS/lib/libbz2.a" "$SYS/lib/libzstd.a"
 )
 
+# shellcheck disable=SC2054  # commas are literal in -Wl,... linker flags, not element separators
 LDFLAGS=(
     -pthread
     -sPROXY_TO_PTHREAD=1

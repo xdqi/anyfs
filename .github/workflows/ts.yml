@@ -1,0 +1,55 @@
+name: ts
+
+# Pure TS unit tests (no wasm bundle, no LKL): @anyfs/core node:test suite +
+# @anyfs/react vitest suite + @anyfs/nbd-proxy. The wasm smoke tests
+# (test/smoke.node.mjs) need a built bundle and stay local-only.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+          package_json_file: ts/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
+      - name: Install qemu-utils (qemu-img + qemu-io for nbd-proxy integration)
+        run: sudo apt-get install -y --no-install-recommends qemu-utils
+      - name: Install
+        working-directory: ts
+        # electron-demo depends on a sibling checkout (drivelist via
+        # file:../../../../drivelist-anyfs) and @anyfs/native's node-gyp
+        # install script compiles against the LKL tree — neither exists on a
+        # bare CI runner. Exclude both; electron-demo is the only dependent of
+        # @anyfs/native, and none of the CI-tested packages need either.
+        run: pnpm install --frozen-lockfile --filter '!electron-demo' --filter '!@anyfs/native'
+      - name: Build packages
+        working-directory: ts
+        run: pnpm -r --filter './packages/*' --filter '!@anyfs/native' build
+      - name: Core unit tests
+        working-directory: ts
+        run: pnpm --filter @anyfs/core run test:unit
+      - name: React unit tests
+        working-directory: ts
+        run: pnpm --filter @anyfs/react test
+      # The nbd-proxy integration test opens the PoC fixture qcow2 through the
+      # proxy with real qemu-img; the fixture is deterministic and generated
+      # on the fly (8 MiB pattern image + qemu-img convert).
+      - name: Generate nbd-proxy test fixture
+        run: node scripts/poc-nbd/make-test-image.mjs
+      - name: nbd-proxy tests
+        working-directory: ts
+        run: pnpm --filter @anyfs/nbd-proxy test

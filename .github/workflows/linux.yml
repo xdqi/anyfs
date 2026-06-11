@@ -20,10 +20,43 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Ephemeral sccache-dist compile farm. Workers serve the coordinator
+  # (the build job) and exit when it goes offline. Skipped on PRs —
+  # fork PRs have no TS_OAUTH_SECRET and same-repo PRs don't need the
+  # farm for cache-warm builds. Also skipped when TS_OAUTH_SECRET is not
+  # configured, so missing-secret runs stay green instead of failing the
+  # worker jobs. (The secrets context is not allowed in `if` expressions,
+  # so its presence is laundered through job-level env.)
+  sccache-workers:
+    name: sccache worker ${{ matrix.idx }}
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      matrix:
+        idx: [1, 2]
+    env:
+      FARM_SECRET_SET: ${{ secrets.TS_OAUTH_SECRET != '' }}
+    steps:
+      - name: Farm disabled — TS_OAUTH_SECRET not configured
+        if: ${{ env.FARM_SECRET_SET == 'false' }}
+        run: echo "TS_OAUTH_SECRET is not set; skipping farm worker (build compiles locally)."
+      - uses: xdqi/sccache-dist-action@v0.0.5
+        if: ${{ env.FARM_SECRET_SET == 'true' }}
+        with:
+          mode: worker
+          worker-index: '${{ matrix.idx }}'
+          oauth-secret: '${{ secrets.TS_OAUTH_SECRET }}'
+          # The OAuth client owns tag:ci (not the action default tag:ci-sccache).
+          tags: 'tag:ci'
+
   build:
     name: linux-amd64
     runs-on: ubuntu-24.04
     timeout-minutes: 75
+
+    env:
+      FARM_SECRET_SET: ${{ secrets.TS_OAUTH_SECRET != '' }}
 
     steps:
       - name: Checkout anyfs-reader
@@ -40,7 +73,8 @@ jobs:
             libfuse3-dev libnl-3-dev libnl-genl-3-dev \
             libcurl4-openssl-dev \
             patchelf ca-certificates \
-            smbclient nfs-common curl
+            smbclient nfs-common curl \
+            shellcheck
 
       # ── Caches ──────────────────────────────────────────────────────────────
       # All source deps (linux, qemu, ksmbd-tools) are now managed by peru and
@@ -114,6 +148,35 @@ jobs:
       - name: Lint — no hardcoded paths in migrated build scripts
         run: ./scripts/lint-no-hardcoded-paths.sh
 
+      - name: Lint — shellcheck
+        run: ./scripts/lint-shellcheck.sh
+
+      # ── sccache-dist farm (best-effort; build proceeds locally if absent) ──
+      # Gated on TS_OAUTH_SECRET: without it the farm cannot come up, so skip
+      # the whole block (sccache never lands on PATH and the build uses plain
+      # gcc, exactly like the PR path).
+      - name: Cache sccache objects
+        if: ${{ github.event_name != 'pull_request' && env.FARM_SECRET_SET == 'true' }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-linux-amd64-${{ github.sha }}
+          restore-keys: |
+            sccache-linux-amd64-
+
+      - name: Bring up sccache-dist farm
+        if: ${{ github.event_name != 'pull_request' && env.FARM_SECRET_SET == 'true' }}
+        continue-on-error: true
+        uses: xdqi/sccache-dist-action@v0.0.5
+        with:
+          mode: coordinator
+          expected-workers: 2
+          min-workers: 1
+          wait-timeout: 180s
+          oauth-secret: '${{ secrets.TS_OAUTH_SECRET }}'
+          # The OAuth client owns tag:ci (not the action default tag:ci-sccache).
+          tags: 'tag:ci'
+
       # ── Build ksmbd-tools (linux-amd64) ────────────────────────────────────
       - name: Build ksmbd-tools
         if: steps.cache-ksmbd-build.outputs.cache-hit != 'true'
@@ -141,11 +204,16 @@ jobs:
 
       - name: Build LKL kernel
         run: |
+          CC_ARGS=()
+          if command -v sccache >/dev/null 2>&1; then
+            CC_ARGS=(--cc="sccache gcc")
+          fi
           ./scripts/build_lkl.sh \
             --linux=deps/linux \
             --out="$GITHUB_WORKSPACE" \
             --targets=linux-amd64 \
-            -j"$(nproc)"
+            "${CC_ARGS[@]}" \
+            -j"${SCCACHE_J:-$(nproc)}"
           # package_linux.sh falls back to $HOME/linux/tools/lkl/lib/liblkl.so —
           # link the per-target build there so packaging finds it.
           mkdir -p deps/linux/tools/lkl/lib
@@ -154,10 +222,15 @@ jobs:
 
       - name: Build QEMU block layer
         run: |
+          CC_ARGS=()
+          if command -v sccache >/dev/null 2>&1; then
+            CC_ARGS=(--cc="sccache gcc")
+          fi
           ./scripts/build_qemu.sh \
             --qemu-src=deps/qemu \
             --targets=linux-amd64 \
-            -j"$(nproc)"
+            "${CC_ARGS[@]}" \
+            -j"${SCCACHE_J:-$(nproc)}"
 
       - name: Build anyfs-reader (core + server + fuse)
         run: |
@@ -168,6 +241,17 @@ jobs:
             --qemu-root=deps/qemu \
             --ksmbd-root=deps/ksmbd-tools \
             -j"$(nproc)"
+
+      - name: sccache stats
+        if: ${{ github.event_name != 'pull_request' && env.FARM_SECRET_SET == 'true' }}
+        continue-on-error: true
+        run: sccache --show-stats || true
+
+      - name: Run C unit tests
+        run: meson test -C build-anyfs-linux-amd64 --suite unit --print-errorlogs
+
+      - name: Wasm export drift gate
+        run: ./tests/test_wasm_exports.sh
 
       # ── Integration smoke test ──────────────────────────────────────────────
       # Boots each anyfs binary against a Debian 13 generic-cloud qcow2 and

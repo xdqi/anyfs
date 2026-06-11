@@ -1,0 +1,85 @@
+name: wasm-sysroot
+
+# Builds the wasm sysroot (17 static libs, see scripts/lib/wasm_sysroot.manifest)
+# from pinned sources via scripts/build_wasm_sysroot.sh and publishes it as a
+# GitHub release tarball (wasm-sysroot-linux.tar.xz). Consumers fetch it with
+# scripts/fetch_wasm_sysroot.sh — the same provisioning model as the mingw64
+# toolchain (recipe = PKGBUILD, this tarball = bootstrap.tar.xz, fetch script +
+# manifest = pacman). See docs/wasm-sysroot.md.
+#
+# Manual-dispatch only: a release is cut deliberately when the recipe's
+# version pins move, not on every push. Bump the tag (wasm-sysroot-rN) and
+# update WASM_SYSROOT_TAG in scripts/fetch_wasm_sysroot.sh afterwards.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create (e.g. wasm-sysroot-r1)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build + release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout anyfs-reader
+        uses: actions/checkout@v4
+
+      # meson/ninja/pkg-config/python3: build_wasm_sysroot.sh hard
+      # requirements. autoconf/automake/libtool/autopoint/gettext/bison/flex:
+      # util-linux autogen.sh (autopoint comes from gettext's dev tooling and
+      # po/ needs gettext proper; flex/bison cover the generated parsers).
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            meson ninja-build pkg-config python3 \
+            autoconf automake libtool autopoint gettext bison flex \
+            curl ca-certificates xz-utils git
+
+      # Pinned to the emcc version the recipe was validated with (5.0.7,
+      # 2026-06-10). Bump deliberately and re-validate manifest parity.
+      - name: Set up emsdk
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 5.0.7
+
+      # build_wasm_sysroot.sh locates util-linux via UL_SRC (env override
+      # beats config.sh's paths.util_linux) and requires a generated
+      # ./configure on the v2.40.4 release (it version-gates on
+      # PACKAGE_VERSION).
+      - name: Check out util-linux v2.40.4
+        run: |
+          git clone --depth 1 --branch v2.40.4 \
+            https://github.com/util-linux/util-linux "$RUNNER_TEMP/util-linux"
+          cd "$RUNNER_TEMP/util-linux"
+          ./autogen.sh
+
+      # The script self-checks manifest parity in full-run mode and exits
+      # nonzero on any drift, so a green run IS the acceptance gate.
+      - name: Build wasm sysroot
+        run: |
+          SYSROOT="$PWD/out-sysroot" UL_SRC="$RUNNER_TEMP/util-linux" \
+            ./scripts/build_wasm_sysroot.sh
+
+      - name: Pack tarball
+        run: |
+          tar -C out-sysroot -cJf wasm-sysroot-linux.tar.xz .
+          ls -lh wasm-sysroot-linux.tar.xz
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release create "$TAG" wasm-sysroot-linux.tar.xz \
+            --target "$GITHUB_SHA" \
+            --title "wasm sysroot $TAG" \
+            --notes "Prebuilt wasm sysroot (17 static libs; see scripts/lib/wasm_sysroot.manifest). Built by .github/workflows/wasm-sysroot.yml from scripts/build_wasm_sysroot.sh pins; fetch with scripts/fetch_wasm_sysroot.sh."

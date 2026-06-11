@@ -31,7 +31,8 @@
     ],
     "scripts": {
         "build": "tsup",
-        "test": "node test/smoke.node.mjs single && node test/smoke.node.mjs multi && node test/smoke.node.mjs big"
+        "test:unit": "node --test test/*.test.mjs",
+        "test": "npm run test:unit && node test/smoke.node.mjs single && node test/smoke.node.mjs multi && node test/smoke.node.mjs big"
     },
     "devDependencies": {
         "typescript": "^5.5.4",

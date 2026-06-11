@@ -83,10 +83,10 @@ if (!isMainThread) {
             process.exit(4);
         }
 
-        const meta = JSON.parse(n.sessionMetaJson(h));
+        const meta = JSON.parse(await n.sessionMetaJson(h));
         console.log('[smoke-url] sessionMeta:', meta);
 
-        const parts = JSON.parse(n.sessionListJson(h));
+        const parts = JSON.parse(await n.sessionListJson(h));
         console.log(
             '[smoke-url] partitions:',
             parts.length,
@@ -101,7 +101,7 @@ if (!isMainThread) {
         const mount = n.sessionEnter(h, pick.index, 1);
         console.log('  mounted at', mount);
 
-        const entries = JSON.parse(n.readdirJson(mount));
+        const entries = JSON.parse(await n.readdirJson(mount));
         console.log('[smoke-url] readdir:', entries.length, 'entries');
         console.log(' ', entries.slice(0, 5));
 

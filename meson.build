@@ -368,6 +368,24 @@ test_nfsd_pseudo_root = executable('test_nfsd_pseudo_root',
     c_args: gio_args + qemu_args,
 )
 
+# --- Unit tests (pure userspace, no LKL boot; run via `meson test --suite unit`) ---
+test_path_dsl = executable('test_path_dsl',
+    'tests/unit/test_path_dsl.c',
+    'src/core/anyfs_path.c',
+    include_directories: [anyfs_inc],
+    install: false,
+)
+test('path_dsl', test_path_dsl, suite: 'unit')
+
+test_share_helpers = executable('test_share_helpers',
+    'tests/unit/test_share_helpers.c',
+    include_directories: [anyfs_inc],
+    dependencies: [anyfs_dep],
+    c_args: gio_args + qemu_args,
+    install: false,
+)
+test('share_helpers', test_share_helpers, suite: 'unit')
+
 bench_backends = executable('bench_backends',
     'tests/bench_backends.c',
     include_directories: [anyfs_inc, include_directories('src/core')],
@@ -478,9 +496,11 @@ if enable_ksmbd
         'src/ksmbd/ksmbd_main.c',
         'src/ksmbd/ksmbd_ipc.c',
         'src/ksmbd/ksmbd_stubs.c',
+        'src/server_common/server_common.c',
         fastsync_srcs,
         ksmbd_tools_sources,
-        include_directories: [anyfs_inc, ksmbd_tools_inc],
+        include_directories: [anyfs_inc, ksmbd_tools_inc,
+                              include_directories('src/server_common')],
         dependencies: [lkl_dep, glib_sys_dep2, thread_dep, host_proxy_dep],
         link_with: [ksmbd_tools_lib, anyfs_core],
         link_args: fastsync_link_args,
@@ -502,7 +522,9 @@ if enable_ksmbd  # reuses same LKL build with NFSD config
     # on the path.
     lkl_nfsd = executable('anyfs-nfsd',
         'src/nfsd/nfsd_main.c',
-        include_directories: [anyfs_inc],
+        'src/server_common/server_common.c',
+        include_directories: [anyfs_inc,
+                              include_directories('src/server_common')],
         dependencies: [lkl_dep, thread_dep, host_proxy_dep],
         link_with: [anyfs_core],
         install: true,

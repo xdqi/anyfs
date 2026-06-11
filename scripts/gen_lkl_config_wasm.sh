@@ -4,9 +4,9 @@
 # Usage: ./gen_lkl_config_wasm.sh [OPTIONS]
 #
 # Options:
-#   --linux=DIR   Kernel source tree (default: ~/linux)
-#   --out=DIR     Parent dir for the build tree (default: ~/anyfs-reader)
-#   --emsdk=DIR   emsdk install root (default: ~/emsdk)
+#   --linux=DIR   Kernel source tree (default: linux_src from build.config.toml; falls back to deps/linux)
+#   --out=DIR     Parent dir for the build tree (default: repo root)
+#   --emsdk=DIR   emsdk install root (default: toolchains.emsdk from build.config.toml)
 #
 # Produces, under $OUT:
 #   lkl-wasm/             # out-of-tree kernel build dir
@@ -24,9 +24,13 @@
 # To build, use the companion script: build_lkl_wasm.sh
 set -e
 
-LINUX_DIR="$HOME/linux"
-OUT_PARENT="$HOME/anyfs-reader"
-EMSDK_DIR="$HOME/emsdk"
+# shellcheck source=lib/config.sh
+source "$(dirname "$0")/lib/config.sh"
+
+# CLI --linux=/--out=/--emsdk= win; config.sh provides the defaults.
+LINUX_DIR="${LINUX_DIR:-$ANYFS_PATHS_LINUX_SRC}"
+OUT_PARENT="${OUT_PARENT:-$(cd "$(dirname "$0")/.." && pwd)}"
+EMSDK_DIR="${EMSDK_DIR:-$ANYFS_TOOLCHAINS_EMSDK}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
