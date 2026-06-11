@@ -99,13 +99,19 @@ export function loadAnyfsNativeAddon(): unknown | null {
     }
 }
 
-// Load `drivelist`'s JS entry. esbuild bundles drivelist's JS into main.cjs
-// (with `bindings` aliased to ./bindings-shim) so we just import it like a
-// regular module; the dynamic require below stays out of esbuild's analysis.
+// Load `drivelist`'s JS entry. drivelist is an optionalDependency; on bare
+// CI runners (and in the wasm-only build path) it may not be installed.
+// The try/catch in the same scope is esbuild's documented escape hatch:
+// esbuild defers an unresolvable require() to runtime when it is
+// syntactically inside a try/catch block, so build:main won't fail on
+// runners that lack the optional dep. main.ts already catches the throw
+// and falls back gracefully.
 export function loadDrivelistModule(): typeof import('drivelist') {
-    // The literal 'drivelist' import was rewritten by main.ts to a typed
-    // import only; the actual runtime module comes from this require call,
-    // which esbuild WILL bundle because it's a static string.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    return require('drivelist');
+    try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        return require('drivelist');
+    } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        throw new Error(`drivelist module not available: ${msg}`);
+    }
 }
