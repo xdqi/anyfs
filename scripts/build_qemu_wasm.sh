@@ -68,14 +68,20 @@ done
 # --buildoptions / meson-logs/meson-log.txt records the effective -D options).
 if [[ ! -f "$BLD/config-host.mak" ]]; then
     mkdir -p "$BLD"
-    # zstd resolves via pkg-config from the wasm sysroot; bz2 via
-    # find_library through --extra-ldflags (-L$SYS/lib). The -s emcc link
-    # flags live in configs/meson/emscripten.txt (patch 0007).
+    # pkg-config env mirrors the reference build's config.status verbatim:
+    # LIBDIR = emsdk's own sysroot pkgconfig dirs (REPLACES the host search
+    # path, so x86_64 /usr glib can never leak into the wasm32 probe — that
+    # leak is exactly a GLIB_SIZEOF_SIZE_T mismatch at meson setup), and the
+    # anyfs wasm sysroot (glib/zstd/blkid/...) is layered on top via
+    # PKG_CONFIG_PATH. bz2 resolves via find_library through --extra-ldflags
+    # (-L$SYS/lib). The -s emcc link flags live in
+    # configs/meson/emscripten.txt (patch 0007).
     (cd "$BLD" && \
         CC=emcc CXX=em++ AR=emar RANLIB=emranlib \
         CFLAGS="-DEMSCRIPTEN" \
         NM="$EMSDK_DIR/upstream/bin/llvm-nm" \
-        PKG_CONFIG_LIBDIR="$SYS/lib/pkgconfig" \
+        PKG_CONFIG_LIBDIR="$EMSDK_DIR/upstream/emscripten/cache/sysroot/local/lib/pkgconfig:$EMSDK_DIR/upstream/emscripten/cache/sysroot/lib/pkgconfig" \
+        PKG_CONFIG_PATH="$SYS/lib/pkgconfig" \
         "$QEMU_ROOT/configure" \
             --cpu=wasm32 --static --cross-prefix= \
             --disable-system --disable-user --disable-tools \
