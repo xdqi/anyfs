@@ -42,7 +42,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential meson ninja-build pkg-config python3 pipx \
             flex bison bc rsync e2fsprogs \
-            curl ca-certificates xz-utils
+            curl ca-certificates xz-utils \
+            shellcheck
+
+      - name: Lint — no hardcoded paths in migrated build scripts
+        run: ./scripts/lint-no-hardcoded-paths.sh
+
+      - name: Lint — shellcheck
+        run: ./scripts/lint-shellcheck.sh
 
       # Same key as linux.yml's deps cache — identical content, shared hit.
       # oot_fs.sh stage is idempotent against a post-stage cached tree.
