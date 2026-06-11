@@ -40,9 +40,24 @@ QEMU_ROOT="${QEMU_ROOT:-$ANYFS_PATHS_QEMU_SRC}"
 QBLD="${QBLD:-$QEMU_ROOT/build-anyfs-wasm}"
 SYS="${WASM_SYSROOT:-$ANYFS_PATHS_WASM_SYSROOT}"
 SRC_CORE="${SRC_CORE:-$REPO_ROOT/src/core}"
+TARGET="${ANYFS_TARGET:-browser}"
+
+# Absolutize everything consumed after the `cd "$BLD"` below — CI passes
+# LINUX_DIR/QEMU_ROOT as repo-relative paths, which would otherwise
+# resolve against the build dir (lkl.h not found, missing archives).
+LINUX_DIR="$(cd "$LINUX_DIR" && pwd)"
+OUT="$(cd "$OUT" && pwd)"
+EMSDK_DIR="$(cd "$EMSDK_DIR" && pwd)"
+TS="$(cd "$TS" && pwd)"
+QEMU_ROOT="$(cd "$QEMU_ROOT" && pwd)"
+QBLD="$(cd "$QBLD" && pwd)"
+SYS="$(cd "$SYS" && pwd)"
+SRC_CORE="$(cd "$SRC_CORE" && pwd)"
+mkdir -p "$BLD"
+BLD="$(cd "$BLD" && pwd)"
+
 GLUE="$TS/native/anyfs_ts.c"
 LIBLKL="$OUT/tools/lkl/liblkl.a"
-TARGET="${ANYFS_TARGET:-browser}"
 
 # shellcheck disable=SC1091
 source "$EMSDK_DIR/emsdk_env.sh" >/dev/null 2>&1
