@@ -13,15 +13,18 @@ scripts/build_boot_wasm.sh
 scripts/build_libblkid_wasm.sh
 scripts/build_libblkid_mingw.sh
 scripts/build_qemu.sh
+scripts/build_qemu_wasm.sh
 scripts/build_anyfs.sh
 scripts/build_anyfs_wasm.sh
 scripts/build_wasm_sysroot.sh
 scripts/fetch_wasm_sysroot.sh
 scripts/fetch_wasm_ld.sh
+scripts/sync_wasm_bundle.sh
 scripts/lib/wasm_exports.sh
 scripts/doctor.sh
 scripts/lint-no-hardcoded-paths.sh
 scripts/lint-shellcheck.sh
+ts/packages/core/test/make-single-image.sh
 '
 # shellcheck disable=SC2046,SC2086
 # SC2046/SC2086: word-splitting on $checked and $(printf ...) is intentional —
