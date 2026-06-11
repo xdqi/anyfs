@@ -38,6 +38,13 @@ done
 [[ -f "$QEMU_ROOT/configure" ]] || { echo "no QEMU tree at $QEMU_ROOT" >&2; exit 1; }
 [[ -d "$SYS/lib" ]] || { echo "no wasm sysroot at $SYS (run fetch_wasm_sysroot.sh)" >&2; exit 1; }
 
+# Absolutize before any cd: configure runs from $BLD, and CI passes
+# QEMU_ROOT=deps/qemu (relative).
+QEMU_ROOT="$(cd "$QEMU_ROOT" && pwd)"
+SYS="$(cd "$SYS" && pwd)"
+EMSDK_DIR="$(cd "$EMSDK_DIR" && pwd)"
+case "$BLD" in /*) ;; *) BLD="$PWD/$BLD" ;; esac
+
 # shellcheck disable=SC1091
 source "$EMSDK_DIR/emsdk_env.sh" >/dev/null 2>&1
 
