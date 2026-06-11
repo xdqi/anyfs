@@ -579,6 +579,69 @@ EOF
         log "patched ZFS asm_linkage.h to drop ELF .type/.size on PE/COFF asm"
     fi
 
+    # 4d. Insert a wasm32 branch into the ISA ladder in isa_defs.h so
+    #     wasm32 builds don't hit `#error "Unsupported ISA type"`.
+    #     The block must appear immediately before the final `#else` of the
+    #     ladder (the one preceding the "Unsupported ISA type" #error).
+    #     Idempotent — skip if __wasm__ is already present.
+    #     Hard-fails if the anchor (#error "Unsupported ISA type") or the
+    #     preceding #else are not found.
+    local f="$src/include/os/linux/spl/sys/isa_defs.h"
+    if [[ -f "$f" ]] && grep -q '__wasm__' "$f"; then
+        log "ZFS isa_defs.h wasm32 branch already present — skipping"
+    elif [[ -f "$f" ]]; then
+        # Verify the anchor exists before attempting the transform.
+        grep -q '"Unsupported ISA type"' "$f" \
+            || die "stage_zfs: anchor '#error \"Unsupported ISA type\"' not found in $f"
+        awk '
+            # Buffer every line. When we see the #error anchor, walk back
+            # through the buffer to find the nearest preceding bare #else,
+            # splice the wasm block before it, then flush.
+            {
+                buf[NR] = $0
+            }
+            /#error "Unsupported ISA type"/ {
+                anchor = NR
+            }
+            END {
+                if (!anchor) {
+                    print "awk: anchor not found" > "/dev/stderr"
+                    exit 1
+                }
+                # Find the #else immediately before the anchor.
+                else_line = 0
+                for (i = anchor - 1; i >= 1; i--) {
+                    if (buf[i] ~ /^#else[[:space:]]*$/) {
+                        else_line = i
+                        break
+                    }
+                }
+                if (!else_line) {
+                    print "awk: preceding #else not found before anchor at line " anchor > "/dev/stderr"
+                    exit 1
+                }
+                # Print lines 1..(else_line-1), then the wasm block, then rest.
+                for (i = 1; i < else_line; i++) print buf[i]
+                print "/*"
+                print " * WebAssembly (wasm32) \342\200\224 anyfs-reader LKL/emscripten target."
+                print " * 32-bit, little-endian, no SIMD/FPU intrinsics visible to ZFS."
+                print " */"
+                print "#elif defined(__wasm__) || defined(__wasm32__)"
+                print ""
+                print "#if !defined(_ILP32)"
+                print "#define\t_ILP32"
+                print "#endif"
+                print ""
+                print "#define\t_ZFS_LITTLE_ENDIAN"
+                print ""
+                for (i = else_line; i <= NR; i++) print buf[i]
+            }
+        ' "$f" > "$f.new" \
+            && mv "$f.new" "$f" \
+            || die "stage_zfs: awk transform failed for $f"
+        log "patched ZFS isa_defs.h to add wasm32 ISA branch"
+    fi
+
     # 5. Symlink module/ + include/ into $LINUX_DIR. Replace any stale
     #    entries first.
     rm -rf "$LINUX_DIR/fs/zfs" "$LINUX_DIR/include/zfs"
