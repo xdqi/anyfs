@@ -16,5 +16,5 @@ rm -f "$out"
 truncate -s 64M "$out"
 mkfs_ext4="$(command -v mkfs.ext4 || command -v mke2fs || true)"
 [[ -n "$mkfs_ext4" ]] || { echo "mkfs.ext4 / mke2fs not found; install e2fsprogs" >&2; exit 1; }
-"$mkfs_ext4" -q -F -d "$tmp" "$out"
+"$mkfs_ext4" -t ext4 -q -F -d "$tmp" "$out"
 echo "wrote $out"
