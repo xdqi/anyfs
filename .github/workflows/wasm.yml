@@ -1,0 +1,290 @@
+name: wasm
+
+# Builds the wasm bundle (LKL + QEMU block layer via emscripten), packages
+# the vite-demo web app as a deployable tarball, and packages the electron
+# demo (wasm mode only) for linux-x64 + win32-x64.
+# Design: docs/superpowers/specs/2026-06-11-wasm-web-electron-ci-design.md
+#
+# Chain:     wasm-build → web-package → electron-package (matrix)
+# Artifacts: anyfs-wasm-bundle, anyfs-web-dist, anyfs-electron-{linux,win32}-x64
+#
+# sccache: local mode + SeaweedFS S3 (secrets SCCACHE_S3_*); engine binary
+# from the xdqi/sccache-dist-action v0.0.6 release. EM_COMPILER_WRAPPER
+# hooks sccache onto emcc's internal clang calls — covers the 1754 LKL
+# kernel units + core compiles. QEMU is NOT routed through sccache (emcc
+# injects -Xclang -iwithsysroot into non--nostdinc compiles and sccache's
+# clang parser rejects those; mozilla/sccache#955); its build dir is
+# actions/cache'd instead. Missing secrets degrade to bare compiles —
+# the cache must never break the build (same contract as linux.yml).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: wasm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wasm-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      # secrets are not allowed in `if:` — launder through env.
+      S3_SECRET_SET: ${{ secrets.SCCACHE_S3_BUCKET != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential meson ninja-build pkg-config python3 pipx \
+            flex bison bc rsync e2fsprogs \
+            curl ca-certificates xz-utils
+
+      # Same key as linux.yml's deps cache — identical content, shared hit.
+      # oot_fs.sh stage is idempotent against a post-stage cached tree.
+      - name: Cache peru-synced deps
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-${{ hashFiles('peru.yaml') }}
+
+      - name: Cache LKL wasm build tree
+        uses: actions/cache@v4
+        with:
+          path: lkl-wasm
+          key: lkl-wasm-${{ hashFiles('peru.yaml', 'scripts/gen_lkl_config_wasm.sh', 'scripts/build_lkl_wasm.sh', 'scripts/oot_fs.sh', 'patches/linux/wasm/**', '.github/workflows/wasm.yml') }}
+          restore-keys: |
+            lkl-wasm-
+
+      - name: Cache OOT FS sources (NTFS PLUS + APFS + OpenZFS)
+        id: cache-oot
+        uses: actions/cache@v4
+        with:
+          path: ~/oot-fs
+          key: oot-fs-${{ hashFiles('scripts/oot_fs.sh') }}
+          restore-keys: |
+            oot-fs-
+
+      - name: Cache QEMU wasm build
+        uses: actions/cache@v4
+        with:
+          path: deps/qemu/build-anyfs-wasm
+          key: qemu-wasm-${{ hashFiles('peru.yaml', 'scripts/build_qemu_wasm.sh', 'patches/qemu/**') }}
+          restore-keys: |
+            qemu-wasm-
+
+      - name: Install peru
+        run: |
+          pipx install peru
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Sync pinned dependencies
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: peru sync
+
+      # Pinned to the emcc the bundle was validated with (same as
+      # wasm-sysroot.yml). Bump deliberately and re-validate.
+      - name: Set up emsdk
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 5.0.7
+
+      # config.sh auto-prefers .toolchain/wasm-ld + .toolchain/wasm-sysroot,
+      # and ANYFS_TOOLCHAINS_EMSDK falls back to $EMSDK (set by setup-emsdk).
+      - name: Fetch patched wasm-ld + wasm sysroot
+        run: |
+          ./scripts/fetch_wasm_ld.sh
+          ./scripts/fetch_wasm_sysroot.sh
+
+      - name: Fetch OOT FS sources
+        if: steps.cache-oot.outputs.cache-hit != 'true'
+        run: ./scripts/oot_fs.sh fetch
+
+      - name: Configure sccache (local mode + S3)
+        if: ${{ env.S3_SECRET_SET == 'true' }}
+        continue-on-error: true
+        env:
+          SCCACHE_BUCKET: ${{ secrets.SCCACHE_S3_BUCKET }}
+          SCCACHE_ENDPOINT: ${{ secrets.SCCACHE_S3_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          gh release download v0.0.6 -R xdqi/sccache-dist-action \
+            -p 'sccache-sccache-dist-poc-tweaks-linux-amd64' \
+            -O "$HOME/.local/bin/sccache"
+          chmod +x "$HOME/.local/bin/sccache"
+          {
+            echo "SCCACHE_BUCKET=${SCCACHE_BUCKET}"
+            echo "SCCACHE_ENDPOINT=${SCCACHE_ENDPOINT}"
+            echo "AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}"
+            echo "AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}"
+            echo "SCCACHE_REGION=auto"
+            echo "SCCACHE_S3_USE_SSL=true"
+            echo "SCCACHE_S3_KEY_PREFIX=anyfs-wasm"
+            echo "SCCACHE_IDLE_TIMEOUT=0"
+            echo "EM_COMPILER_WRAPPER=sccache"
+          } >> "$GITHUB_ENV"
+          sccache --start-server
+          sccache --show-stats
+
+      - name: Generate LKL wasm kernel config
+        run: ./scripts/gen_lkl_config_wasm.sh --linux=deps/linux --out="$GITHUB_WORKSPACE"
+
+      - name: Build LKL (wasm)
+        run: ./scripts/build_lkl_wasm.sh --linux=deps/linux --out="$GITHUB_WORKSPACE" -j "$(nproc)"
+
+      # QEMU compiles are not sccache-cacheable (see header) — unset the
+      # wrapper so 447 guaranteed-miss requests don't slow the build.
+      - name: Build QEMU block layer (wasm)
+        env:
+          EM_COMPILER_WRAPPER: ''
+        run: QEMU_ROOT=deps/qemu ./scripts/build_qemu_wasm.sh -j "$(nproc)"
+
+      - name: Build anyfs wasm bundle (browser + node)
+        env:
+          LINUX_DIR: deps/linux
+          QEMU_ROOT: deps/qemu
+        run: |
+          ./scripts/build_anyfs_wasm.sh
+          ANYFS_TARGET=node ./scripts/build_anyfs_wasm.sh
+
+      - name: sccache stats
+        if: ${{ env.S3_SECRET_SET == 'true' }}
+        continue-on-error: true
+        run: sccache --show-stats || true
+
+      - name: Wasm export drift gate
+        run: ./tests/test_wasm_exports.sh
+
+      - name: Smoke test (node bundle, generated ext4 image)
+        run: |
+          bash ts/packages/core/test/make-single-image.sh \
+            ts/examples/vite-demo/public/disks/single.img
+          cd ts/packages/core && node test/smoke.node.mjs single
+
+      - name: Upload wasm bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: anyfs-wasm-bundle
+          path: ts/packages/core/wasm/
+          if-no-files-found: error
+
+  web-package:
+    needs: wasm-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+          package_json_file: ts/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
+      - name: Install
+        working-directory: ts
+        run: pnpm install --frozen-lockfile --filter '!electron-demo' --filter '!@anyfs/native'
+      - name: Download wasm bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: anyfs-wasm-bundle
+          path: ts/packages/core/wasm
+      - name: Build packages
+        working-directory: ts
+        run: pnpm -r --filter './packages/*' --filter '!@anyfs/native' build
+      - name: Sync bundle into vite-demo public/
+        run: ./scripts/sync_wasm_bundle.sh
+      - name: Build vite-demo
+        working-directory: ts
+        run: pnpm --filter vite-demo build
+      # CI checkouts have no public/disks (gitignored locally), so nothing
+      # to prune; the bundled Caddyfile feeds caddy directly on deploy.
+      - name: Pack web dist
+        run: tar -czf anyfs-web-dist.tar.gz -C ts/examples/vite-demo/dist .
+      - name: Upload web dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: anyfs-web-dist
+          path: anyfs-web-dist.tar.gz
+          if-no-files-found: error
+
+  electron-package:
+    needs: web-package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            script: package:wasm
+            outdir: anyfs-demo-linux-x64
+          - platform: win32
+            script: package:win:wasm
+            outdir: anyfs-demo-win32-x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+          package_json_file: ts/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
+      - name: Cache electron binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ matrix.platform }}-${{ hashFiles('ts/pnpm-lock.yaml') }}
+      # Includes electron-demo this time. drivelist/@anyfs/native are
+      # optionalDependencies: the missing sibling drivelist checkout is
+      # skipped, and the @anyfs/native filter keeps node-gyp from running.
+      - name: Install
+        working-directory: ts
+        run: pnpm install --frozen-lockfile --filter '!@anyfs/native'
+      - name: Download web dist
+        uses: actions/download-artifact@v4
+        with:
+          name: anyfs-web-dist
+          path: .
+      - name: Unpack renderer
+        run: |
+          mkdir -p ts/examples/vite-demo/dist
+          tar -xzf anyfs-web-dist.tar.gz -C ts/examples/vite-demo/dist
+      - name: Package (${{ matrix.platform }}, wasm-only)
+        working-directory: ts/examples/electron-demo
+        run: pnpm run ${{ matrix.script }}
+      - name: Smoke test packaged app (linux)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends xvfb libnss3 libgbm1
+          xvfb-run -a ts/examples/electron-demo/out/anyfs-demo-linux-x64/anyfs-demo \
+            --no-sandbox --disable-gpu &
+          APP=$!
+          sleep 30
+          kill -0 "$APP"   # still alive after 30s = launch smoke passes
+          kill "$APP" || true
+          pkill -f anyfs-demo || true
+      - name: Zip package
+        run: |
+          cd ts/examples/electron-demo/out
+          zip -qry "$GITHUB_WORKSPACE/anyfs-electron-${{ matrix.platform }}-x64.zip" \
+            '${{ matrix.outdir }}'
+      - name: Upload electron package
+        uses: actions/upload-artifact@v4
+        with:
+          name: anyfs-electron-${{ matrix.platform }}-x64
+          path: anyfs-electron-${{ matrix.platform }}-x64.zip
+          if-no-files-found: error
