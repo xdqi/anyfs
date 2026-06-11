@@ -59,6 +59,11 @@ wasm-build ──→ web-package ──→ electron-package (matrix: linux-x64, 
    the existing `../vite-demo/dist`; `stage:renderer` reused as-is).
 5. **Small sync script: wasm bundle → `vite-demo/public/wasm/`** — replaces
    today's manual copy; shared by the web job and local dev.
+6. **Cut the `wasm-sysroot-r1` release** (operator action, found in final
+   review): `fetch_wasm_sysroot.sh` pins that tag but the repo has no
+   releases yet — dispatch `wasm-sysroot.yml` with `tag: wasm-sysroot-r1`
+   once before the first `wasm.yml` run. (`wasm-ld-18.1.2-anyfs-r1` on
+   xdqi/llvm-wasm already exists.)
 
 ## Job: `wasm-build`
 
