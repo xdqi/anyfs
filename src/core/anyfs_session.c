@@ -565,8 +565,20 @@ int anyfs_session_enter(AnyfsSession* d, unsigned int part, uint32_t flags,
 		const char* hint =
 		    d->whole_fstype_hint[0] ? d->whole_fstype_hint : NULL;
 
+		/* Inherit read-only from how the session was opened, exactly as
+		 * the partition path (enter_fs_slot) does. A disk opened
+		 * read-only (e.g. browser WORKERFS/URLFS, which have no writeback
+		 * path) must mount its filesystem read-only too: a read-write
+		 * ext4/ext3 mount runs jbd2 journal recovery, whose block writes
+		 * fail on the non-writable backend (-EIO), aborting the mount.
+		 * The RDONLY flag adds noload/norecovery so the mount skips
+		 * recovery and succeeds. */
+		uint32_t mflags = flags;
+		if (d->open_flags & ANYFS_SESSION_READONLY)
+			mflags |= ANYFS_MOUNT_RDONLY;
+
 		AnyfsMount mnt = {0};
-		int rc = anyfs_mount_blkdev(devpath, hint, name, flags, &mnt);
+		int rc = anyfs_mount_blkdev(devpath, hint, name, mflags, &mnt);
 		if (rc < 0) {
 			lkl_sys_unlink(devpath);
 			return rc;

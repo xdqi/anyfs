@@ -82,6 +82,26 @@ export const FIXTURES: Record<string, Fixture> = {
             },
         ],
     },
+    // Whole-disk ext4 with no partition table -> single synthetic index 0.
+    // Regression guard for the browser whole-disk mount: a read-write ext4
+    // mount writes to the device (journal recovery / superblock state), which
+    // the read-only browser backend (WORKERFS/URLFS, no writeback) rejects with
+    // -EIO, so the mount must be done read-only. See whole-disk-ext4-mount.spec.
+    singleExt4: {
+        name: 'singleExt4',
+        source: 'generated',
+        file: img('single-ext4.img'),
+        parts: [
+            {
+                index: 0,
+                fs: 'ext4',
+                tree: [
+                    { path: 'hello.txt', size: 45 },
+                    { path: 'subdir', dir: true },
+                ],
+            },
+        ],
+    },
     qcow2Url: {
         name: 'qcow2Url',
         source: 'downloaded',

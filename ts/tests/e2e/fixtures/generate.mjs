@@ -325,6 +325,50 @@ function buildBtrfsVmdk() {
     console.log(`[btrfs-whole.vmdk] done`);
 }
 
+// ---------------------------------------------------------------------------
+// single-ext4.img : whole-disk ext4 (no PT), populated WITHOUT root
+// ---------------------------------------------------------------------------
+function buildSingleExt4() {
+    const img = resolve(IMAGES_DIR, 'single-ext4.img');
+    if (existsSync(img)) {
+        console.log(`[single-ext4.img] exists, skipping`);
+        return;
+    }
+    console.log(`[single-ext4.img] building...`);
+    // `mkfs.ext4 -d <dir>` populates the filesystem from a staging directory
+    // without root (no loop mount needed) — same approach as
+    // ts/packages/core/test/make-single-image.sh. The other fixtures need
+    // sudo only for partition/loop tooling; a whole-disk image doesn't.
+    const stage = capture('mktemp', ['-d', '/tmp/anyfs-fixt-single-XXXXXX']).trim();
+    let ok = false;
+    try {
+        const hello = 'hello from the anyfs whole-disk ext4 fixture\n';
+        run('sh', ['-c', `printf '%s' ${JSON.stringify(hello)} > "${stage}/hello.txt"`]);
+        recorded['single.hello.txt'] = Buffer.byteLength(hello, 'utf-8');
+        run('mkdir', ['-p', `${stage}/subdir`]);
+        run('sh', ['-c', `head -c 1048576 /dev/zero > "${stage}/subdir/random-1mib.bin"`]);
+        recorded['single.subdir/random-1mib.bin'] = 1048576;
+
+        run('truncate', ['-s', '64M', img]);
+        // Prefer mkfs.ext4, fall back to mke2fs; both live in /sbin which may
+        // not be on PATH, so resolve via a login shell that includes it.
+        run('sh', [
+            '-c',
+            `PATH="/usr/sbin:/sbin:$PATH"; ` +
+                `mkfs="$(command -v mkfs.ext4 || command -v mke2fs)"; ` +
+                `[ -n "$mkfs" ] || { echo "mkfs.ext4/mke2fs not found" >&2; exit 1; }; ` +
+                `"$mkfs" -t ext4 -q -F -d "${stage}" "${img}"`,
+        ]);
+        ok = true;
+    } finally {
+        rmSync(stage, { recursive: true, force: true });
+        if (!ok) {
+            rmSync(img, { force: true });
+        }
+    }
+    console.log(`[single-ext4.img] done`);
+}
+
 function main() {
     requireRoot();
     mkdirSync(IMAGES_DIR, { recursive: true });
@@ -332,6 +376,7 @@ function main() {
     buildMultiRaw();
     buildMbrExtended();
     buildBtrfsVmdk();
+    buildSingleExt4();
 
     console.log('\n=== recorded known-file byte sizes ===');
     for (const key of Object.keys(recorded).sort()) {
