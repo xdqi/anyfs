@@ -8,14 +8,16 @@ name: wasm
 # Chain:     wasm-build → web-package → electron-package (matrix)
 # Artifacts: anyfs-wasm-bundle, anyfs-web-dist, anyfs-electron-{linux,win32}-x64
 #
-# sccache: local mode + SeaweedFS S3 (secrets SCCACHE_S3_*); engine binary
-# from the xdqi/sccache-dist-action v0.0.6 release. EM_COMPILER_WRAPPER
-# hooks sccache onto emcc's internal clang calls — covers the 1754 LKL
-# kernel units + core compiles. QEMU is NOT routed through sccache (emcc
+# sccache: local disk cache, persisted via actions/cache on
+# ~/.cache/sccache (the build is ~15 min — an S3 backend isn't worth the
+# secrets dependency; same pattern as linux.yml). Engine binary from the
+# xdqi/sccache-dist-action v0.0.6 release. EM_COMPILER_WRAPPER hooks
+# sccache onto emcc's internal clang calls — covers the 1754 LKL kernel
+# units + core compiles. QEMU is NOT routed through sccache (emcc
 # injects -Xclang -iwithsysroot into non--nostdinc compiles and sccache's
 # clang parser rejects those; mozilla/sccache#955); its build dir is
-# actions/cache'd instead. Missing secrets degrade to bare compiles —
-# the cache must never break the build (same contract as linux.yml).
+# actions/cache'd instead. A failed engine download degrades to bare
+# compiles — the cache must never break the build (linux.yml contract).
 
 on:
   push:
@@ -30,9 +32,6 @@ jobs:
   wasm-build:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    env:
-      # secrets are not allowed in `if:` — launder through env.
-      S3_SECRET_SET: ${{ secrets.SCCACHE_S3_BUCKET != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -147,14 +146,19 @@ jobs:
         if: steps.cache-oot.outputs.cache-hit != 'true'
         run: ./scripts/oot_fs.sh fetch
 
-      - name: Configure sccache (local mode + S3)
-        if: ${{ env.S3_SECRET_SET == 'true' }}
+      # Persist sccache's local object cache across runs; per-sha keys with
+      # a prefix restore mirror linux.yml's "Cache sccache objects".
+      - name: Cache sccache objects
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sccache
+          key: sccache-wasm-${{ github.sha }}
+          restore-keys: |
+            sccache-wasm-
+
+      - name: Configure sccache (local disk cache)
         continue-on-error: true
         env:
-          SCCACHE_BUCKET: ${{ secrets.SCCACHE_S3_BUCKET }}
-          SCCACHE_ENDPOINT: ${{ secrets.SCCACHE_S3_ENDPOINT }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET }}
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p "$HOME/.local/bin"
@@ -163,13 +167,6 @@ jobs:
             -O "$HOME/.local/bin/sccache"
           chmod +x "$HOME/.local/bin/sccache"
           {
-            echo "SCCACHE_BUCKET=${SCCACHE_BUCKET}"
-            echo "SCCACHE_ENDPOINT=${SCCACHE_ENDPOINT}"
-            echo "AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}"
-            echo "AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}"
-            echo "SCCACHE_REGION=auto"
-            echo "SCCACHE_S3_USE_SSL=true"
-            echo "SCCACHE_S3_KEY_PREFIX=anyfs-wasm"
             echo "SCCACHE_IDLE_TIMEOUT=0"
             echo "EM_COMPILER_WRAPPER=sccache"
           } >> "$GITHUB_ENV"
@@ -198,9 +195,8 @@ jobs:
           ANYFS_TARGET=node ./scripts/build_anyfs_wasm.sh
 
       - name: sccache stats
-        if: ${{ env.S3_SECRET_SET == 'true' }}
         continue-on-error: true
-        run: sccache --show-stats || true
+        run: command -v sccache >/dev/null && sccache --show-stats || true
 
       - name: Wasm export drift gate
         run: ./tests/test_wasm_exports.sh

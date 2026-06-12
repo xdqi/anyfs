@@ -22,6 +22,7 @@ workflow run, artifacts only.
 | Publication | Workflow artifacts only (90-day retention); no releases, no npm, no auto-deploy |
 | Workflow layout | Single new `wasm.yml` with a 4-job chain; `ts.yml` untouched |
 | sccache for emcc | Yes for LKL + core compiles via `EM_COMPILER_WRAPPER` (validated locally); QEMU excluded this round (see research appendix) |
+| sccache backend | Local disk + `actions/cache` on `~/.cache/sccache` (revised 2026-06-12: the build is ~15 min, an S3 backend isn't worth the secrets dependency) |
 | sccache engine provisioning | `xdqi/sccache-dist-action` pinned **@v0.0.6** (engine assets built from the `sccache-dist-poc-tweaks` fork branch, includes the scheduler skew fix) |
 
 ## Architecture
@@ -88,12 +89,15 @@ Steps (all existing scripts, same order as the local flow):
 
 Caching:
 
-- **sccache, local mode + SeaweedFS S3 backend** (existing secrets/infra).
-  `EM_COMPILER_WRAPPER=sccache` covers the 1754 LKL kernel compile units and
-  the core compiles in `build_anyfs_wasm.sh`. Engine binary provisioned from
-  the `xdqi/sccache-dist-action` **v0.0.6** release assets. If the secret is
-  missing or the backend is down, degrade to bare compiles — the cache must
-  never break the build (same contract as `linux.yml`).
+- **sccache, local disk cache persisted via `actions/cache`** on
+  `~/.cache/sccache` (per-sha key + prefix restore, same pattern as
+  linux.yml). Revised 2026-06-12 from the original SeaweedFS-S3 plan: the
+  whole build is ~15 min, so an external backend isn't worth the secrets
+  dependency. `EM_COMPILER_WRAPPER=sccache` covers the 1754 LKL kernel
+  compile units and the core compiles in `build_anyfs_wasm.sh`. Engine
+  binary provisioned from the `xdqi/sccache-dist-action` **v0.0.6** release
+  assets. If the engine download fails, degrade to bare compiles — the
+  cache must never break the build (same contract as `linux.yml`).
 - **QEMU build dir via `actions/cache`** (key = peru qemu SHA +
   `patches/qemu` hash + script hash). QEMU is *not* routed through sccache
   this round — emcc injects `-Xclang -iwithsysroot…` into non-`-nostdinc`
