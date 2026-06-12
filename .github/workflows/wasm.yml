@@ -96,16 +96,32 @@ jobs:
 
       # Pinned to the emcc the bundle was validated with (same as
       # wasm-sysroot.yml). Bump deliberately and re-validate.
-      # actions-cache-folder pins emsdk at a STABLE workspace path. Without
-      # it the action installs under a per-run $RUNNER_TEMP/<uuid>/ dir,
-      # and every absolute emsdk path baked into cached build trees (make
-      # .d prerequisites, meson cross files, build.ninja rules) dangles on
-      # the next run ("No rule to make target .../sysroot/include/...").
-      - name: Set up emsdk
-        uses: mymindstorm/setup-emsdk@v14
+      #
+      # Installed by hand at $HOME/emsdk — a path that is IDENTICAL on
+      # every runner — instead of mymindstorm/setup-emsdk, which extracts
+      # under a per-run $RUNNER_TEMP/<uuid>/ dir even with
+      # actions-cache-folder (verified runs 27345017292/27346183636).
+      # The cached LKL/QEMU build trees bake absolute emsdk paths (make
+      # .d prerequisites, meson cross file, build.ninja), so an unstable
+      # emsdk path poisons every cross-run cache hit with
+      # "No rule to make target .../sysroot/include/sys/types.h".
+      - name: Cache emsdk
+        id: cache-emsdk
+        uses: actions/cache@v4
         with:
-          version: 5.0.7
-          actions-cache-folder: emsdk-cache
+          path: ~/emsdk
+          key: emsdk-5.0.7
+      - name: Install emsdk
+        if: steps.cache-emsdk.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk "$HOME/emsdk"
+          "$HOME/emsdk/emsdk" install 5.0.7
+      - name: Activate emsdk
+        run: |
+          "$HOME/emsdk/emsdk" activate 5.0.7
+          echo "EMSDK=$HOME/emsdk" >> "$GITHUB_ENV"
+          echo "$HOME/emsdk" >> "$GITHUB_PATH"
+          echo "$HOME/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
 
       # QEMU's bz2 comes from emscripten's port (bzlib.h + libbz2.a in the
       # emsdk cache sysroot); a fresh emsdk install hasn't built it.
