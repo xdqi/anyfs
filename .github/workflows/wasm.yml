@@ -280,9 +280,13 @@ jobs:
         with:
           version: 11
           package_json_file: ts/package.json
+      # Pinned: node 24.16.0 breaks electron-packager's zip extraction
+      # (yauzl event loop drains → silent exit 0 on CI / hang locally,
+      # out/ never written; runs 27338704662..27391081970). 24.15.0 is
+      # verified good. Re-test before unpinning.
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 24.15.0
           cache: pnpm
           cache-dependency-path: ts/pnpm-lock.yaml
       - name: Cache electron binaries
