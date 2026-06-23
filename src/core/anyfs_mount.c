@@ -8,7 +8,15 @@
 #include <stdio.h>
 #include <string.h>
 
-#define MAX_FSTYPES 32
+/* Upper bound on the block filesystems pulled from /proc/filesystems for the
+ * auto-probe mount loop. Must exceed the number of block (non-nodev) entries
+ * the kernel registers, or fstypes past the cap are silently never tried — a
+ * real bug: with the OOT drivers (ntfs/apfs/zfs) plus the full builtin set the
+ * list is ~35 block entries, so a cap of 32 dropped ntfs/apfs/btrfs (they
+ * appear last), making any such partition that blkid fails to hint unmountable.
+ * 128 leaves comfortable headroom. The /proc/filesystems read buffer below is
+ * sized to match. */
+#define MAX_FSTYPES 128
 #define FSTYPE_MAXLEN 32
 
 /* Read /proc/filesystems from LKL and return block filesystem types */
@@ -18,7 +26,7 @@ static int get_block_fstypes(char fstypes[][FSTYPE_MAXLEN], int max)
 	if (fd < 0)
 		return 0;
 
-	char buf[2048];
+	char buf[8192];
 	int n = lkl_sys_read(fd, buf, sizeof(buf) - 1);
 	lkl_sys_close(fd);
 	if (n <= 0)
@@ -107,6 +115,24 @@ static int mount_via_devpath(const char* dev_str, const char* fstype,
 	int nfs = get_block_fstypes(fstypes, MAX_FSTYPES);
 
 	for (int i = 0; i < nfs; i++) {
+		/* Skip apfs and btrfs in the BLIND probe loop. Both hold the
+		 * block device across a *failed* mount (apfs's container open
+		 * and btrfs's multi-device scan claim the device and don't
+		 * release it on the failure path under LKL). Blind-probing them
+		 * on a whole disk that has a partition table — e.g. when the
+		 * user selects "whole disk #0" first — leaves the PARENT device
+		 * (vda) held, and every subsequent partition mount (vda1, vda2,
+		 * …) then fails with EBUSY. Both are reliably identified by
+		 * blkid, so a real apfs/ btrfs volume always mounts via the
+		 * explicit-fstype hint path above (not gated by this loop); the
+		 * blind attempt is dead weight and only causes the device-busy
+		 * regression. (ntfs is kept here: blkid often fails to type
+		 * NTFS volumes, so the blind probe is the real path that mounts
+		 * them, and NTFS PLUS does release the device on a failed
+		 * probe.) */
+		if (strcmp(fstypes[i], "apfs") == 0 ||
+		    strcmp(fstypes[i], "btrfs") == 0)
+			continue;
 		const char* opts = NULL;
 		if (flags & ANYFS_MOUNT_RDONLY) {
 			if (strcmp(fstypes[i], "xfs") == 0 ||
