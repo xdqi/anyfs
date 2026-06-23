@@ -96,6 +96,13 @@ const FS_GROUPS: Array<{ label: string; members: Record<string, string> }> = [
     },
 ];
 
+// Internal companion filesystems that /proc/filesystems lists as block-backed
+// but which are not user-mountable disk formats on their own — they exist only
+// to support tooling for their parent FS. gfs2meta is GFS2's metadata-access FS
+// (registered FS_REQUIRES_DEV, so it isn't `nodev`); showing it as a supported
+// format is misleading.
+const INTERNAL_FS = new Set(['gfs2meta']);
+
 // /proc/filesystems format: each line is either `nodev\t<name>` (pseudo-FS
 // like proc/sysfs/tmpfs) or `\t<name>` (block-backed real FS). We only want
 // the block-backed ones — the nodev set is full of internal kernel mounts
@@ -110,6 +117,7 @@ function parseProcFilesystems(text: string): string[] {
         const name = parts[1]!.trim();
         if (flag === 'nodev') continue;
         if (!name) continue;
+        if (INTERNAL_FS.has(name)) continue;
         out.push(name);
     }
     return out;
