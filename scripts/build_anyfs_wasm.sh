@@ -217,8 +217,16 @@ EXPORTED_FUNCS="$(anyfs_wasm_exports "$GLUE")"
 EXPORTED_RUNTIME="ccall,cwrap,HEAPU8,HEAP32,HEAPU32,FS,${FS_RUNTIME},UTF8ToString,stringToUTF8,getValue,setValue"
 
 EXTRA_OBJS=("$QEMU_BLK_OBJ" "$QEMU_STUBS_OBJ")
+# libblock.a is linked SEPARATELY under --whole-archive (see the emcc line below):
+# each QEMU block-format driver self-registers via a block_init() constructor and
+# is otherwise unreferenced, so a normal archive link GC's every driver except the
+# one incidentally pulled (qcow2) — which silently broke vmdk/vhdx/vdi/vpc/dmg
+# decode (they fell back to raw). whole-archive pulls them all, mirroring the
+# native anyfs-native/binding.gyp link. Safe here: configure --disable-curl/
+# --disable-libnfs/--disable-libiscsi/--disable-rbd keep those dep-bearing drivers
+# out of libblock.a, so only the self-contained format/protocol drivers are pulled.
 EXTRA_ARCHIVES=(
-    "$QBLD/libblock.a" "$QBLD/libio.a" "$QBLD/libqom.a"
+    "$QBLD/libio.a" "$QBLD/libqom.a"
     "$QBLD/libauthz.a" "$QBLD/libcrypto.a"
     "$QBLD/libevent-loop-base.a" "$QBLD/libqemuutil.a"
     "$SYS/lib/libgio-2.0.a" "$SYS/lib/libgmodule-2.0.a"
@@ -259,7 +267,9 @@ LDFLAGS=(
 
 echo "  LINK $OUT_JS  (target=$TARGET, qemu=always)"
 emcc "${LDFLAGS[@]}" \
-    "$GLUE_OBJ" "${EXTRA_OBJS[@]}" libanyfs_core.a "${EXTRA_ARCHIVES[@]}" \
+    "$GLUE_OBJ" "${EXTRA_OBJS[@]}" libanyfs_core.a \
+    -Wl,--whole-archive "$QBLD/libblock.a" -Wl,--no-whole-archive \
+    "${EXTRA_ARCHIVES[@]}" \
     -Wl,--whole-archive "$LIBLKL" -Wl,--no-whole-archive \
     -o "$OUT_JS"
 
