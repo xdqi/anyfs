@@ -696,3 +696,41 @@ servers are unaffected (HEAD still used first when it works).
 > reproducing 2026-06-23 (attach/mount hangs ~60 s or crashes the app; the same addon mounts ext4 in
 > 148 ms under plain Node). Per the user it remains a **separate task** — the utilityProcess /
 > process-isolation rework described in F7/F9.
+
+---
+
+## F15 — auto-probe cap (MAX_FSTYPES=32) made NTFS (and any blkid-untyped fs) unmountable (✅ FIXED 2026-06-23, was High)
+
+**Observed (matrix sweep, real disks):** A Windows NTFS disk (Smol.vmdk: System-Reserved
++ Windows-C:, both NTFS) showed its partitions with **no fstype label** in the picker and
+**"Can't mount partition #N"** for every NTFS partition — on BOTH the wasm and native
+backends. NTFS is advertised in the Supported-formats list. APFS/HFS+/UDF/ISO9660/ext*/xfs/
+vfat all mount; NTFS was the one advertised filesystem that didn't.
+
+**Root cause:** anyfs mounts a partition by (1) the blkid-detected fstype hint, else (2) a
+blind loop that tries every block fstype from `/proc/filesystems`. blkid frequently fails to
+type NTFS volumes (the NTFS BPB is FAT-ambivalent under `blkid_do_safeprobe`), so NTFS depends
+on the blind loop. But `anyfs_mount.c` capped that loop at `MAX_FSTYPES=32`, and the kernel
+registers ~35 block filesystems — `/proc/filesystems` lists **ntfs (33rd), apfs (34th), btrfs
+(35th) last**, so they were silently dropped from the loop and never tried. (apfs/btrfs still
+mounted in practice because blkid reliably types them → hint path; ntfs, being un-hinted, hit
+the cap → unmountable.)
+
+**Fix (`src/core/anyfs_mount.c`):**
+1. Bump `MAX_FSTYPES` 32→128 (and the `/proc/filesystems` read buffer 2048→8192) so ntfs is
+   actually reached by the blind loop.
+2. **Skip apfs + btrfs in the blind loop.** Exposing them there surfaced a second defect: both
+   hold the block device across a *failed* mount (apfs's container open; btrfs's multi-device
+   scan), so blind-probing them on a whole disk that has a partition table — e.g. selecting
+   "whole disk #0" first — left the PARENT device (vda) held and every subsequent partition
+   mount failed `EBUSY`. apfs/btrfs are reliably blkid-typed, so real volumes mount via the
+   hint path; the blind attempt was dead weight that only caused the regression. ntfs is kept
+   in the loop (NTFS PLUS releases the device on a failed probe).
+
+**Verified (2026-06-23, rebuilt native + browser + node bundles):** Smol.vmdk NTFS partitions
+now mount and read on web + native, including nested dirs (`$RECYCLE.BIN/S-1-5-…`, `Windows`,
+`Users`), and the every-partition audit passes with no EBUSY even when whole-disk #0 is entered
+first. No regression: ext4/ext2/xfs/vfat (multi.img, win98.vdi FAT, system.vhd ext4), APFS
+(macOS-clean.qcow2 #2 via blkid hint), btrfs (btrfs-whole.vmdk via hint), HFS+, UDF/ISO9660
+(Windows LTSC ISO) all still mount. ("Whole disk #0" on a partitioned disk still correctly
+reports "Can't mount" — it has no filesystem.)
