@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { applyUrlProxy } from '@anyfs/core';
+import { applyUrlProxy, formatSize } from '@anyfs/core';
 import { useAnyfsDisk } from '@anyfs/react';
 import { AnyfsFileBrowser } from '@anyfs/trees';
 import type { NativeSession, SessionPartInfo, SessionMeta, SessionSource } from '@anyfs/core';
@@ -137,40 +137,68 @@ export function DiskView({
                             </span>
                             {'  '}
                             <span className="text-zinc-600 dark:text-zinc-400">
-                                {meta
-                                    ? `${(meta.logical_size / (1 << 20)).toFixed(1)} MiB`
-                                    : 'Whole disk'}
+                                {meta ? formatSize(meta.logical_size) : 'Whole disk'}
                             </span>
                             <span className="ml-2 text-zinc-800 dark:text-zinc-300">
                                 Whole disk
                             </span>
                         </button>
                     </li>
-                    {parts.map((p) => (
-                        <li key={p.slot_id}>
-                            <button
-                                className="w-full text-left text-base px-4 py-3 rounded-lg bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700"
-                                onClick={() => setSelectedPart(p.index)}
-                                data-testid={`partition-${p.index}`}
-                            >
-                                <span className="font-mono text-emerald-600 dark:text-emerald-400">
-                                    #{p.index}
-                                </span>
-                                {'  '}
-                                <span className="text-zinc-600 dark:text-zinc-400">
-                                    {(p.size / (1 << 20)).toFixed(1)} MiB
-                                </span>
-                                {p.label && (
-                                    <span className="ml-2 text-zinc-800 dark:text-zinc-300">
-                                        {p.label}
+                    {parts.map((p) => {
+                        // Container slots (an MBR extended-partition EBR, an LVM
+                        // physical volume, a LUKS volume) are not directly
+                        // mountable filesystems — entering one just fails. Render
+                        // them as a non-interactive, muted row instead of a
+                        // clickable partition so the disk layout stays visible
+                        // without offering a guaranteed-to-fail mount.
+                        const containerLabel =
+                            p.kind === 'NESTED'
+                                ? 'extended partition · contains logical volumes'
+                                : p.kind === 'LVM_PV'
+                                  ? 'LVM physical volume'
+                                  : p.kind === 'LUKS'
+                                    ? 'LUKS encrypted volume'
+                                    : null;
+                        if (containerLabel) {
+                            return (
+                                <li key={p.slot_id}>
+                                    <div className="w-full text-left text-base px-4 py-3 rounded-lg border border-dashed border-zinc-300 dark:border-zinc-700 text-zinc-400 dark:text-zinc-500 cursor-default">
+                                        <span className="font-mono">#{p.index}</span>
+                                        {'  '}
+                                        <span>{formatSize(p.size)}</span>
+                                        <span className="ml-2 text-sm">{containerLabel}</span>
+                                    </div>
+                                </li>
+                            );
+                        }
+                        return (
+                            <li key={p.slot_id}>
+                                <button
+                                    className="w-full text-left text-base px-4 py-3 rounded-lg bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700"
+                                    onClick={() => setSelectedPart(p.index)}
+                                    data-testid={`partition-${p.index}`}
+                                >
+                                    <span className="font-mono text-emerald-600 dark:text-emerald-400">
+                                        #{p.index}
                                     </span>
-                                )}
-                                {p.fstype && (
-                                    <span className="ml-2 text-sm text-zinc-500">{p.fstype}</span>
-                                )}
-                            </button>
-                        </li>
-                    ))}
+                                    {'  '}
+                                    <span className="text-zinc-600 dark:text-zinc-400">
+                                        {formatSize(p.size)}
+                                    </span>
+                                    {p.label && (
+                                        <span className="ml-2 text-zinc-800 dark:text-zinc-300">
+                                            {p.label}
+                                        </span>
+                                    )}
+                                    {p.fstype && (
+                                        <span className="ml-2 text-sm text-zinc-500">
+                                            {p.fstype}
+                                        </span>
+                                    )}
+                                </button>
+                            </li>
+                        );
+                    })}
                 </ul>
             </section>
         );
