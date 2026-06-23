@@ -299,7 +299,19 @@ build_blkid() {
     # scripts/build_libblkid_wasm.sh for the full rationale).
     export ac_cv_func_openat=yes ac_cv_func_fstatat=yes \
            ac_cv_func_fdopendir=yes ac_cv_func_dirfd=yes
-    CFLAGS="-O3 -pthread" emconfigure "$UL_SRC/configure" \
+    # Rename libblkid's private crc32c so it can't clash with QEMU's in the
+    # final anyfs.wasm link. Both define a global `crc32c`, and that link uses
+    # -Wl,--allow-multiple-definition, so one wins for everybody. They are NOT
+    # interchangeable: QEMU's crc32c returns `crc ^ 0xffffffff`, util-linux's
+    # returns the raw CRC. libblkid's ext superblock probe verifies the ext4
+    # metadata_csum with crc32c(); bound to QEMU's XOR'd variant the check
+    # always fails, so ext2/3/4 partitions probe as "no filesystem" and
+    # session_list_json reports empty fstype/label/uuid (vfat etc. have no CRC
+    # gate, so they were unaffected). wasm objects can't be objcopy'd after the
+    # fact (llvm-objcopy lacks --redefine-sym for wasm), so rename at compile
+    # time: -D rewrites the definition (lib/crc32c.c) and every reference
+    # (superblocks/ext.c, btrfs.c, …) consistently. QEMU keeps its own crc32c.
+    CFLAGS="-O3 -pthread -Dcrc32c=anyfs_blkid_crc32c" emconfigure "$UL_SRC/configure" \
         --host=wasm32-unknown-emscripten \
         --prefix="$SYSROOT" \
         --enable-static --disable-shared \
