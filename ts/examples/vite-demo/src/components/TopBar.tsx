@@ -13,7 +13,8 @@ export function TopBar({
     onImageClick?: () => void;
     partitionLabel?: string;
 }) {
-    const titleClasses = 'text-zinc-900 dark:text-zinc-100 text-base font-semibold tracking-tight';
+    const titleClasses =
+        'text-zinc-900 dark:text-zinc-100 text-base font-semibold tracking-tight whitespace-nowrap shrink-0';
     const crumbBtn =
         'text-zinc-700 dark:text-zinc-300 text-base hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors max-w-[20rem] truncate';
     const crumbCur = 'text-zinc-500 dark:text-zinc-400 text-base max-w-[20rem] truncate';
