@@ -40,36 +40,76 @@ interface UrlFsMountOpts {
     name: string;
 }
 
+/** Parse the total length out of `Content-Range: bytes 0-0/12345`. Returns NaN
+ *  if absent or the total is `*` (unknown). */
+function totalFromContentRange(header: string | null): number {
+    const m = (header ?? '').match(/\/\s*(\d+)\s*$/);
+    return m ? Number.parseInt(m[1], 10) : Number.NaN;
+}
+
 function probeUrl(url: string): { size: number } {
     const fetchUrl = applyUrlProxy(url);
-    const xhr = new XMLHttpRequest();
-    xhr.open('HEAD', fetchUrl, false);
-    xhr.send();
-    if (xhr.status < 200 || xhr.status >= 300) {
-        throw new Error(`URLFS: HEAD ${url} → HTTP ${xhr.status}`);
+
+    // 1) Try HEAD for the size + range support — the cheapest probe.
+    let size = Number.NaN;
+    let rangeOk = false;
+    let headStatus = 0;
+    const head = new XMLHttpRequest();
+    head.open('HEAD', fetchUrl, false);
+    try {
+        head.send();
+    } catch {
+        // network/CORS error on HEAD — fall through to the Range GET, which some
+        // servers/proxies allow even when HEAD is rejected.
     }
-    const cl = xhr.getResponseHeader('Content-Length');
-    if (!cl) {
-        throw new Error('URLFS: server did not return Content-Length on HEAD');
+    headStatus = head.status;
+    if (head.status >= 200 && head.status < 300) {
+        const cl = head.getResponseHeader('Content-Length');
+        if (cl) size = Number.parseInt(cl, 10);
+        rangeOk = (head.getResponseHeader('Accept-Ranges') ?? '').toLowerCase().includes('bytes');
     }
-    const size = Number.parseInt(cl, 10);
-    if (!Number.isFinite(size) || size <= 0) {
-        throw new Error(`URLFS: invalid Content-Length: ${cl}`);
-    }
-    const ar = (xhr.getResponseHeader('Accept-Ranges') ?? '').toLowerCase();
-    if (!ar.includes('bytes')) {
-        // Verify with a probe Range request — some servers omit the header but
-        // honor the request anyway (e.g. nginx with default config).
+
+    // 2) If HEAD didn't yield a usable size, or range support is unconfirmed, do a
+    //    `Range: bytes=0-0` GET. This both confirms partial reads (206) AND yields
+    //    the total from Content-Range — so servers that reject HEAD (400/405) or
+    //    omit Content-Length still work as long as they honor Range (e.g. the
+    //    voidtools "Everything" HTTP server: HEAD → 400, ranged GET → 206).
+    if (!Number.isFinite(size) || size <= 0 || !rangeOk) {
         const probe = new XMLHttpRequest();
         probe.open('GET', fetchUrl, false);
         probe.responseType = 'arraybuffer';
         probe.setRequestHeader('Range', 'bytes=0-0');
-        probe.send();
-        if (probe.status !== 206) {
+        try {
+            probe.send();
+        } catch (e) {
             throw new Error(
-                `URLFS: server lacks Accept-Ranges: bytes (got status ${probe.status} for probe range)`,
+                `URLFS: ${url} — HEAD failed (HTTP ${headStatus || 'network error'}) and the ` +
+                    `Range probe also failed at the network layer (likely CORS or host down)`,
+                { cause: e },
             );
         }
+        if (probe.status === 206) {
+            rangeOk = true;
+            const total = totalFromContentRange(probe.getResponseHeader('Content-Range'));
+            if (Number.isFinite(total) && total > 0) size = total;
+        } else if (probe.status === 200) {
+            throw new Error(
+                `URLFS: ${url} — server ignored the Range request (HTTP 200), so partial ` +
+                    `reads aren't possible; URLFS needs Range, not a full download`,
+            );
+        } else {
+            throw new Error(
+                `URLFS: ${url} — can't determine size (HEAD HTTP ${headStatus}, ` +
+                    `Range probe HTTP ${probe.status})`,
+            );
+        }
+    }
+
+    if (!Number.isFinite(size) || size <= 0) {
+        throw new Error(
+            `URLFS: ${url} — could not determine file size (no Content-Length on HEAD, ` +
+                `no total in Content-Range)`,
+        );
     }
     return { size };
 }

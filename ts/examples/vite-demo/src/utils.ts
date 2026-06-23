@@ -72,38 +72,48 @@ export function ptLabel(pt: string): string {
     }
 }
 
-/** Probe a URL via async HEAD on the main thread. Returns the size on
- *  success; throws a user-readable Error on failure.  */
+/** Total length from `Content-Range: bytes 0-0/12345`; NaN if absent/unknown. */
+function totalFromContentRange(header: string | null): number {
+    const m = (header ?? '').match(/\/\s*(\d+)\s*$/);
+    return m ? Number.parseInt(m[1], 10) : Number.NaN;
+}
+
+/** Probe a URL ahead of mount. Tries HEAD for the size + range support, then
+ *  falls back to a `Range: bytes=0-0` GET — which both confirms partial reads
+ *  and reads the total from Content-Range. That fallback is what lets URLFS load
+ *  Range-capable servers that reject HEAD (400/405) or omit Content-Length
+ *  (e.g. the "Everything" HTTP server: HEAD → 400, ranged GET → 206). Returns
+ *  the size; throws a user-readable Error on failure. */
 export async function probeUrlAhead(url: string): Promise<number> {
     const fetchUrl = applyUrlProxy(url);
-    let resp: Response;
+    const corsMsg = getUrlProxyPrefix()
+        ? `Couldn't reach the URL — DNS, TLS, or the host is down. ` +
+          `See the console for the real error.`
+        : `Couldn't reach the URL — usually CORS (the server didn't send ` +
+          `Access-Control-Allow-Origin), or the host is down. ` +
+          `Browser console has the real error.`;
+
+    // 1) HEAD: cheapest path to size + range support. A network/CORS failure
+    //    here is NOT fatal yet — some servers/proxies reject HEAD but honor a
+    //    ranged GET, so we try that before giving up.
+    let size = Number.NaN;
+    let rangeOk = false;
+    let headStatus = 0;
+    let headNetworkError: unknown = null;
     try {
-        resp = await fetch(fetchUrl, { method: 'HEAD', cache: 'no-store' });
+        const resp = await fetch(fetchUrl, { method: 'HEAD', cache: 'no-store' });
+        headStatus = resp.status;
+        if (resp.ok) {
+            const cl = resp.headers.get('Content-Length');
+            if (cl) size = Number.parseInt(cl, 10);
+            rangeOk = (resp.headers.get('Accept-Ranges') ?? '').toLowerCase().includes('bytes');
+        }
     } catch (e) {
-        const msg = getUrlProxyPrefix()
-            ? `Couldn't reach the URL — DNS, TLS, or the host is down. ` +
-              `See the console for the real error.`
-            : `Couldn't reach the URL — usually CORS (the server didn't send ` +
-              `Access-Control-Allow-Origin), or the host is down. ` +
-              `Browser console has the real error.`;
-        throw new Error(msg, { cause: e });
+        headNetworkError = e;
     }
-    if (!resp.ok) {
-        throw new Error(`Server returned HTTP ${resp.status} ${resp.statusText}.`);
-    }
-    const cl = resp.headers.get('Content-Length');
-    if (!cl) {
-        throw new Error(
-            `Server didn't return a Content-Length header on HEAD. ` +
-                `URLFS needs to know the file size up front to scan partitions.`,
-        );
-    }
-    const size = Number.parseInt(cl, 10);
-    if (!Number.isFinite(size) || size <= 0) {
-        throw new Error(`Server returned an invalid Content-Length: ${cl}.`);
-    }
-    const ar = (resp.headers.get('Accept-Ranges') ?? '').toLowerCase();
-    if (!ar.includes('bytes')) {
+
+    // 2) Range GET fallback when HEAD didn't give a usable size or range support.
+    if (!Number.isFinite(size) || size <= 0 || !rangeOk) {
         let probe: Response;
         try {
             probe = await fetch(fetchUrl, {
@@ -112,15 +122,31 @@ export async function probeUrlAhead(url: string): Promise<number> {
                 cache: 'no-store',
             });
         } catch (e) {
-            throw new Error(`Range probe failed: ${(e as Error).message}`, { cause: e });
+            // Both HEAD and the Range GET failed at the network layer → CORS/host-down.
+            throw new Error(corsMsg, { cause: headNetworkError ?? e });
         }
-        if (probe.status !== 206) {
+        if (probe.status === 206) {
+            rangeOk = true;
+            const total = totalFromContentRange(probe.headers.get('Content-Range'));
+            if (Number.isFinite(total) && total > 0) size = total;
+        } else if (probe.status === 200) {
             throw new Error(
-                `Server doesn't support Range requests ` +
-                    `(got HTTP ${probe.status} for a Range probe). ` +
-                    `URLFS needs partial reads, not a full download.`,
+                `Server ignored the Range request (HTTP 200), so partial reads aren't ` +
+                    `possible. URLFS needs Range, not a full download.`,
+            );
+        } else {
+            throw new Error(
+                `Server returned HTTP ${probe.status} for a Range probe` +
+                    (headStatus ? ` (HEAD was HTTP ${headStatus}).` : `.`),
             );
         }
+    }
+
+    if (!Number.isFinite(size) || size <= 0) {
+        throw new Error(
+            `Couldn't determine the file size — no Content-Length on HEAD and no total ` +
+                `in the Range response's Content-Range header.`,
+        );
     }
     return size;
 }
