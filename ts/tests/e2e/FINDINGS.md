@@ -628,3 +628,71 @@ recognised as the loss it would be):
 in a `beforeEach`, consistent with the other flow specs; these cases don't mount successfully so
 F9 likely wouldn't fire, but native is gated off to never risk the 2-min `app.close()` hang — the
 error behaviour is fully covered by web + electron-wasm).
+
+---
+
+## F13 — wasm bundle decoded ONLY qcow2; vmdk/vhdx/vdi/vhd/dmg silently read as raw (✅ FIXED 2026-06-23, was High)
+
+**Observed (web + electron-wasm, manual matrix sweep):** Opening a vmdk / vhdx / vdi / vpc(vhd) /
+dmg image in the browser bundle attaches and reaches `ready`, but the disk is sized to the
+**on-disk file length, not the container's virtual size**, so no partition table / filesystem is
+found and entering the whole disk surfaces "Can't mount partition #0 — filesystem not recognised".
+Concrete (real images over the matrix):
+
+| file | real format / virtual size | wasm `[vda]` before |
+|---|---|---|
+| DebianLKL.vhdx | vhdx / 200 GiB | 4.0 MiB (= file size) |
+| ONIE.vdi | vdi / 8 GiB | 4.0 MiB |
+| AlDente.dmg | dmg / 57.5 MiB | 6.7 MiB |
+| btrfs-whole.vmdk | vmdk / 256 MiB | 1.1 MiB |
+
+qcow2 decoded fine (F10). The **native** addon decodes all of these (it has bdrv_vmdk/vhdx/vdi/dmg;
+verified under Node: DebianLKL.vhdx → 200 GiB, ONIE.vdi → 8 GiB GPT), so this was wasm-specific.
+
+**Root cause:** the final wasm link in `scripts/build_anyfs_wasm.sh` applied `-Wl,--whole-archive`
+to **liblkl.a only**; the QEMU `libblock.a` was linked WITHOUT it. QEMU block-format drivers
+self-register via `block_init()` constructors and are otherwise unreferenced, so the linker GC'd
+every driver object except qcow2 (incidentally referenced). The wasm name section confirmed only
+`bdrv_qcow2_init` was present. The native build was always correct — `anyfs-native/binding.gyp`
+whole-archives libblock.a.
+
+**Fix:** link `$QBLD/libblock.a` under its own `-Wl,--whole-archive … -Wl,--no-whole-archive`
+group in `build_anyfs_wasm.sh` (mirroring liblkl and the native gyp). Safe because configure
+`--disable-curl/--disable-libnfs/--disable-libiscsi/--disable-rbd` keep the dep-bearing block
+drivers out of libblock.a, so only self-contained format/protocol drivers (qcow2, qed, vmdk, vhdx,
+vdi, vpc, dmg, dmg-bz2, bochs, cloop, parallels, raw, file, nbd, null) are pulled.
+
+**Verified (2026-06-23, rebuilt browser + node bundles):** name section now has
+`bdrv_{vmdk,vhdx,vdi,vpc,dmg,qed,parallels,bochs,cloop,qcow2,raw}_init`. In the real GUI:
+btrfs-whole.vmdk → 256 MiB, mounts btrfs (`sub/`, `whole.txt`); AlDente.dmg → 58 MiB, mounts HFS+
+(`AlDente.app/`, `.background/`, `Applications`); DebianLKL.vhdx → 200 GiB (decoded; empty WSL disk,
+so no FS — correct); ONIE.vdi → 8 GiB + GPT partition parsed. No regression: ext4/xfs/ext2/qcow2/
+ISO9660 still mount. See memory `project_wasm_only_qcow2_driver`.
+
+---
+
+## F14 — URL load failed on Range-capable but HEAD-incapable servers (✅ FIXED 2026-06-23, was Medium)
+
+**Observed:** Both the FilePicker pre-flight probe (`vite-demo/src/utils.ts probeUrlAhead`) and the
+worker mount probe (`packages/core/src/url-fs.ts probeUrl`) issued a **HEAD first** and threw on any
+non-2xx / missing Content-Length. The voidtools "Everything" HTTP server (and similar
+Range-only servers / some CDN+object-store configs) return **400 to HEAD** while serving Range GETs
+perfectly (`206` + `Content-Range: bytes 0-0/<total>`). Result: loading such a URL failed with
+`URLFS: HEAD … → HTTP 400`, even through the Electron main-process proxy (which forwards the HEAD
+verbatim and so hits the same 400). On the plain-browser path the failure was masked by CORS, but
+the HEAD-first design is the underlying gap.
+
+**Fix:** both probes now fall back to a `Range: bytes=0-0` GET when HEAD doesn't yield a usable size
+or unconfirmed range support. A `206` both confirms partial reads and yields the total from
+`Content-Range: …/<total>`; a `200` (server ignored Range) is reported as "no Range support"; a
+network/CORS failure of *both* HEAD and GET is reported as the existing CORS/host-down message.
+
+**Verified (2026-06-23):** electron-wasm loading the remote vhdx over the proxy
+(`anyfs-url://proxy/?u=http://…/DebianLKL.vhdx`, HEAD→400 server) now reaches `status: ready` via
+the Range fallback (was `status: error — URLFS: HEAD … → HTTP 400`). Same-origin and CORS-enabled
+servers are unaffected (HEAD still used first when it works).
+
+> **Still deferred — F9 (native mount hangs/crashes in the Electron main process):** confirmed still
+> reproducing 2026-06-23 (attach/mount hangs ~60 s or crashes the app; the same addon mounts ext4 in
+> 148 ms under plain Node). Per the user it remains a **separate task** — the utilityProcess /
+> process-isolation rework described in F7/F9.
