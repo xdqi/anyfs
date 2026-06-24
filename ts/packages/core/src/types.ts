@@ -52,6 +52,11 @@ export interface SessionOpts {
     loglevel?: number;
     /** Force whole-disk mount with this fstype, skipping partition probe. */
     forceFstype?: string;
+    /** Watchdog (ms) for the attach phase: if attaching/opening the image
+     *  doesn't finish within this window the provider tears the worker down and
+     *  surfaces an error instead of spinning forever (e.g. a slow/half-open URL
+     *  with no Range support). Default 120000. Set 0 to disable. */
+    attachTimeoutMs?: number;
 }
 
 /** C: AnyfsSessionMeta */

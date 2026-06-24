@@ -30,6 +30,11 @@ export interface Driver {
     /** Source injection. */
     openImage(fx: Fixture): Promise<void>;
     openUrl(url: string): Promise<void>;
+    /** Detach the current image, returning to the picker (no confirm dialog). */
+    close(): Promise<void>;
+    /** Wait until the attach settles at 'ready'; throw if it errors or times out.
+     *  Used by switch/lifecycle tests where reaching ready IS the assertion. */
+    waitReady(timeoutMs?: number): Promise<void>;
 
     /** Disk/partition. */
     listPartitionIndices(): Promise<number[]>;

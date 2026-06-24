@@ -8,6 +8,19 @@ export function clearNavHash() {
     window.history.replaceState(null, '', window.location.pathname + window.location.search);
 }
 
+/** A stable identity string for a source, used as a React `key` so the disk
+ *  view remounts fresh on every switch (drops the previous disk's cached
+ *  partition list / mount path / size instead of flashing them — findings
+ *  F16-10/11/23). Distinct disks map to distinct keys; the same disk reopened
+ *  maps to the same key (a harmless no-op remount). */
+export function sourceKey(s: SessionSource | null): string {
+    if (!s) return 'none';
+    if (s.kind === 'url') return `url:${s.url}`;
+    if (s.kind === 'path') return `path:${s.path}`;
+    const b = s.blob as File;
+    return `blob:${b.name ?? ''}:${b.size}:${b.lastModified ?? 0}`;
+}
+
 /** User-facing label for a SessionSource. */
 export function sourceName(s: SessionSource): string {
     if (s.kind === 'blob') return (s.blob as File).name;

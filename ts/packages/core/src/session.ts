@@ -35,4 +35,12 @@ export interface AnyfsSession {
 
     // ── Events ────────────────────────────────────────
     onProgress(cb: (step: string) => void): () => void;
+    /** Fires once when the session enters an unrecoverable state *after* it was
+     *  usable — e.g. a wasm worker abort / host-error / unhandled rejection, or
+     *  a forced teardown of a wedged worker. Lets the UI flip to an error state
+     *  instead of believing a bricked disk is still 'ready'. Returns an
+     *  unsubscribe fn; if the session is already fatal the callback fires
+     *  synchronously. close() does NOT trigger it (that's an intentional
+     *  teardown, not a fault). */
+    onFatal(cb: (err: Error) => void): () => void;
 }

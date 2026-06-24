@@ -734,3 +734,126 @@ first. No regression: ext4/ext2/xfs/vfat (multi.img, win98.vdi FAT, system.vhd e
 (macOS-clean.qcow2 #2 via blkid hint), btrfs (btrfs-whole.vmdk via hint), HFS+, UDF/ISO9660
 (Windows LTSC ISO) all still mount. ("Whole disk #0" on a partitioned disk still correctly
 reports "Can't mount" — it has no filesystem.)
+
+---
+
+## F16 — switching the loaded image (native module disabled / wasm): a session-lifecycle + UI state-reset audit (28 findings; HIGH + switch-class FIXED 2026-06-25)
+
+**Trigger (user report):** with the native module disabled (wasm backend), switching files in
+the GUI breaks. Reproduced against a voidtools "Everything" HTTP server (HEAD→400, Range GET→206,
+`Connection: close`, slow over LAN) — the slow source widens every lifecycle race.
+
+**Headline defect (BUG-1, HIGH):** open an image, then **close or switch before it finishes
+attaching** (trivial over a slow URL) → the *next* open is permanently wedged with
+`AnyfsSession: already disposed` (or a stuck `attaching`). Root cause: the React provider
+(`ts/packages/react/src/provider.tsx`) cleared its parked-worker ref `prewarmed.current` **only on
+the attach success path**, and shared one prewarmed session across overlapping source effects — so
+an abandoned attach disposed the shared worker and left `prewarmed.current` pointing at a disposed
+session, which the next open reused. Deterministically reproduced (electron-wasm + web): open →
+close-mid-load → reopen, and rapid A→B→C switches.
+
+A verified 6-dimension audit (provider lifecycle / DiskView+App state / FilePicker+URL+recents /
+file-tree+download / dialogs+boundaries / worker+URLFS) surfaced 28 confirmed findings (7 more were
+adversarially rejected as not-a-bug). Severity reachable through **real GUI gestures** unless marked
+`bridge`. The HIGH set + the switch-class MEDIUMs are **FIXED**; dialog/URL/cosmetic items are
+**DEFERRED** (documented below).
+
+**Regression guard:** `flows/switch.spec.ts` (4 tests) — switch shows the new disk not stale
+partitions; reopen-after-abandoned-mid-attach recovers (no "already disposed"); open→close→reopen;
+switch-while-inside-a-partition returns to the new disk's picker. Green on **web** and
+**electron-wasm**. (electron-native gated by F9.)
+
+### FIXED this round
+
+- **F16-01 (HIGH, gui) — abandoned/superseded attach strands a disposed worker → next open wedged.**
+  `provider.tsx`. Fix: rewrote the source effect around a monotonic **generation token** + an
+  **exclusive** `consumeSession()` (claims the parked prewarm by nulling the ref, else boots fresh),
+  so overlapping opens never share a worker and a superseded attach closes only the session it owns.
+- **F16-02 (HIGH, gui) — two concurrent attaches on one shared worker hit the worker's
+  `diskHandle>=0` "already attached" guard.** Fixed by the same exclusive-session rewrite; each
+  attach gets its own worker and a failed attach drops (closes) its worker rather than reusing it.
+- **F16-03 (HIGH, gui) — `close()` couldn't kill a worker wedged in a synchronous URLFS XHR**
+  (`wasm-session.ts` `_dispose` awaited the graceful `dispose` op first, which queued behind the
+  blocked op → `close()` never resolved, worker leaked). Fix: `_dispose` now calls
+  `worker.terminate()` **first and unconditionally** (it force-kills even a blocked worker), then
+  rejects pending calls. The in-kernel halt is dropped — terminate destroys the whole wasm heap.
+- **F16-04 (HIGH, gui) — a post-ready worker abort/host-error left the session bricked but the
+  provider still `ready`.** Added `AnyfsSession.onFatal(cb)` (registry in `session-base.ts`, fired by
+  `wasm-session.ts` on abort/host-error/host-rejection/worker error); the provider subscribes after
+  reaching `ready` and flips to `error` + tears the session down.
+- **F16-05 (HIGH, gui) — no timeout on the attach phase → a slow/half-open URL spun forever.** Added
+  an attach **watchdog** in the provider (`SessionOpts.attachTimeoutMs`, default 120 s, 0 disables):
+  on timeout it closes the session (force-terminate via F16-03) and surfaces a clear error.
+- **F16-06 (HIGH, gui) — worker not reset after a failed attach → next attach hit "already
+  attached"/EEXIST `/work`.** `worker.ts` `attach`/`attachUrl` now `resetWorkFs()` first and wrap the
+  body so any failure unmounts `/work` + resets `diskHandle`; added a `detach` op so a prewarmed
+  worker can be cleanly reused.
+- **F16-10 (MEDIUM, gui) — DiskView showed the PREVIOUS disk's partition list/meta after a switch.**
+  Fix: `<DiskView key={sourceKey(source)}>` (App.tsx + `utils.sourceKey`) remounts the view fresh on
+  every switch, so `parts`/`meta`/`onDiskSize`/`manualMount`/`mountError` reset instead of flashing.
+- **F16-11 (MEDIUM) — `manualMount` pointed at the previous disk's mount path after a switch.** Fixed
+  by the same keyed remount.
+- **F16-14 (MEDIUM, gui) — in-flight download read hung forever when the disk was switched/closed.**
+  Fix: `wasm-session.ts` `_dispose` rejects every pending call before clearing the map.
+- **F16-15 (MEDIUM, gui) — DownloadingFileTree never cancelled active downloads on unmount / disk
+  change.** Fix: track live `StreamDownloadHandle`s in a ref + a cleanup effect keyed on
+  `[disk, mountPath]` that cancels them.
+- **F16-16 (MEDIUM, gui) — `relPath` survived a disk switch, so the new disk's readdir targeted a
+  stale path.** Fix (`trees/AnyfsFileBrowser.tsx`): reset to root when the **session identity**
+  changes (not only the mount-path string, which can collide across disks).
+- **F16-17 (MEDIUM, gui) — async double-click (symlink resolve) had no generation guard.** Fix:
+  capture `navGen` at the top of `handleFileAction` and bail after each `await` if it changed.
+- **F16-18 (MEDIUM, gui) — a late prewarm REJECTION clobbered an idle/closed UI into a spurious
+  error.** Fix: guard the boot rejection handler on `status === 'booting'`.
+- **F16-19 (MEDIUM, gui) — closing while in `error` left the stale error in the status bar.** Fix:
+  the close branch resets to `idle`/`booted` and clears `error`.
+- **F16-26 (LOW, bridge) — `inflight`/`desired` never cleared.** Replaced with the generation token +
+  an `inflightSrc` ref cleared on settle; the dedup guard now distinguishes done vs in-progress.
+- **F16-27 (LOW, bridge) — unmount cleanup ignored an in-flight prewarm boot (worker leak).** Fix:
+  the unmount cleanup chains `.then(s => s.close())` onto `prewarming.current`.
+- **BUG-2 (MEDIUM, gui) — stale `selectedPart` across a switch showed a nonexistent "partition #N".**
+  Fix: App resets `selectedPart` in render phase (the React "adjust state on prop change" pattern)
+  when `source` changes, so the freshly-keyed DiskView never renders the old partition.
+- **(regression caught during verification)** the initial provider rewrite bumped the generation
+  token *before* the dedup guard; a spurious effect re-fire (an inline `mountOpts={{…}}` whose
+  identity changed on a parent re-render) then superseded the legitimate in-flight attach, stranding
+  it in `attaching`. Fixed by bumping `gen` **after** the dedup guard and memoizing `mountOpts` in
+  App.tsx. (Guarded by switch.spec test 4.)
+
+### DEFERRED (documented; not in this round's scope)
+
+- **F16-07 (MEDIUM, gui)** — stacked dialogs each bind a window `keydown` Escape with no
+  `stopPropagation`; one Escape closes multiple (`components/ConfirmDialog.tsx:16`). Fix: a modal
+  stack / topmost-only handler.
+- **F16-08 (MEDIUM, gui)** — the "Disable native" nested confirm has no Escape handler; Escape closes
+  the parent Settings dialog and discards the pending toggle (`Settings.tsx:247`).
+- **F16-09 (MEDIUM, gui)** — ConfirmDialog binds Enter on `window` → any Enter confirms a destructive
+  action (`ConfirmDialog.tsx:17`). Fix: scope Enter to the dialog / autofocus Cancel for destructive
+  confirms.
+- **F16-12 (MEDIUM, gui)** — cancelling the URL dialog mid-probe still opens the disk after the slow
+  probe resolves (`components/UrlPromptDialog.tsx:31`). Fix: a cancelled/AbortController guard.
+- **F16-13 (MEDIUM, gui)** — a URL is probed three times in wasm mode (dialog + `onSubmitUrl` +
+  URLFS) before any data is read (`components/FilePicker.tsx:98`). Fix: probe once.
+- **F16-20 (MEDIUM, gui)** — URLFS treats a server that answers the probe 206 but a later GET 200 as
+  a full-file download per chunk (`url-fs.ts:117`). Fix: fail hard on a 200 to a ranged GET.
+- **F16-21 (LOW, gui)** — no modal focus trap on any dialog; Tab escapes behind the backdrop. Fix: a
+  shared focus-trap hook.
+- **F16-22 (LOW, gui)** — the TopBar breadcrumb truncates with no `title` tooltip (`TopBar.tsx:18`).
+- **F16-23 (LOW, gui) — PARTIAL** — `onDiskSize`'s stale-across-switch half is fixed by the keyed
+  DiskView remount; the HEAD-only probe (no Range fallback → the Everything HEAD→400 never yields a
+  size) is deferred (`DiskView.tsx:52`). Fix: reuse `utils.probeUrlAhead`'s HEAD→Range fallback.
+- **F16-24 (LOW, gui)** — non-http URL schemes (ftp/file/…) surface a misleading CORS error
+  (`utils.ts:87`). Fix: validate the scheme up front.
+- **F16-25 (LOW, gui)** — dropping a folder / multiple files silently takes only the first (a folder
+  becomes a bogus File) (`App.tsx` onDropFile). Fix: detect directory/multi and prompt.
+- **F16-28 (LOW, bridge)** — the worker `read` op silently truncates requests > 1 MiB
+  (`worker.ts` read). Fix: loop to fill, or document the short-read contract on `readFd`.
+
+### Rejected by adversarial verification (NOT bugs)
+
+prewarm `onProgress` listener "leak" (reclaimed on worker terminate; status-guarded no-op); legacy
+file-input value not reset (the picker remounts on every return, so the input is always fresh); wasm
+URL name fallback (WasmSession already derives the filename); stale per-row stat fill across a switch
+(blocked by the synchronous nav-generation guard); empty/icon-only row names (input not reachable);
+global confirm not cleared on source change (harmless); KernelStatusBar long-error overflow (it's a
+block div that wraps).

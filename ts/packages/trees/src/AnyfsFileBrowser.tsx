@@ -198,14 +198,24 @@ export function AnyfsFileBrowser({
     // partition / disk). On first mount we honor whatever was in the hash
     // so deep-link reloads work for users who can re-supply the same image.
     const prevMountRef = useRef<string | null>(null);
+    const prevSessionRef = useRef<AnyfsSession | null>(null);
     useEffect(() => {
         const cur = mountPath ?? null;
-        if (prevMountRef.current !== null && prevMountRef.current !== cur) {
+        const mountChanged = prevMountRef.current !== null && prevMountRef.current !== cur;
+        // A different disk can reuse the SAME mount-path string (e.g. both mount
+        // their whole disk at /lklmnt/anyfs_d0_whole), so key the reset on the
+        // session identity too — otherwise switching disks carries the previous
+        // disk's relPath into the new mount and readdir targets a path that may
+        // not exist on it (finding F16-16).
+        const sessionChanged =
+            prevSessionRef.current !== null && prevSessionRef.current !== session;
+        if (mountChanged || sessionChanged) {
             // replaceState so back-button doesn't strand the user on a path
-            // that belonged to the previous partition.
+            // that belonged to the previous partition / disk.
             navigate('', 'replace');
         }
         prevMountRef.current = cur;
+        prevSessionRef.current = session ?? null;
         navGen.current += 1;
         setFiles([null]);
     }, [session, mountPath, navigate]);
@@ -324,6 +334,12 @@ export function AnyfsFileBrowser({
 
     const handleFileAction = useCallback(
         async (data: ChonkyFileActionData) => {
+            // Capture the nav generation; if the disk/partition switches (or the
+            // user navigates away) while an await below is pending, bail rather
+            // than acting on a stale/disposed session — e.g. navigating the NEW
+            // disk to the OLD disk's resolved symlink target (finding F16-17).
+            const myGen = navGen.current;
+            const stale = () => navGen.current !== myGen;
             // Properties: stat the selected row and pop the modal.
             if ((data.id as string) === ShowPropertiesAction.id) {
                 const anyData = data as unknown as {
@@ -347,6 +363,7 @@ export function AnyfsFileBrowser({
                 } catch {
                     return;
                 }
+                if (stale()) return;
                 let linkTarget: string | null = null;
                 if (lstat.kind === 'link' && typeof session.readlink === 'function') {
                     try {
@@ -354,6 +371,7 @@ export function AnyfsFileBrowser({
                     } catch {
                         /* best effort */
                     }
+                    if (stale()) return;
                 }
                 setPropsTarget({
                     name: tgt.name ?? tgt.id.split('/').pop() ?? tgt.id,
@@ -384,12 +402,14 @@ export function AnyfsFileBrowser({
                 } catch {
                     /* broken link or otherwise — treat as file */
                 }
+                if (stale()) return;
             }
 
             if (isEffectivelyDir && session && mountPath) {
                 if (followSymlinks && tgt.isSymlink) {
                     try {
                         const canon = await session.realpath(joinAbs(mountPath, tgt.id));
+                        if (stale()) return;
                         const rel = stripMount(mountPath, canon);
                         if (rel !== null) {
                             navigate(rel);

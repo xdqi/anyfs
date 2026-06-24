@@ -82,6 +82,20 @@ export class ElectronDriver implements Driver {
         await this.page.evaluate((u) => (window as any).__anyfsTest.openUrl(u), url);
     }
 
+    async close(): Promise<void> {
+        await dom.closeDisk(this.page);
+    }
+
+    async waitReady(timeoutMs = 120_000): Promise<void> {
+        await dom.waitForReadyOrError(this.page, timeoutMs);
+        const st = await dom.getState(this.page);
+        if (st?.status !== 'ready') {
+            throw new Error(
+                `expected status 'ready', got '${st?.status}': ${st?.error?.message ?? ''}`,
+            );
+        }
+    }
+
     async listPartitionIndices(): Promise<number[]> {
         return dom.listPartitionIndices(this.page);
     }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SessionSource } from '@anyfs/core';
 import { getAnyfsNative } from '@anyfs/core';
 import { AnyfsProvider } from '@anyfs/react';
@@ -10,7 +10,7 @@ import { DiskView } from './components/DiskView';
 import { KernelStatusBar } from './components/KernelStatusBar';
 import { FilePicker } from './components/FilePicker';
 import { DropOverlay } from './components/DropOverlay';
-import { clearNavHash, sourceName, fileToSource } from './utils';
+import { clearNavHash, sourceName, sourceKey, fileToSource } from './utils';
 import { usePathProxy } from './usePathProxy';
 import { TestStateBridge, e2eEnabled } from './test-bridge';
 
@@ -50,13 +50,36 @@ export function App() {
         api.setSourceFile = (file: File) => {
             setSource({ kind: 'blob', blob: file });
         };
+        /** Detach the current image and return to the picker (mirrors the
+         *  "Close disk" gesture without the confirm dialog). Lets e2e drive the
+         *  close→reopen / switch flows deterministically. */
+        api.close = () => {
+            setSelectedPart(null);
+            setSource(null);
+        };
         return () => {
             delete api.openUrl;
             delete api.openPath;
             delete api.setSourceFile;
+            delete api.close;
         };
     }, []);
     const [selectedPart, setSelectedPart] = useState<number | null>(null);
+
+    // Whenever the loaded image changes, drop the selected partition. Done in
+    // render phase (the React-sanctioned "adjust state when a prop changes"
+    // pattern) rather than an effect so the freshly-keyed DiskView never renders
+    // the PREVIOUS disk's partition for even one frame. Every GUI switch gesture
+    // (close, drop-to-replace) already reset this, but a programmatic source
+    // change (the e2e bridge, future "open another" paths) would otherwise carry
+    // a stale partition index onto the new disk — a nonexistent "partition #N"
+    // with an empty file list (BUG-2).
+    const prevSourceRef = useRef(source);
+    if (prevSourceRef.current !== source) {
+        prevSourceRef.current = source;
+        if (selectedPart !== null) setSelectedPart(null);
+    }
+
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [aboutOpen, setAboutOpen] = useState(false);
     const [confirm, setConfirm] = useState<ConfirmCfg | null>(null);
@@ -166,6 +189,10 @@ export function App() {
         });
     }, [pathProxyError]);
 
+    // Stable identity — a fresh object each render would re-fire the provider's
+    // source effect (which lists mountOpts in its deps) on every App re-render.
+    const mountOpts = useMemo(() => ({ loglevel: e2eEnabled() ? 7 : 3 }), []);
+
     return (
         <SettingsProvider>
             <AnyfsProvider
@@ -173,7 +200,7 @@ export function App() {
                 workerUrl={WORKER_URL}
                 wasmBaseUrl="/wasm/"
                 wasmModuleName="anyfs.mjs"
-                mountOpts={{ loglevel: e2eEnabled() ? 7 : 3 }}
+                mountOpts={mountOpts}
                 prewarm
                 env={env}
                 {...(settingsDisableNative ? { disableNative: true as const } : {})}
@@ -194,6 +221,7 @@ export function App() {
                     <main className="flex-1 min-h-0 flex flex-col overflow-y-auto">
                         {source ? (
                             <DiskView
+                                key={sourceKey(source)}
                                 source={source}
                                 selectedPart={selectedPart}
                                 setSelectedPart={setSelectedPart}

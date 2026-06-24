@@ -9,6 +9,8 @@ import type { AnyfsSession } from './session.js';
 export abstract class AnyfsSessionBase implements AnyfsSession {
     protected disposed = false;
     protected readonly fds = new Set<LklFd>();
+    private readonly fatalCbs = new Set<(e: Error) => void>();
+    private fatalErr: Error | null = null;
 
     // ── Subclass contract ─────────────────────────────
 
@@ -152,6 +154,32 @@ export abstract class AnyfsSessionBase implements AnyfsSession {
         }
         this.fds.clear();
         await this._dispose();
+    }
+
+    // ── Fatal-error signalling ────────────────────────
+
+    onFatal(cb: (err: Error) => void): () => void {
+        if (this.fatalErr) {
+            cb(this.fatalErr);
+            return () => {};
+        }
+        this.fatalCbs.add(cb);
+        return () => this.fatalCbs.delete(cb);
+    }
+
+    /** @internal — subclasses call this once the session is unrecoverable.
+     *  Idempotent: only the first call fires the callbacks. */
+    protected fireFatal(err: Error): void {
+        if (this.fatalErr) return;
+        this.fatalErr = err;
+        for (const cb of this.fatalCbs) {
+            try {
+                cb(err);
+            } catch {
+                /* a listener throwing must not block the others */
+            }
+        }
+        this.fatalCbs.clear();
     }
 
     // ── Internal ──────────────────────────────────────

@@ -36,6 +36,11 @@ export function backendMode(page: Page): Promise<string | null> {
     return page.evaluate(() => (window as any).__anyfsTest?.getState().mode ?? null);
 }
 
+/** Detach the current image and return to the picker via the test bridge. */
+export async function closeDisk(page: Page): Promise<void> {
+    await page.evaluate(() => (window as any).__anyfsTest?.close?.());
+}
+
 /** Block until the test bridge is installed (getState is callable). */
 export async function waitForBridge(page: Page, timeout = 60_000): Promise<void> {
     await page.waitForFunction(() => !!(window as any).__anyfsTest?.getState, null, { timeout });

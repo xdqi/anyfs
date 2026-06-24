@@ -1,8 +1,8 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AnyfsSession, NativeSession } from '@anyfs/core';
 import { AnyfsFileBrowser } from '@anyfs/trees';
 import { useSettings } from '../Settings';
-import { streamDownload } from '../stream-download';
+import { streamDownload, type StreamDownloadHandle } from '../stream-download';
 import { DownloadStatus } from './DownloadStatus';
 
 export function DownloadingFileTree({
@@ -24,6 +24,24 @@ export function DownloadingFileTree({
     const inElectron = typeof window !== 'undefined' && !!window.electronDownload;
     const [active, setActive] = useState<DownloadJob | null>(null);
     const { settings, resolvedTheme } = useSettings();
+    // Track every in-flight download so we can cancel them if the disk/partition
+    // switches or the tree unmounts (finding F16-15).
+    const liveHandles = useRef(new Set<StreamDownloadHandle>());
+
+    useEffect(() => {
+        const handles = liveHandles.current;
+        return () => {
+            for (const h of handles) {
+                try {
+                    h.cancel('disk-closed');
+                } catch {
+                    /* best effort */
+                }
+            }
+            handles.clear();
+            setActive(null);
+        };
+    }, [disk, mountPath]);
 
     const startDownload = useCallback(
         async (relPath: string) => {
@@ -54,6 +72,7 @@ export function DownloadingFileTree({
                     : {}),
             });
             job.cancel = () => handle.cancel();
+            liveHandles.current.add(handle);
             if (inElectron) setActive(job);
             try {
                 await handle.promise;
@@ -61,6 +80,8 @@ export function DownloadingFileTree({
             } catch (err) {
                 if (inElectron) setActive({ ...job, error: (err as Error).message });
                 else console.error('[anyfs] download failed:', err);
+            } finally {
+                liveHandles.current.delete(handle);
             }
         },
         [disk, mountPath, inElectron, settings],

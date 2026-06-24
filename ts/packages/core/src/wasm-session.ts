@@ -70,6 +70,10 @@ export class WasmSession extends AnyfsSessionBase {
             this.workerError = new Error(`anyfs worker ${m.event}: ${m.message ?? m.reason ?? ''}`);
             for (const p of this.pending.values()) p.rej(this.workerError);
             this.pending.clear();
+            // A post-ready abort/host-error bricks the worker permanently. Tell
+            // anyone holding this session (the provider) so a mounted disk can
+            // flip to 'error' instead of pretending it's still usable.
+            this.fireFatal(this.workerError);
             return;
         }
         if (m.event === 'stdout' || m.event === 'stderr') {
@@ -99,6 +103,7 @@ export class WasmSession extends AnyfsSessionBase {
         this.workerError = new Error(`anyfs worker error: ${e.message}`);
         for (const p of this.pending.values()) p.rej(this.workerError);
         this.pending.clear();
+        this.fireFatal(this.workerError);
     };
 
     private call<T>(op: string, args: unknown = {}): Promise<T> {
@@ -218,14 +223,23 @@ export class WasmSession extends AnyfsSessionBase {
 
     /** @internal */
     protected async _dispose(): Promise<void> {
-        try {
-            await this.call<number>('dispose');
-        } catch {
-            /* best effort */
-        }
+        // Terminate FIRST and synchronously. Worker.terminate() forcibly kills
+        // the worker thread even when it is blocked inside a synchronous URLFS
+        // XHR / Atomics.wait — so a wedged worker (slow/half-open HTTP image)
+        // can't keep the tab's 64 MB+ wasm heap and its socket alive for the
+        // life of the page. We deliberately do NOT try the graceful in-worker
+        // `dispose` op (session_close + kernel_halt) first: it would queue
+        // behind the blocked op and never resolve, hanging the close() forever.
+        // terminate() destroys the whole worker (and its wasm heap) wholesale,
+        // so there is nothing left to clean up in-kernel.
         this.worker.removeEventListener('message', this.onMessage);
         this.worker.removeEventListener('error', this.onError);
         this.worker.terminate();
+        // Reject every still-pending call so awaiters (an in-flight download
+        // read, a hung attach/enter) fail fast instead of hanging on a worker
+        // that no longer exists.
+        const err = this.workerError ?? new Error('AnyfsSession: disposed');
+        for (const p of this.pending.values()) p.rej(err);
         this.pending.clear();
     }
 }

@@ -37,7 +37,12 @@ interface AnyMod {
         opts?: { async?: boolean },
     ) => number | string | Promise<number | string>;
     UTF8ToString(ptr: number, max?: number): string;
-    FS: { mkdir(p: string): void; mount(t: unknown, o: unknown, m: string): void };
+    FS: {
+        mkdir(p: string): void;
+        mount(t: unknown, o: unknown, m: string): void;
+        unmount(m: string): void;
+        rmdir(p: string): void;
+    };
     WORKERFS?: unknown;
 }
 
@@ -48,6 +53,25 @@ let readBuf = 0; // pre-allocated scratch buffer for pread, lifetime = mount ses
 let readBufSize = 0;
 
 const send = (m: unknown) => self.postMessage(m);
+
+/** Tear down the /work mount + dir so a fresh attach starts clean. Best-effort:
+ *  unmount throws if nothing is mounted, rmdir throws if absent/non-empty — both
+ *  are fine to ignore. Without this, a previous (even failed) attach leaves
+ *  /work mounted, so the next attach's `FS.mkdir('/work')` throws EEXIST and the
+ *  worker is permanently un-attachable. */
+function resetWorkFs(): void {
+    if (!M) return;
+    try {
+        M.FS.unmount('/work');
+    } catch {
+        /* not mounted */
+    }
+    try {
+        M.FS.rmdir('/work');
+    } catch {
+        /* absent or busy */
+    }
+}
 
 self.addEventListener('error', (e: ErrorEvent) => {
     send({ event: 'host-error', message: e.message, stack: (e.error as Error | undefined)?.stack });
@@ -171,21 +195,30 @@ const ops: Record<string, (a: any) => unknown> = {
         const fsPath = `/work/${file.name || 'image'}`;
         send({ event: 'progress', step: 'attaching disk image' });
         if (!M.WORKERFS) throw new Error('WORKERFS missing');
-        M.FS.mkdir('/work');
-        M.FS.mount(
-            M.WORKERFS,
-            {
-                blobs: [{ name: file.name || 'image', data: file }],
-            },
-            '/work',
-        );
+        // Start from a clean /work even if a prior attach left a stale mount.
+        resetWorkFs();
+        try {
+            M.FS.mkdir('/work');
+            M.FS.mount(
+                M.WORKERFS,
+                {
+                    blobs: [{ name: file.name || 'image', data: file }],
+                },
+                '/work',
+            );
 
-        send({ event: 'progress', step: 'opening disk' });
-        // Always open the underlying image read-only — WORKERFS-backed disks
-        // can't accept writebacks.
-        diskHandle = await callP('anyfs_ts_session_open_p', ['string', 'number'], [fsPath, 1]);
-        if (diskHandle < 0) throw new Error(`anyfs_ts_session_open failed: ${diskHandle}`);
-        return { diskHandle };
+            send({ event: 'progress', step: 'opening disk' });
+            // Always open the underlying image read-only — WORKERFS-backed disks
+            // can't accept writebacks.
+            diskHandle = await callP('anyfs_ts_session_open_p', ['string', 'number'], [fsPath, 1]);
+            if (diskHandle < 0) throw new Error(`anyfs_ts_session_open failed: ${diskHandle}`);
+            return { diskHandle };
+        } catch (e) {
+            // Leave the worker reusable: drop the half-built handle + mount so a
+            // retry on this same worker doesn't hit 'already attached'/EEXIST.
+            await ops.detach();
+            throw e;
+        }
     },
 
     async attachUrl(a: AttachUrlArgs) {
@@ -200,16 +233,26 @@ const ops: Record<string, (a: any) => unknown> = {
         send({ event: 'progress', step: 'probing URL' });
         const URLFS = createUrlFs(M);
         send({ event: 'stderr', message: '[diag] attachUrl URLFS created ok' });
-        M.FS.mkdir('/work');
-        M.FS.mount(URLFS, { url: a.url, name: a.name || 'image' }, '/work');
-        send({ event: 'stderr', message: '[diag] attachUrl URLFS mounted, calling disk_open...' });
-        send({ event: 'progress', step: 'opening disk' });
-        // Read-only — the URL backend has no writeback path.
-        diskHandle = await callP('anyfs_ts_session_open_p', ['string', 'number'], [fsPath, 1]);
-        send({ event: 'stderr', message: `[diag] attachUrl disk_open returned ${diskHandle}` });
-        if (diskHandle < 0) throw new Error(`anyfs_ts_session_open failed: ${diskHandle}`);
-        send({ event: 'stderr', message: '[diag] attachUrl done, returning diskHandle' });
-        return { diskHandle };
+        // Start from a clean /work even if a prior attach left a stale mount.
+        resetWorkFs();
+        try {
+            M.FS.mkdir('/work');
+            M.FS.mount(URLFS, { url: a.url, name: a.name || 'image' }, '/work');
+            send({
+                event: 'stderr',
+                message: '[diag] attachUrl URLFS mounted, calling disk_open...',
+            });
+            send({ event: 'progress', step: 'opening disk' });
+            // Read-only — the URL backend has no writeback path.
+            diskHandle = await callP('anyfs_ts_session_open_p', ['string', 'number'], [fsPath, 1]);
+            send({ event: 'stderr', message: `[diag] attachUrl disk_open returned ${diskHandle}` });
+            if (diskHandle < 0) throw new Error(`anyfs_ts_session_open failed: ${diskHandle}`);
+            send({ event: 'stderr', message: '[diag] attachUrl done, returning diskHandle' });
+            return { diskHandle };
+        } catch (e) {
+            await ops.detach();
+            throw e;
+        }
     },
 
     // Back-compat: boot + attach in one shot.
@@ -380,6 +423,22 @@ const ops: Record<string, (a: any) => unknown> = {
 
     close({ fd }: { fd: number }) {
         return callP('anyfs_ts_close_p', ['number'], [fd]);
+    },
+
+    /** Release the current disk + /work mount but keep the kernel booted, so
+     *  this worker can be reused for another attach. Idempotent. */
+    async detach() {
+        if (!M) return 0;
+        if (diskHandle >= 0) {
+            try {
+                await callA('anyfs_ts_session_close', 'number', ['number'], [diskHandle]);
+            } catch {
+                /* best effort */
+            }
+            diskHandle = -1;
+        }
+        resetWorkFs();
+        return 0;
     },
 
     async dispose() {
