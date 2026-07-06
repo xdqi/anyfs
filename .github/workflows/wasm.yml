@@ -299,14 +299,13 @@ jobs:
       - name: Smoke test (amd64 only — image already pushed)
         env:
           METADATA_TAGS: ${{ steps.meta.outputs.tags }}
-          IMAGE: ghcr.io/${{ github.repository_owner }}/anyfs-web
         run: |
-          # metadata-action emits the short-sha tag as sha-<short>; reuse its
-          # output rather than re-deriving it from GITHUB_SHA.
-          SHA_TAG=$(printf '%s\n' "$METADATA_TAGS" | grep -E '^sha-[0-9a-f]{7,}$' | head -1)
-          [ -n "$SHA_TAG" ] || { echo "no sha- tag in metadata output" >&2; exit 1; }
-          docker pull "$IMAGE:$SHA_TAG"
-          docker run -d --name anyfs-web-smoke -p 4173:4173 "$IMAGE:$SHA_TAG"
+          # metadata-action outputs full refs (image:tag, newline-joined), not
+          # bare tags — pick the sha-<short> ref whole and pull it verbatim.
+          SHA_REF=$(printf '%s\n' "$METADATA_TAGS" | grep -E ':sha-[0-9a-f]{7,}$' | head -1)
+          [ -n "$SHA_REF" ] || { echo "no sha- tag in metadata output: $METADATA_TAGS" >&2; exit 1; }
+          docker pull "$SHA_REF"
+          docker run -d --name anyfs-web-smoke -p 4173:4173 "$SHA_REF"
           sleep 2
           curl -sf http://localhost:4173/ -o /dev/null
           curl -sI http://localhost:4173/ | grep -i 'cross-origin-opener-policy'
