@@ -7,6 +7,7 @@ const fakeSession = () => ({
     attachUrl: vi.fn(async () => {}),
     attachPath: vi.fn(async () => {}),
     onProgress: vi.fn(() => () => {}),
+    onFatal: vi.fn(() => () => {}),
     close: vi.fn(async () => {}),
     readdir: vi.fn(async () => []),
     stat: vi.fn(async () => ({ size: 0, mode: 0o100644 })),

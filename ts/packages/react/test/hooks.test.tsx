@@ -21,6 +21,7 @@ function makeSession() {
     return {
         attachBlob: vi.fn(async () => {}),
         onProgress: vi.fn(() => () => {}),
+        onFatal: vi.fn(() => () => {}),
         close: vi.fn(async () => {}),
         readdir: vi.fn(async (p: string) => {
             if (p === '/') return entriesRoot;
