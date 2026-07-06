@@ -257,6 +257,63 @@ jobs:
           path: anyfs-web-dist.tar.gz
           if-no-files-found: error
 
+  ghcr-image:
+    needs: web-package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: anyfs-web-dist
+          path: dist
+      - name: Unpack dist into build context
+        run: tar -xzf dist/anyfs-web-dist.tar.gz -C dist && rm dist/anyfs-web-dist.tar.gz
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/anyfs-web
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: dist
+          file: ts/examples/vite-demo/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: Smoke test (amd64 only — image already pushed)
+        env:
+          METADATA_TAGS: ${{ steps.meta.outputs.tags }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/anyfs-web
+        run: |
+          # metadata-action emits the short-sha tag as sha-<short>; reuse its
+          # output rather than re-deriving it from GITHUB_SHA.
+          SHA_TAG=$(printf '%s\n' "$METADATA_TAGS" | grep -E '^sha-[0-9a-f]{7,}$' | head -1)
+          [ -n "$SHA_TAG" ] || { echo "no sha- tag in metadata output" >&2; exit 1; }
+          docker pull "$IMAGE:$SHA_TAG"
+          docker run -d --name anyfs-web-smoke -p 4173:4173 "$IMAGE:$SHA_TAG"
+          sleep 2
+          curl -sf http://localhost:4173/ -o /dev/null
+          curl -sI http://localhost:4173/ | grep -i 'cross-origin-opener-policy'
+          curl -sI http://localhost:4173/ | grep -i 'cross-origin-embedder-policy'
+          curl -sf http://localhost:4173/wasm/anyfs.worker.js -o /dev/null
+          docker stop anyfs-web-smoke
+
   electron-package:
     needs: web-package
     runs-on: ubuntu-24.04
