@@ -14,6 +14,10 @@ ksmbd_tools = ""            # "" => <deps_root>/ksmbd-tools
 # produced by scripts/build_wasm_sysroot.sh. "" => .toolchain/wasm-sysroot/ when
 # fetched (scripts/fetch_wasm_sysroot.sh), else <repo>/wasm-sysroot
 wasm_sysroot= ""            # "" => <repo>/wasm-sysroot
+# Static dependency sysroot for linux-amd64 (zig cc, glibc 2.11 floor), built by
+# scripts/build_linux_sysroot.sh.
+# "" => ${XDG_CACHE_HOME:-~/.cache}/anyfs-linux-sysroot/x86_64-linux-gnu.2.11
+linux_sysroot = ""
 
 [toolchains]
 emsdk        = ""           # "" => discover via $EMSDK or `which emcc`
@@ -21,6 +25,11 @@ msys2_cross  = "/opt/msys2-cross"   # mingw cross toolchain + sysroot + binutils
 # Patched wasm-ld (built from xdqi/llvm-wasm). "" => .toolchain/wasm-ld/ when
 # fetched (scripts/fetch_wasm_ld.sh), else <deps_root>/llvm-wasm/.../wasm-ld
 wasm_ld      = ""
+# zig builds every linux-amd64 artifact (scripts/lib/zig-cc.sh). "" =>
+# $HOME/zig-<zig_version>/zig, where scripts/fetch_zig.sh installs it.
+zig          = ""
+zig_version  = "0.16.0"
+zig_sha256   = "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
 # Native binutils for the LKL kernel link (bypasses the stale tools/lkl/bin 2.25.1).
 binutils_native = "/usr/bin"        # system binutils (>= 2.30); PE patch not needed for ELF
 

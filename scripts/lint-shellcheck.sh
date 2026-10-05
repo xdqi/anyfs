@@ -19,6 +19,7 @@ scripts/build_anyfs_wasm.sh
 scripts/build_wasm_sysroot.sh
 scripts/fetch_wasm_sysroot.sh
 scripts/fetch_wasm_ld.sh
+scripts/fetch_zig.sh
 scripts/sync_wasm_bundle.sh
 scripts/lib/wasm_exports.sh
 scripts/doctor.sh

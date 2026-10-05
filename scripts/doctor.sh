@@ -27,6 +27,16 @@ else
     bad "native ld < 2.30 or missing ($ANYFS_TOOLCHAINS_BINUTILS_NATIVE/ld)"
 fi
 
+echo "== zig (linux-amd64 builds; scripts/fetch_zig.sh) =="
+if [ -x "$ANYFS_TOOLCHAINS_ZIG" ]; then
+    zv="$("$ANYFS_TOOLCHAINS_ZIG" version 2>/dev/null)"
+    [ "$zv" = "$ANYFS_TOOLCHAINS_ZIG_VERSION" ] \
+        && ok "zig $zv ($ANYFS_TOOLCHAINS_ZIG)" \
+        || bad "zig is '$zv', build.config.toml pins $ANYFS_TOOLCHAINS_ZIG_VERSION ($ANYFS_TOOLCHAINS_ZIG)"
+else
+    bad "zig missing at $ANYFS_TOOLCHAINS_ZIG — run scripts/fetch_zig.sh"
+fi
+
 echo "== mingw cross (msys2-cross, carries binutils 2.46 + PE weak-symbol patch) =="
 mw="$ANYFS_TOOLCHAINS_MSYS2_CROSS/bin/x86_64-w64-mingw32-ld"
 [ -x "$mw" ] && ok "$($mw --version | head -1)" || bad "mingw64 ld missing: $mw"
