@@ -26,31 +26,12 @@ REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 HERE="$REPO_DIR/scripts/macho"
 # shellcheck source=macos_target.sh
 source "$HERE/macos_target.sh"
+# shellcheck source=kernel_exports.sh
+source "$HERE/kernel_exports.sh"
 
-# The ELF/Mach-O boundary (the spec's "ABI boundary audit"). Darwin arm64
-# departs from AAPCS64 for variadic calls, arguments narrower than 32 bits,
-# stack-passed arguments and some by-value aggregates. Every entry point
-# below, every member of struct lkl_host_operations, and every callback the
-# kernel hands the host to call back into ELF code (thread_create's entry
-# point, timer_alloc's fn, tls_alloc's destructor, jmp_buf_set's f) takes at
-# most 8 int/long/enum/pointer arguments, none narrower than 32 bits and
-# nothing by value, and none is variadic: lkl_start_kernel, lkl_printf and
-# lkl_bug are deliberately absent (see lkl_elf_glue.c). Return values are
-# void, int, long, unsigned long[ long] or pointers: nothing narrower than 32
-# bits, no struct, float or union. char signedness differs (unsigned on
-# Linux arm64, signed on Darwin), but chars cross only behind pointers.
-# jmp_buf_set/jmp_buf_longjmp run Darwin setjmp/longjmp across kernel frames.
-# That is safe because both conventions have the same callee-saved registers
-# (arm64 x19-x28, d8-d15, fp, lr; x86_64 rbx, rbp, r12-r15), longjmp only
-# restores them and unwinds nothing, and the kernel never touches x18. Keep
-# all of this true when adding to this list or to lkl_host_operations.
-EXPORTS=(
-    lkl_init lkl_cleanup lkl_syscall lkl_sys_halt lkl_is_running
-    lkl_get_free_irq lkl_put_irq lkl_trigger_irq
-    lkl_glue_set_host lkl_start_kernel_str
-)
-# Every other defined dynamic symbol of lkl-kernel.so. A new one fails the
-# build until it is either exported (after the audit above) or listed here.
+# Every defined dynamic symbol of lkl-kernel.so outside KERNEL_EXPORTS
+# (kernel_exports.sh). A new one fails the build until it is either exported,
+# after the ABI audit there, or listed here.
 UNEXPORTED=(lkl_bug lkl_printf lkl_start_kernel)
 # START:END pairs of lkl.o's local image markers that must come out in order.
 # vmlinux.lds defines several of them between output sections, so in lkl.o
@@ -184,14 +165,14 @@ if [[ ${#misordered[@]} -gt 0 ]]; then
 fi
 
 defined="$("$NM" -D --defined-only "$dir/lkl-kernel.so" | awk '{ print $NF }' | LC_ALL=C sort)"
-extra="$(LC_ALL=C comm -23 <(echo "$defined") <(printf '%s\n' "${EXPORTS[@]}" | LC_ALL=C sort))"
+extra="$(LC_ALL=C comm -23 <(echo "$defined") <(printf '%s\n' "${KERNEL_EXPORTS[@]}" | LC_ALL=C sort))"
 want="$(printf '%s\n' "${UNEXPORTED[@]}" | LC_ALL=C sort)"
-[[ $extra == "$want" ]] || die "lkl-kernel.so defines {${extra//$'\n'/ }} outside EXPORTS," \
+[[ $extra == "$want" ]] || die "lkl-kernel.so defines {${extra//$'\n'/ }} outside KERNEL_EXPORTS," \
     "expected {${want//$'\n'/ }}: audit each new symbol for the ABI boundary, then add it" \
-    "to EXPORTS or UNEXPORTED"
+    "to KERNEL_EXPORTS (kernel_exports.sh) or UNEXPORTED"
 
 export_args=()
-for e in "${EXPORTS[@]}"; do
+for e in "${KERNEL_EXPORTS[@]}"; do
     export_args+=(--export "$e=_lklk_${e#lkl_}")
 done
 python3 "$HERE/elf2dylib.py" --arch "$arch" --install-name @rpath/liblkl-kernel.dylib \

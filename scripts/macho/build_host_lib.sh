@@ -21,6 +21,10 @@ HERE="$REPO_DIR/scripts/macho"
 source "$REPO_DIR/scripts/lib/config.sh"
 # shellcheck source=macos_target.sh
 source "$HERE/macos_target.sh"
+# What the archive imports from liblkl-kernel.dylib: each lkl_X of
+# KERNEL_EXPORTS as _lklk_X.
+# shellcheck source=kernel_exports.sh
+source "$HERE/kernel_exports.sh"
 LINUX_DIR="${LINUX_DIR:-$ANYFS_PATHS_LINUX_SRC}"
 
 # The host sources tools/lkl/lib/Build selects for a POSIX host with
@@ -30,13 +34,6 @@ SOURCES=(config fs iomem jmp_buf net posix-host utils virtio virtio_blk
          virtio_net virtio_net_fd virtio_net_pipe)
 # The Darwin patches those sources need (patches/linux/macho/series).
 PATCHES=(08-posix-host-darwin.patch 09-endian-darwin.patch)
-# What the archive imports from liblkl-kernel.dylib: EXPORTS in
-# build_kernel_dylib.sh, each lkl_X as _lklk_X. Change both together.
-KERNEL_EXPORTS=(
-    lkl_init lkl_cleanup lkl_syscall lkl_sys_halt lkl_is_running
-    lkl_get_free_irq lkl_put_irq lkl_trigger_irq
-    lkl_glue_set_host lkl_start_kernel_str
-)
 
 die() { echo "build_host_lib: $*" >&2; exit 1; }
 
@@ -125,6 +122,6 @@ done
 imports="$("$NM" -u "$lib.tmp" | awk '$NF ~ /^_lklk_/ { print $NF }' | LC_ALL=C sort -u)"
 want="$(printf '_lklk_%s\n' "${KERNEL_EXPORTS[@]#lkl_}" | LC_ALL=C sort)"
 [[ $imports == "$want" ]] || die "liblkl-host.a imports {${imports//$'\n'/ }} from the kernel," \
-    "expected {${want//$'\n'/ }} (EXPORTS in build_kernel_dylib.sh)"
+    "expected {${want//$'\n'/ }} (KERNEL_EXPORTS in kernel_exports.sh)"
 mv "$lib.tmp" "$lib"
 echo "build_host_lib: $lib (${#objs[@]} objects)"
