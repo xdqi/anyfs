@@ -23,6 +23,11 @@ int lkl_init(struct lkl_host_operations *ops)
 	return lklk_init(ops);
 }
 
+/*
+ * LKL_CMDLINE_MAX bounds only the caller's part of the command line. The
+ * kernel prepends CONFIG_BUILTIN_CMDLINE and appends the virtio devices to
+ * it, exactly as when the native library calls lkl_start_kernel().
+ */
 int lkl_start_kernel(const char *fmt, ...)
 {
 	char cmdline[LKL_CMDLINE_MAX];
@@ -32,7 +37,9 @@ int lkl_start_kernel(const char *fmt, ...)
 	va_start(ap, fmt);
 	n = vsnprintf(cmdline, sizeof(cmdline), fmt, ap);
 	va_end(ap);
-	if (n < 0 || n >= (int)sizeof(cmdline))
+	if (n < 0)
+		return -LKL_EINVAL;
+	if (n >= (int)sizeof(cmdline))
 		return -LKL_E2BIG;
 	return lklk_start_kernel_str(cmdline);
 }

@@ -77,8 +77,17 @@ int main(void)
 	start_calls = 0;
 	EXPECT(lkl_start_kernel("%s", big) == -LKL_E2BIG);
 	EXPECT(start_calls == 0);
+	big[4096] = '\0';				/* 4096 + NUL does not fit */
+	EXPECT(lkl_start_kernel("%s", big) == -LKL_E2BIG);
+	EXPECT(start_calls == 0);
 	big[4095] = '\0';				/* 4095 + NUL still fits */
 	EXPECT(lkl_start_kernel("%s", big) == 3 && start_calls == 1);
+	EXPECT(strlen(started) == 4095);
+
+	/* vsnprintf fails: the C locale cannot encode U+20AC. */
+	start_calls = 0;
+	EXPECT(lkl_start_kernel("%ls", L"\x20ac") == -LKL_EINVAL);
+	EXPECT(start_calls == 0);
 
 	EXPECT(lkl_syscall(2, params) == 205);
 	EXPECT(lkl_sys_halt() == 11);
