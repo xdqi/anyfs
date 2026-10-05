@@ -127,8 +127,10 @@ build_one() {
              ARCH=lkl "${cross_arg[@]}" "${cc_arg[@]}" clean || true
     fi
 
+    # build_one runs as `if ! build_one …`, where bash suspends `set -e`:
+    # without the explicit return a failed make still reports success.
     OUTPUT="$OUT" make -C "$LINUX_DIR/tools/lkl" -j"$JOBS" \
-         ARCH=lkl "${cross_arg[@]}" "${cc_arg[@]}"
+         ARCH=lkl "${cross_arg[@]}" "${cc_arg[@]}" || return 1
 
     echo
     echo "Output for lkl-$NAME:"
