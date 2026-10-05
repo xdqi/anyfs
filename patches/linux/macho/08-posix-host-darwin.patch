@@ -117,3 +117,42 @@
  	return ret;
  }
  #endif // LKL_HOST_CONFIG_MMU
+@@ -776,6 +832,38 @@
+ 	return pwrite(fd, (const void *)buf, len, off);
+ }
+ 
++#if defined(__APPLE__) && defined(__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__) && \
++	__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__ < 110000
++/*
++ * preadv()/pwritev() appeared in macOS 11.0. For an older deployment target,
++ * move the iovecs one pread()/pwrite() at a time, with preadv()'s result: the
++ * total byte count, stopping at the first short transfer, or -1 with errno if
++ * nothing was transferred. blk_request() redoes a short request with do_rw()
++ * either way.
++ */
++static ssize_t darwin_prwv(ssize_t (*fn)(int, void *, size_t, off_t), int fd,
++			   const struct iovec *iov, int count, off_t off)
++{
++	ssize_t total = 0;
++	int i;
++
++	for (i = 0; i < count; i++) {
++		ssize_t got = fn(fd, iov[i].iov_base, iov[i].iov_len,
++				 off + total);
++
++		if (got < 0)
++			return total ? total : -1;
++		total += got;
++		if ((size_t)got < iov[i].iov_len)
++			break;
++	}
++
++	return total;
++}
++#define preadv(fd, iov, count, off) darwin_prwv(pread, fd, iov, count, off)
++#define pwritev(fd, iov, count, off) darwin_prwv(pwrite_fn, fd, iov, count, off)
++#endif
++
+ static ssize_t sum_iovlen(struct iovec iovs[], int count)
+ {
+ 	int i;

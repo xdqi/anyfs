@@ -419,7 +419,8 @@ def main():
     ap.add_argument("--export", action="append", default=[], metavar="ELF=MACHO",
                     help="export ELF symbol ELF as Mach-O symbol MACHO, e.g. lkl_init=_lklk_init")
     ap.add_argument("--install-name", required=True)
-    ap.add_argument("--min-os", default="11.0")
+    ap.add_argument("--min-os", required=True, metavar="VERSION",
+                    help="macOS deployment target, e.g. 11.0 (scripts/macho/macos_target.sh)")
     ap.add_argument("--libsystem", required=True, help="libSystem.tbd to link against")
     ap.add_argument("-o", dest="output", required=True)
     ap.add_argument("input")

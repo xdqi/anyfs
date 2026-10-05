@@ -9,6 +9,7 @@
 #              OUT/<arch>/liblkl-host.a
 #
 # Needs the Darwin host patches in $LINUX_DIR (scripts/oot_fs.sh stage --macho).
+# Compiles for the arch's deployment target in macos_target.sh.
 # The kernel is liblkl-kernel.dylib (build_kernel_dylib.sh), reached through
 # lkl_macho_shim.c.
 set -euo pipefail
@@ -17,6 +18,8 @@ REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 HERE="$REPO_DIR/scripts/macho"
 # shellcheck source=../lib/config.sh
 source "$REPO_DIR/scripts/lib/config.sh"
+# shellcheck source=macos_target.sh
+source "$HERE/macos_target.sh"
 LINUX_DIR="${LINUX_DIR:-$ANYFS_PATHS_LINUX_SRC}"
 OOT_DIR="${OOT_DIR:-$HOME/oot-fs}"
 ZIG="${ZIG:-$(command -v zig || echo /opt/zig/zig)}"
@@ -42,10 +45,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$arch" in
-    arm64)  zt=aarch64-macos.11.0.0 target=linux-arm64 ;;
-    x86_64) zt=x86_64-macos.11.0.0 target=linux-amd64 ;;
+    arm64)  target=linux-arm64 ;;
+    x86_64) target=linux-amd64 ;;
     *)      die "--arch=arm64|x86_64 is required" ;;
 esac
+zt="$(macos_zig_target "$arch")"
 lkl_out="${lkl_out:-$REPO_DIR/lkl-$target}"
 [[ -d "$lkl_out/tools/lkl/include/lkl" ]] || die "no generated headers in $lkl_out: run build_lkl.sh --targets=$target"
 for p in 08-posix-host-darwin.patch 09-endian-darwin.patch; do
@@ -55,7 +59,7 @@ done
 
 dir="$out/$arch/host-obj"
 mkdir -p "$dir"
-# Deployment target is macOS 11: fail on calls to newer APIs at compile time.
+# Fail on calls to APIs newer than the deployment target at compile time.
 cflags=(-target "$zt" -O2 -Wall -Werror=unguarded-availability -D_FILE_OFFSET_BITS=64 -I"$HERE/autoconf"
         -I"$LINUX_DIR/tools/lkl/include" -I"$lkl_out/tools/lkl/include")
 objs=()

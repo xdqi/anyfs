@@ -6,7 +6,8 @@
 #
 #   --arch       compile lkl_elf_glue.c with the target's ELF compiler, link it
 #                with tools/lkl/lib/lkl.o into lkl-kernel.so, and convert that
-#                with elf2dylib.py into OUT/<arch>/liblkl-kernel.dylib
+#                with elf2dylib.py into OUT/<arch>/liblkl-kernel.dylib, for the
+#                arch's deployment target in macos_target.sh
 #   --lkl-out    LKL build tree (default: <repo>/lkl-linux-arm64 or
 #                <repo>/lkl-linux-amd64, as built by build_lkl.sh)
 #   --universal  merge OUT/arm64 and OUT/x86_64 into OUT/liblkl-kernel.dylib
@@ -19,6 +20,8 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 HERE="$REPO_DIR/scripts/macho"
+# shellcheck source=macos_target.sh
+source "$HERE/macos_target.sh"
 LD="${LD:-$(command -v ld.lld-19 || command -v ld.lld)}"
 LIPO="${LIPO:-$(command -v llvm-lipo-19 || command -v llvm-lipo)}"
 ZIG="${ZIG:-$(command -v zig || echo /opt/zig/zig)}"
@@ -78,6 +81,7 @@ case "$arch" in
     x86_64) cc=gcc target=linux-amd64 cflags=() ;;
     *)      die "--arch=arm64|x86_64 or --universal is required" ;;
 esac
+min_os="$(macos_min "$arch")"
 lkl_out="${lkl_out:-$REPO_DIR/lkl-$target}"
 lkl_o="$lkl_out/tools/lkl/lib/lkl.o"
 [[ -f $lkl_o ]] || die "$lkl_o not found: run gen_lkl_config.sh and build_lkl.sh --targets=$target"
@@ -94,5 +98,5 @@ for e in "${EXPORTS[@]}"; do
     export_args+=(--export "$e=_lklk_${e#lkl_}")
 done
 python3 "$HERE/elf2dylib.py" --arch "$arch" --install-name @rpath/liblkl-kernel.dylib \
-    --min-os 11.0 --libsystem "$LIBSYSTEM" "${export_args[@]}" \
+    --min-os "$min_os" --libsystem "$LIBSYSTEM" "${export_args[@]}" \
     -o "$dir/liblkl-kernel.dylib" "$dir/lkl-kernel.so"

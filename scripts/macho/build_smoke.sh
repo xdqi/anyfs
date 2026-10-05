@@ -5,9 +5,10 @@
 #
 # Needs OUT/<arch>/liblkl-kernel.dylib (build_kernel_dylib.sh) and
 # OUT/<arch>/liblkl-host.a (build_host_lib.sh). Writes OUT/<arch>/smoke/ with
-# lkl-macos-smoke, liblkl-kernel.dylib (found through @executable_path) and
-# smoke-ext4.img, a copy of --image (default: <repo>/tests/images/ext4.img,
-# made by tests/setup.sh). Copy that directory to a Mac and follow
+# lkl-macos-smoke, built for the arch's deployment target in macos_target.sh,
+# liblkl-kernel.dylib (found through @executable_path) and smoke-ext4.img, a
+# copy of --image (default: <repo>/tests/images/ext4.img, made by
+# tests/setup.sh). Copy that directory to a Mac and follow
 # scripts/macho/smoke/README.md.
 set -euo pipefail
 
@@ -15,6 +16,8 @@ REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 HERE="$REPO_DIR/scripts/macho"
 # shellcheck source=../lib/config.sh
 source "$REPO_DIR/scripts/lib/config.sh"
+# shellcheck source=macos_target.sh
+source "$HERE/macos_target.sh"
 LINUX_DIR="${LINUX_DIR:-$ANYFS_PATHS_LINUX_SRC}"
 ZIG="${ZIG:-$(command -v zig || echo /opt/zig/zig)}"
 
@@ -34,10 +37,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$arch" in
-    arm64)  zt=aarch64-macos.11.0.0 target=linux-arm64 ;;
-    x86_64) zt=x86_64-macos.11.0.0 target=linux-amd64 ;;
+    arm64)  target=linux-arm64 ;;
+    x86_64) target=linux-amd64 ;;
     *)      die "--arch=arm64|x86_64 is required" ;;
 esac
+zt="$(macos_zig_target "$arch")"
 lkl_out="${lkl_out:-$REPO_DIR/lkl-$target}"
 for f in "$out/$arch/liblkl-kernel.dylib" "$out/$arch/liblkl-host.a" "$image"; do
     [[ -f $f ]] || die "$f not found"
@@ -46,7 +50,7 @@ done
 dir="$out/$arch/smoke"
 rm -rf "$dir"
 mkdir -p "$dir"
-# Deployment target is macOS 11: fail on calls to newer APIs at compile time.
+# Fail on calls to APIs newer than the deployment target at compile time.
 "$ZIG" cc -target "$zt" -O2 -Wall -Werror=unguarded-availability -I"$HERE/autoconf" -I"$LINUX_DIR/tools/lkl/include" \
     -I"$lkl_out/tools/lkl/include" "$HERE/smoke/lkl_macos_smoke.c" \
     "$out/$arch/liblkl-host.a" -L"$out/$arch" -llkl-kernel \

@@ -11,6 +11,8 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=macos_target.sh
+source "$HERE/macos_target.sh"
 CLANG="${CLANG:-$(command -v clang-19 || command -v clang)}"
 LD="${LD:-$(command -v ld.lld-19 || command -v ld.lld)}"
 NM="${NM:-$(command -v llvm-nm-19 || command -v llvm-nm)}"
@@ -48,10 +50,13 @@ build() {
     "$LD" "${LDFLAGS[@]}" "${ldx[@]}" -o "$out" "${objs[@]}"
 }
 
-# convert ARCH IN.so OUT.dylib [ELF2DYLIB-ARGS...]
+# convert ARCH IN.so OUT.dylib [ELF2DYLIB-ARGS...], at ARCH's deployment
+# target (macos_target.sh).
 convert() {
+    local min
+    min="$(macos_min "$1")"
     python3 "$HERE/elf2dylib.py" --arch "$1" --install-name @rpath/libtest.dylib \
-        --libsystem "$LIBSYSTEM" --export exported_add=_lklk_add \
+        --min-os "$min" --libsystem "$LIBSYSTEM" --export exported_add=_lklk_add \
         --export exported_call=_lklk_call "${@:4}" -o "$3" "$2"
 }
 
@@ -213,6 +218,17 @@ elif ! grep -q '^elf2dylib:.*is the input file' "$tmp/log"; then
     fail "x86_64: -o equal to the input was rejected, but not as the input file: $(tail -1 "$tmp/log")"
 else
     pass "x86_64: rejects -o equal to the input: $(grep -m1 'elf2dylib:' "$tmp/log")"
+fi
+
+# --min-os has no default: the deployment target is the caller's decision.
+if python3 "$HERE/elf2dylib.py" --arch x86_64 --install-name @rpath/libtest.dylib \
+        --libsystem "$LIBSYSTEM" --export exported_add=_lklk_add \
+        -o "$tmp/nominos.dylib" "$tmp/ok.x86_64.so" > "$tmp/log" 2>&1; then
+    fail "x86_64: a conversion without --min-os was accepted"
+elif ! grep -q 'required: --min-os' "$tmp/log"; then
+    fail "x86_64: a conversion without --min-os failed, but not for --min-os: $(tail -1 "$tmp/log")"
+else
+    pass "x86_64: requires --min-os: $(tail -1 "$tmp/log")"
 fi
 
 if [[ $failures -eq 0 ]]; then echo "PASS test_elf2dylib"; else echo "FAILED: $failures"; exit 1; fi
