@@ -30,3 +30,7 @@ build.user.toml
 # Fetched prebuilt toolchain pieces (scripts/fetch_wasm_sysroot.sh etc.)
 .toolchain/
 __pycache__/
+
+# Local scratch space and the debian.qcow2 fixture for tests/smoke-debian-qcow2.sh
+/.tmp/
+/debian.qcow2
