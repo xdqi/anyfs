@@ -336,16 +336,43 @@ Phases 1–3 landed as designed, with these differences:
   - FINDINGS F18: addon errors threw from inside the AsyncWorker callback instead of rejecting.
   - `build_qemu.sh` reported success when a target failed.
   - The wasm export generator exported a struct type name.
-- **Native performance:** about 28 µs of extra hand-off per block request on a Hyper-V guest. On a
-  workload of small requests (88k requests averaging 11.6 KB) that costs about 5–10% throughput.
-  Per the user's decision, optimisation is deferred until the architecture is settled.
+- **Native performance:** the hand-off first cost about 28 µs per block request on a Hyper-V guest,
+  5–10% throughput on a small-request workload (88k requests averaging 11.6 KB). The fix came from
+  counting wake-ups rather than tuning the hand-off (adaptive polling on the QEMU thread did not
+  help). LKL has one CPU, so at most one request is ever in flight, yet QEMU still sent each file
+  `preadv` and each qcow2 decompression to its worker pool, at two cross-thread wake-ups per hop.
+  Patch `0011-thread-pool-inline-embedder.patch` adds `thread_pool_set_inline()`, which runs
+  `thread_pool_submit_co()` work in the calling coroutine. `qemu_thread_fn` enables it on every
+  platform. It replaces the emscripten-only `0001` (now in `patches/qemu/retired/`), which inlined
+  the same calls at compile time. Reading every file of the trusty qcow2's ext4 partition, three
+  alternating rounds in a debug build: legacy inline embedding 32.0 MB/s, QEMU thread before 0011
+  29.0 MB/s, with 0011 35.0 MB/s. That clears acceptance criterion 5. On mingw only the qcow2 work
+  is inlined: file-win32 uses `thread_pool_submit_aio()`, which the switch leaves alone.
 - **Windows (wine):** `bench_backends.exe` read the whole compressed trusty qcow2 through the
   QEMU thread under wine (win32 threads, aio-win32, private GMainContext) and exited cleanly.
 - **Shipping a changed QEMU patch:** CI caches the patched `deps/` tree keyed only on
   `peru.yaml`, so editing 0004 in place left CI with the old version applied. The replaced file
   now lives in `patches/qemu/retired/`, and both build scripts reverse-apply retired patches before
   applying the active set.
+- **wasm performance (acceptance criterion 4): not met yet.** Workload in Node: open the trusty
+  qcow2, list partitions, enter ext4, then walk the tree and read files until 5000 files
+  (176 MiB) are done. The baseline is the last pre-refactor bundle (CI run of 3db770f), driven
+  with that version's worker.ts call sequence. Its own NodeWasmSession aborted on qcow2
+  ("anyfs_ts_session_open is running asynchronously"). Open and enter are as fast or faster
+  than before. Walk + read averaged 3042 ms before and 4492 ms now, about 48% slower. Two
+  causes, measured with timers around `api_run` on the API thread:
+  - The API-thread hop costs about 40 µs per op (an op that does nothing,
+    `LAST_ERROR`, takes 1.6 µs inside `api_run` and about 40 µs in total). Before, a cached op
+    ran directly on the module-owning thread.
+  - LKL syscalls got slower on the API thread, but only some of them. lstat is unchanged at
+    29 µs. A cached 4 KiB pread takes 57 µs (0.5–1.4 µs before), open 105 µs, close 46 µs. The
+    leading suspect is LKL's CPU hand-off: in the idle gap between ops the CPU passes to
+    `idle_host_task` to run pending work. Each hand-off is a cross-Worker semaphore round trip,
+    and the old design avoided it by issuing ops back to back. The pre-refactor bundle shows
+    the same slow numbers in some runs, which fits this explanation.
+  Being investigated separately. Native is not affected.
 - **Not yet done:**
   - Real-Windows F9 verification.
+  - wasm performance (above).
   - Phase 4 (narrowing Asyncify instrumentation) is untouched.
 
