@@ -29,7 +29,7 @@ fail() { echo "FAIL $*"; failures=$((failures + 1)); }
 
 # The kernel's link flags (build_kernel_dylib.sh); a test may append overrides.
 LDFLAGS=(-shared -Bsymbolic -z now -z max-page-size=16384
-         -z separate-loadable-segments --no-undefined)
+         -z separate-loadable-segments --unique --no-undefined)
 
 # build ARCH OUT.so [LD-OVERRIDES...] -- SOURCES...
 build() {
@@ -153,6 +153,12 @@ int *p = &v; /* an absolute relocation against an import */
 int exported_add(int a) { return a; }
 int exported_call(int i) { return i; }
 EOF
+cat > "$tmp/undef.c" <<'EOF'
+int counter; /* RW data, so the image has all four PT_LOADs */
+__asm__(".weak u"); /* an undefined dynamic symbol that nothing relocates */
+int exported_add(int a) { return a + counter; }
+int exported_call(int i) { return i; }
+EOF
 cat > "$tmp/ctor.c" <<'EOF'
 int counter; /* RW data, so the image has all four PT_LOADs */
 __attribute__((constructor)) static void init_counter(void)
@@ -175,6 +181,9 @@ for arch in arm64 x86_64; do
     reject import "$arch" "$tmp/import.$arch.so" "PLT relocations"
     build "$arch" "$tmp/nonrel.$arch.so" -z undefs -- "$tmp/nonrel.c"
     reject nonrel "$arch" "$tmp/nonrel.$arch.so" "only R_*_RELATIVE"
+    # No PLT and no relocation against u: only the dynamic symbol table has it.
+    build "$arch" "$tmp/undef.$arch.so" -- "$tmp/undef.c"
+    reject undef "$arch" "$tmp/undef.$arch.so" "undefined dynamic symbol u: the image must import nothing"
     build "$arch" "$tmp/textrel.$arch.so" -z notext -- "$tmp/textrel.c"
     reject textrel "$arch" "$tmp/textrel.$arch.so" "DT_TEXTREL"
     build "$arch" "$tmp/page4k.$arch.so" -z max-page-size=4096 -- "$tmp/lib_a.c" "$tmp/lib_b.c"
@@ -191,6 +200,9 @@ for arch in arm64 x86_64; do
         --export other_helper=_lklk_add
 done
 reject archmismatch arm64 "$tmp/ok.x86_64.so" "expected ET_DYN for arm64"
+# A tool named in the environment that does not exist is an elf2dylib error,
+# not a Python traceback.
+OBJDUMP=/nonexistent reject missingtool x86_64 "$tmp/ok.x86_64.so" "OBJDUMP=/nonexistent not found"
 head -c 4096 "$tmp/ok.x86_64.so" > "$tmp/truncated.so"
 reject truncated x86_64 "$tmp/truncated.so" "malformed ELF"
 build arm64 "$tmp/x18.arm64.so" -- "$tmp/x18.c"

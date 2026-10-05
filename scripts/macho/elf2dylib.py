@@ -2,10 +2,10 @@
 """Convert a linked ELF shared object into a Mach-O dylib.
 
 The input must be what `ld.lld -shared -Bsymbolic -z now -z max-page-size=16384
--z separate-loadable-segments --no-undefined` makes of position-independent
-code: four PT_LOAD segments (R, RX, RW with PT_GNU_RELRO, RW) on 16 KiB
-boundaries, only R_*_RELATIVE dynamic relocations, and no imports. Anything
-else is rejected.
+-z separate-loadable-segments --unique --no-undefined` makes of
+position-independent code: four PT_LOAD segments (R, RX, RW with PT_GNU_RELRO,
+RW) on 16 KiB boundaries, only R_*_RELATIVE dynamic relocations, and no
+imports. Anything else is rejected.
 
 This tool does not write Mach-O itself. It generates assembly that .incbin's
 each segment into a 16 KiB-aligned section, turns every RELATIVE slot into
@@ -72,7 +72,10 @@ class Reject(Exception):
 
 
 def tool(env, *names):
+    """The command in $env if set, else the first of names on PATH."""
     if os.environ.get(env):
+        if not shutil.which(os.environ[env]):
+            raise Reject(f"{env}={os.environ[env]} not found")
         return os.environ[env]
     for name in names:
         if shutil.which(name):
