@@ -80,6 +80,11 @@ ad-hoc code signature by itself.
   variadic arguments on the stack while AAPCS64 passes them in registers.
 - **Both architectures use the same pipeline and the same glue**, even though x86_64 uses
   the System V convention on both sides.
+- **Deployment targets are macOS 11.0 on arm64 and 10.12 on x86_64**, defined once in
+  `scripts/macho/macos_target.sh`. 11.0 is the first macOS on Apple Silicon. 10.12 is
+  the first with `clock_gettime`/`CLOCK_MONOTONIC`, which the host library needs. The
+  `preadv`/`pwritev` fallback in patch 08 (see Host library) is what lets x86_64 go
+  below 11.0.
 - **Distribution is self-use for now.** Ad-hoc signing is enough; Developer ID signing
   and notarization come later.
 - **The previous experiment is archived in a local tag**, `exp/macho-object-port`, before
@@ -152,8 +157,11 @@ LKL.
 
 ```
 elf2dylib.py --arch arm64|x86_64 --export ELFNAME=MACHONAME ... \
-             --install-name @rpath/liblkl-kernel.dylib --min-os 11.0 -o OUT.dylib IN.so
+             --install-name @rpath/liblkl-kernel.dylib --min-os VERSION -o OUT.dylib IN.so
 ```
+
+`--min-os` is required and has no default. `build_kernel_dylib.sh` passes the arch's
+deployment target from `scripts/macho/macos_target.sh`.
 
 1. *Input checks.* Each failure aborts with a message naming the offending item.
    - `ET_DYN`, machine `EM_AARCH64` or `EM_X86_64` matching `--arch`.
@@ -183,8 +191,10 @@ elf2dylib.py --arch arm64|x86_64 --export ELFNAME=MACHONAME ... \
    `ld64.lld -arch <arch> -platform_version macos <min> <min> -dylib
    -install_name <name> -no_fixup_chains -adhoc_codesign <zig>/lib/libc/darwin/libSystem.tbd`.
    `ld64.lld` produces the rebase opcodes, export trie, symbol table, `LC_UUID`,
-   `LC_BUILD_VERSION` and the ad-hoc signature. `-adhoc_codesign` signs x86_64 too,
-   which `ld64.lld` otherwise does only for arm64. The image imports nothing,
+   `LC_BUILD_VERSION` and the ad-hoc signature. For targets up to 10.13, such as
+   x86_64's 10.12, it writes `LC_VERSION_MIN_MACOSX` instead of `LC_BUILD_VERSION`.
+   `-adhoc_codesign` signs x86_64 too, which `ld64.lld` otherwise does only for arm64.
+   The image imports nothing,
    but it links libSystem like any ordinary dylib, using the same `libSystem.tbd`
    stub that the host-library build takes from zig.
 4. *Output checks.* Each failure deletes the output and aborts.
@@ -217,13 +227,21 @@ unchanged:
 - The other 7 APIs forward directly.
 
 **Host library (`scripts/macho/build_host_lib.sh --arch=arm64|x86_64`).** Compiles the
-`tools/lkl/lib` host sources with `zig cc -target aarch64-macos` or `x86_64-macos`,
+`tools/lkl/lib` host sources with `zig cc -target aarch64-macos.11.0.0` or
+`x86_64-macos.10.12.0` (from `macos_target.sh`) and `-Werror=unguarded-availability`,
 against the Darwin `lkl_autoconf.h` profile (VFIO, macvtap and FUSE off), together with
 the Mach-O shim and the netdev stubs. The tap and raw netdevs need
 `<linux/if_tun.h>`/`AF_PACKET`. The result is `liblkl-host.a`. The Darwin
 `lkl_autoconf.h` and `darwin-netdev-stubs.c` move from `.tmp/macho-exp/host/` to
 `scripts/macho/`. Patches 08 (`posix-host.c`) and 09 (`endian.h`) stay and are still
 applied by `oot_fs.sh stage --macho`.
+
+`preadv`/`pwritev` need macOS 11.0. When `__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__`
+is below 110000, patch 08 replaces them with a `pread`/`pwrite` loop over the iovecs
+that returns what `preadv` would: the total byte count, stopping at the first short
+transfer, or -1 with `errno` if nothing was transferred. `blk_request` then redoes a
+short request with `do_rw`, as before. The x86_64 objects import neither function;
+arm64 still calls both.
 
 ### ABI boundary audit
 
@@ -249,6 +267,26 @@ are recorded in a comment next to the export map in `build_kernel_dylib.sh`.
 
 - elf2dylib and the build scripts fail closed: any failed check aborts the build and
   leaves no output file.
+  - `build_kernel_dylib.sh --arch` deletes that arch's glue object, `.so` and dylib,
+    and the universal dylib, before it builds, and deletes its outputs again if a step
+    fails. `--universal` deletes the old universal dylib first, and its scratch files
+    on exit.
+  - `build_host_lib.sh` deletes the archive and its objects first and writes the
+    archive through a temporary file.
+  - A missing tool is named in the error, rather than ending the script silently under
+    `set -e`. Each tool is looked up only by the step that needs it, so only
+    `--universal` needs `llvm-lipo`. `libSystem.tbd` is found through the lib dir that
+    `zig env` reports.
+- The build scripts check what they depend on:
+  - `build_host_lib.sh` checks patches 08 and 09 by reverse-applying them to
+    `$LINUX_DIR` with `patch -R --dry-run`, not by reading `oot_fs.sh`'s log.
+  - It refuses a `lkl_autoconf.h` in `$LINUX_DIR/tools/lkl/include`, which a quoted
+    include would find before the Darwin profile. It also refuses a kernel whose
+    generated `lkl_autoconf.h` defines `LKL_HOST_CONFIG_MMU` when the Darwin profile
+    does not.
+  - `lkl-kernel.so` may define no dynamic symbols outside the export map except
+    `lkl_start_kernel`, `lkl_printf` and `lkl_bug`, so a new LKL API needs an ABI
+    decision. `liblkl-host.a` must import exactly the 10 `_lklk_*` names.
 - After `llvm-lipo`, `build_kernel_dylib.sh --universal` extracts each slice and requires
   it to be byte-identical to the per-arch dylib that passed the output checks.
 - At runtime, dyld reports a missing or unsigned dylib at load time, before any kernel
@@ -281,7 +319,8 @@ are recorded in a comment next to the export map in `build_kernel_dylib.sh`.
    - The run commands are documented next to the test.
 5. **No regressions elsewhere.**
    - Patches 08/09 are `__APPLE__`-guarded. The glibc preprocessed output of
-     `posix-host.c` is unchanged apart from `__LINE__` (verified 2026-10-05).
+     `posix-host.c` is unchanged apart from `__LINE__` (verified 2026-10-05, and again
+     after the `preadv`/`pwritev` fallback was added).
    - After adding the ZFS arm64 gates, a `linux-amd64` rebuild must produce the same
      `lkl.o`.
 
