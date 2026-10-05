@@ -1,8 +1,7 @@
 # LKL on macOS via ELF-to-dylib conversion
 
 **Date:** 2026-10-05
-**Status:** implemented; verified on Apple Silicon and Intel Macs (smoke rerun after the
-`--unique` fix pending)
+**Status:** implemented and verified on an Apple Silicon Mac and an Intel Mac (2026-10-05)
 **Scope:** `scripts/macho/` (new tools and build scripts), `scripts/oot_fs.sh` (ZFS arm64
 gates, trimmed `--macho` series), `scripts/build_lkl.sh` (linux-arm64 flags),
 `patches/linux/macho/` (host-side patches only), `docs/macos-macho-feasibility.md`
@@ -435,7 +434,34 @@ are recorded in a comment next to the export list in `scripts/macho/kernel_expor
 - `test_elf2dylib.sh` passes, including every rejection case. **Met.**
 - The arm64 ELF kernel passes the LKL boot test on Linux arm64. **Met** (under
   `qemu-aarch64`).
-- `lkl-macos-smoke` passes on an Apple Silicon Mac and an Intel Mac. **Met** with the
-  build from before the `--unique` fix; rerun pending.
+- `lkl-macos-smoke` passes on an Apple Silicon Mac and an Intel Mac. **Met.**
 - The tag `exp/macho-object-port` exists locally. `scripts/macho/shim/` and patches 01–07
   are gone from the working tree. The `linux-amd64` `lkl.o` is unchanged. **Met.**
+
+## Implementation notes (2026-10-05)
+
+- **arm64 ELF kernel on Linux arm64** (qemu-aarch64 10.0.13): LKL `tests/boot` 35 ok,
+  `tests/disk` on ext4 10 ok, 0 failed.
+- **Conversion:** arm64 74900 rebases, x86_64 71857; 10 exports each; universal dylib built.
+  `scripts/macho/test_kernel_so.sh` boots the exact `lkl-kernel.so` on Linux (x86_64
+  native, arm64 under qemu): 21 checks each, with a sane `Memory:` line.
+- **macOS smoke**, 21 checks, then the README's 10-run loop, all PASS:
+
+  | Machine | macOS | Deployment target | `Memory:` | 100 ms sleep |
+  |---|---|---|---|---|
+  | Apple Silicon | 27.0.1 (26A434) | 11.0 | 2835K rwdata, 4179K rodata, 273K init | 100 ms |
+  | Intel | 15.0 (24A335) | 10.12 (pread/pwrite fallback) | 2864K rwdata, 4260K rodata, 265K init | 101 ms |
+
+- **Deviations from the design as first written**, all reflected in the sections above:
+  - x86_64 targets macOS 10.12, not 11.0, with a preadv/pwritev fallback in patch 08;
+    targets live in `scripts/macho/macos_target.sh`.
+  - elf2dylib pads each section exactly to the next segment (ld64.lld aligns x86_64
+    segments to 4 KiB only, and llvm-objdump decodes rebases from a segment's first
+    section), allowlists dynamic tags, and installs its output atomically.
+  - The kernel link adds `--unique`: without it, lld merged lkl.o's `.data.*` sections
+    into one output section ahead of `.rodata`, which inverted `_sdata`/`_edata` and
+    `__start_rodata`/`__end_rodata` (the first Mac runs printed an absurd `Memory:`
+    line). `build_kernel_dylib.sh` now checks the boundary pairs.
+  - The glue formatter handles flags, width, precision and the `z t j h hh` modifiers,
+    so an unsupported conversion can no longer desynchronize its arguments.
+

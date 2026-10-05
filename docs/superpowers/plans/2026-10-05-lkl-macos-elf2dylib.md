@@ -20,6 +20,12 @@ zig 0.17 (`/opt/zig/zig`, for Darwin headers and `libSystem.tbd`).
 
 **Spec:** `docs/superpowers/specs/2026-10-05-lkl-macos-elf2dylib-design.md`
 
+**Executed 2026-10-05.** All tasks are done and verified on an Apple Silicon and an Intel
+Mac. Reviews changed several files after the code below was written (elf2dylib's padding
+and checks, the glue formatter, the build scripts' fail-closed handling, the x86_64 10.12
+target, `--unique` in the kernel link), so the code blocks here are the original intent:
+the committed files and the spec's "Implementation notes" are authoritative.
+
 ---
 
 ## Ground rules for every task
