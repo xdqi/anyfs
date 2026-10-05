@@ -138,12 +138,12 @@ static int find_slot_by_pair_locked(AnyfsSession* d, int parent_slot,
 /* Append top-level partitions from sysfs. Caller holds d->lock. */
 /* Read device number from the already-mounted /sys instead of
  * lkl_get_virtio_blkdev which mounts a second sysfs instance and
- * hangs under ASYNCIFY+QEMU+fiber builds. */
-static int get_blkdev_from_sys(int disk_id, unsigned int part, uint32_t* pdevid)
+ * hangs under ASYNCIFY+QEMU+fiber builds. `vd` is the disk's kernel
+ * block name (anyfs_sysfs_virtio_disk_name). */
+static int get_blkdev_from_sys(const char* vd, unsigned int part,
+			       uint32_t* pdevid)
 {
 	char path[128];
-	char vd[8];
-	snprintf(vd, sizeof(vd), "vd%c", 'a' + disk_id);
 	if (part == 0)
 		snprintf(path, sizeof(path), "/sys/block/%s/dev", vd);
 	else
@@ -189,7 +189,8 @@ static int load_top_parts_locked(AnyfsSession* d)
 
 		/* Best-effort mknod so kindprobe can pread the partition. */
 		uint32_t dev = 0;
-		if (get_blkdev_from_sys(d->disk_id, sbuf[i].index, &dev) == 0) {
+		if (get_blkdev_from_sys(d->sysfs_name, sbuf[i].index, &dev) ==
+		    0) {
 			if (lkl_sys_access("/dev", 0) < 0)
 				(void)lkl_sys_mkdir("/dev", 0700);
 			(void)lkl_sys_mknod(blkdev, LKL_S_IFBLK | 0600, dev);
@@ -242,11 +243,21 @@ int anyfs_session_open(const char* image_path, uint32_t flags,
 #if defined(__EMSCRIPTEN__) && defined(ANYFS_HAS_QEMU)
 	emscripten_sleep(0);
 #endif
-	/* Construct sysfs block name from disk_id. The first LKL
-	 * virtio-blk device is always "vda", second "vdb", etc.
-	 * Reading from the already-mounted /sys avoids the hang
-	 * that lkl_get_virtio_blkdev triggers in ASYNCIFY builds. */
-	snprintf(d->sysfs_name, sizeof(d->sysfs_name), "vd%c", 'a' + disk_id);
+	/* Look up the disk's kernel block name ("vda", "vdb", …). It is not
+	 * 'a' + disk_id: LKL never reuses disk ids, but the kernel reuses
+	 * virtio-blk indexes after a close. Reading from the already-mounted
+	 * /sys avoids the hang that lkl_get_virtio_blkdev triggers in
+	 * ASYNCIFY builds. */
+	if (anyfs_sysfs_virtio_disk_name(disk_id, d->sysfs_name,
+					 sizeof(d->sysfs_name)) < 0) {
+		anyfs_set_last_error("cannot find the block device of disk %d",
+				     disk_id);
+		anyfs_disk_remove(disk_id);
+		free(d->parts);
+		pthread_mutex_destroy(&d->lock);
+		free(d);
+		return -1;
+	}
 
 	pthread_mutex_lock(&d->lock);
 	(void)load_top_parts_locked(d);
@@ -263,7 +274,7 @@ int anyfs_session_open(const char* image_path, uint32_t flags,
 	d->whole_fstype_hint[0] = '\0';
 	d->whole_dev = 0;
 	uint32_t probe_dev = 0;
-	if (get_blkdev_from_sys(d->disk_id, 0, &probe_dev) == 0) {
+	if (get_blkdev_from_sys(d->sysfs_name, 0, &probe_dev) == 0) {
 		d->whole_dev = probe_dev;
 		if (lkl_sys_access("/dev", 0) < 0)
 			lkl_sys_mkdir("/dev", 0700);
@@ -369,7 +380,7 @@ int anyfs_session_meta(AnyfsSession* d, AnyfsSessionMeta* out)
 	char blk_path[80];
 	snprintf(blk_path, sizeof(blk_path), "/dev/%s", d->sysfs_name);
 	uint32_t whole_dev = 0;
-	if (get_blkdev_from_sys(d->disk_id, 0, &whole_dev) == 0) {
+	if (get_blkdev_from_sys(d->sysfs_name, 0, &whole_dev) == 0) {
 		if (lkl_sys_access("/dev", 0) < 0)
 			(void)lkl_sys_mkdir("/dev", 0700);
 		(void)lkl_sys_mknod(blk_path, LKL_S_IFBLK | 0600, whole_dev);
@@ -567,12 +578,12 @@ int anyfs_session_enter(AnyfsSession* d, unsigned int part, uint32_t flags,
 
 		/* Inherit read-only from how the session was opened, exactly as
 		 * the partition path (enter_fs_slot) does. A disk opened
-		 * read-only (e.g. browser WORKERFS/URLFS, which have no writeback
-		 * path) must mount its filesystem read-only too: a read-write
-		 * ext4/ext3 mount runs jbd2 journal recovery, whose block writes
-		 * fail on the non-writable backend (-EIO), aborting the mount.
-		 * The RDONLY flag adds noload/norecovery so the mount skips
-		 * recovery and succeeds. */
+		 * read-only (e.g. browser WORKERFS/URLFS, which have no
+		 * writeback path) must mount its filesystem read-only too: a
+		 * read-write ext4/ext3 mount runs jbd2 journal recovery, whose
+		 * block writes fail on the non-writable backend (-EIO),
+		 * aborting the mount. The RDONLY flag adds noload/norecovery so
+		 * the mount skips recovery and succeeds. */
 		uint32_t mflags = flags;
 		if (d->open_flags & ANYFS_SESSION_READONLY)
 			mflags |= ANYFS_MOUNT_RDONLY;

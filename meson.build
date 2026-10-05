@@ -400,18 +400,31 @@ bench_backends = executable('bench_backends',
     c_args: gio_args + qemu_args,
 )
 
-if enable_qemu and get_option('qemu_thread')
-    test_qemu_thread = executable('test_qemu_thread',
-        'tests/test_qemu_thread.c',
-        include_directories: [anyfs_inc, include_directories('src/core')],
+# POSIX-only harnesses (mkstemp/pwrite/sockets); Windows is covered by
+# running bench_backends.exe under wine.
+if host_machine.system() != 'windows'
+    test_session_reopen = executable('test_session_reopen',
+        'tests/test_session_reopen.c',
+        include_directories: [anyfs_inc],
         dependencies: [anyfs_dep],
-        c_args: qemu_args,
+        c_args: gio_args + qemu_args,
         install: false,
     )
-    test('qemu_thread_basic', test_qemu_thread, args: ['basic'],
-         suite: 'unit', timeout: 120)
-    test('qemu_thread_watchdog', test_qemu_thread, args: ['watchdog'],
-         suite: 'unit', timeout: 60)
+    test('session_reopen', test_session_reopen, suite: 'unit', timeout: 120)
+
+    if enable_qemu and get_option('qemu_thread')
+        test_qemu_thread = executable('test_qemu_thread',
+            'tests/test_qemu_thread.c',
+            include_directories: [anyfs_inc, include_directories('src/core')],
+            dependencies: [anyfs_dep],
+            c_args: qemu_args,
+            install: false,
+        )
+        test('qemu_thread_basic', test_qemu_thread, args: ['basic'],
+             suite: 'unit', timeout: 120)
+        test('qemu_thread_watchdog', test_qemu_thread, args: ['watchdog'],
+             suite: 'unit', timeout: 60)
+    endif
 endif
 
 if enable_qemu

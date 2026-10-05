@@ -25,6 +25,15 @@ typedef struct {
  * success, negative on error. */
 int anyfs_sysfs_resolve_disk_name(uint32_t dev, char out[64]);
 
+/* Resolve the kernel block name (e.g. "vda") of LKL disk `disk_id`
+ * through the virtio-mmio device it was registered as, mirroring
+ * lkl_get_virtio_blkdev but against the /sys mounted at kernel init. The
+ * name cannot be derived from the id: LKL never reuses disk ids, while the
+ * kernel reuses virtio-blk indexes once a removed disk is released (and
+ * names the next disk "vdb" while it is not). Returns 0 on success,
+ * negative on error. */
+int anyfs_sysfs_virtio_disk_name(int disk_id, char* out, size_t cap);
+
 /* Walk /sys/block/<disk_name>/ and fill the partition list. Returns
  * the number of entries written (capped at buf_n) or negative on
  * error. */

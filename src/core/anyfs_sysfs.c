@@ -75,6 +75,62 @@ int anyfs_sysfs_resolve_disk_name(uint32_t dev, char out[64])
 	return 0;
 }
 
+/* Copy the first entry of `dir` whose name starts with `prefix` into out
+ * and return 0; with out == NULL, return how many entries match instead.
+ * Negative if `dir` cannot be opened. */
+static int scan_prefix(const char* dir, const char* prefix, char* out,
+		       size_t cap)
+{
+	int err = 0;
+	struct lkl_dir* d = lkl_opendir(dir, &err);
+	if (!d)
+		return -1;
+	size_t pl = strlen(prefix);
+	int count = 0, ret = -1;
+	struct lkl_linux_dirent64* de;
+	while ((de = lkl_readdir(d)) != NULL) {
+		if (strncmp(de->d_name, prefix, pl) != 0)
+			continue;
+		if (!out) {
+			count++;
+			continue;
+		}
+		snprintf(out, cap, "%s", de->d_name);
+		ret = 0;
+		break;
+	}
+	lkl_closedir(d);
+	return out ? ret : count;
+}
+
+int anyfs_sysfs_virtio_disk_name(int disk_id, char* out, size_t cap)
+{
+	char path[192], virtio[64];
+
+	if (disk_id < 0 || !out || !cap)
+		return -1;
+	/* Devices registered before boot sit under virtio-mmio-cmdline and
+	 * take the first disk ids; hot-added ones are platform devices
+	 * numbered from 0 after them (see LKL's virtio_dev_setup). */
+	int nboot = scan_prefix("/sys/devices/virtio-mmio-cmdline",
+				"virtio-mmio.", NULL, 0);
+	if (nboot < 0)
+		nboot = 0;
+	if (disk_id < nboot)
+		snprintf(path, sizeof(path),
+			 "/sys/devices/virtio-mmio-cmdline/virtio-mmio.%d",
+			 disk_id);
+	else
+		snprintf(path, sizeof(path),
+			 "/sys/devices/platform/virtio-mmio.%d.auto",
+			 disk_id - nboot);
+	if (scan_prefix(path, "virtio", virtio, sizeof(virtio)) < 0)
+		return -1;
+	size_t len = strlen(path);
+	snprintf(path + len, sizeof(path) - len, "/%s/block", virtio);
+	return scan_prefix(path, "vd", out, cap);
+}
+
 int anyfs_sysfs_walk(const char* disk_name, AnyfsSysfsPart* buf, size_t buf_n)
 {
 	if (!disk_name || !buf)
