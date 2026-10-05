@@ -1,0 +1,3 @@
+#!/bin/sh
+# zig c++ for linux-amd64 builds; see zig-cc.sh.
+exec "$(dirname "$0")/zig-cc.sh" c++ "$@"

@@ -1,0 +1,3 @@
+#!/bin/sh
+# zig cc for linux-amd64 builds; see zig-cc.sh.
+exec "$(dirname "$0")/zig-cc.sh" cc "$@"

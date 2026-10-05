@@ -419,6 +419,7 @@ if host_machine.system() != 'windows'
     test('lkl_mingw_cc', find_program('tests/test_lkl_mingw_cc.sh'), suite: 'unit')
     # Build-script gates for the zig/glibc-floor toolchain (skip without zig).
     test('check_linux_abi', find_program('tests/test_check_linux_abi.sh'), suite: 'unit')
+    test('zig_cc', find_program('tests/test_zig_cc.sh'), suite: 'unit')
 
     if enable_qemu
         test_qemu_thread = executable('test_qemu_thread',

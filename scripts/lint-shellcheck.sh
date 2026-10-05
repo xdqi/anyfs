@@ -21,6 +21,9 @@ scripts/fetch_wasm_sysroot.sh
 scripts/fetch_wasm_ld.sh
 scripts/fetch_zig.sh
 scripts/check_linux_abi.sh
+scripts/lib/zig-cc.sh
+scripts/lib/zig-cc
+scripts/lib/zig-c++
 scripts/sync_wasm_bundle.sh
 scripts/lib/wasm_exports.sh
 scripts/doctor.sh
