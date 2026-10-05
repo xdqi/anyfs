@@ -4,7 +4,7 @@
 
 | Platform | Arch          | Toolchain                                                              |
 | -------- | ------------- | ---------------------------------------------------------------------- |
-| Linux    | amd64         | Native `gcc`                                                            |
+| Linux    | amd64         | `zig cc` 0.16.0, target `x86_64-linux-gnu.2.11` (glibc ≥ 2.11, x86-64 baseline); LKL kernel half on the host `gcc` |
 | Windows  | i386 (Win32)  | `i686-w64-mingw32-` cross (MSYS2 headers/libs + binutils-2.46 patches) |
 | Windows  | x86_64 (Win64)| `x86_64-w64-mingw32-` cross (MSYS2 headers/libs + binutils-2.46 patches)|
 
@@ -13,6 +13,18 @@ into `$BINUTILS_DIR` (default `$HOME/binutils-gdb/build-combined/install/bin`). 
 2.25.1 binutils shipped under `linux/tools/lkl/bin/` is below the 2.30 minimum kernel
 6.13+ Kconfig requires, so `scripts/gen_lkl_config.sh` writes absolute `LD`/`AR`/etc.
 paths into each per-target `Makefile.conf` to force the patched binutils.
+
+linux-amd64 builds every artifact with `scripts/lib/zig-cc` (a wrapper around
+`zig cc -target x86_64-linux-gnu.2.11` that undoes zig's non-gcc defaults; see the
+header of `scripts/lib/zig-cc.sh`), so neither the build host's glibc nor its CPU
+(GitHub's runners are x86-64-v3 images) reaches the output. The exception is the
+LKL kernel: it is freestanding and stays on the host gcc with
+`KCFLAGS=-march=x86-64`; `scripts/lib/lkl-linux-cc.sh` sends the whole kernel
+sub-make to gcc and tools/lkl to zig. Third-party libraries come from a static
+sysroot (`scripts/build_linux_sysroot.sh`), and `scripts/check_linux_abi.sh`
+gates every shipped ELF. Code loaded into Electron (`anyfs_native.node`,
+`drivelist.node`) targets `x86_64-linux-gnu.2.25`, Electron 42's own floor, with
+libc++ linked statically.
 
 ## Binary naming
 
@@ -38,17 +50,22 @@ anyfs-reader/
 ├── bin/
 │   ├── anyfs-ksmbd        (RUNPATH = $ORIGIN/../lib)
 │   ├── anyfs-nfsd
+│   ├── anyfs-lspart
 │   └── anyfs-fuse         (when built)
 └── lib/
-    ├── liblkl.so                  (~20 MiB, 35 filesystems + nfsd + ksmbd)
-    ├── libanyfs-qemublk.so        (~10 MiB, QEMU block layer)
-    ├── liburing.so.2
-    └── libaio.so.1t64
+    ├── liblkl.so                  (LKL kernel + host library)
+    └── libanyfs-qemublk.so        (QEMU block layer)
 ```
 
-System dependencies (not bundled — assumed present on target):
+The binaries link LKL and the QEMU block layer statically; the two libraries are
+shipped for embedders.
 
-- `libglib-2.0`, `libz`, `libzstd`, `libbz2`, `libm`, `libc`.
+System dependencies: only glibc ≥ 2.11 (`libc`, `libm`, `libpthread`, `librt`,
+`libdl`) on x86-64. glib, zlib, zstd, bzip2, libblkid, libaio, liburing, libfuse3,
+OpenSSL and curl are linked statically from the sysroot. `anyfs-fuse` uses the
+host's `/usr/bin/fusermount3` when not run as root. HTTPS images use the host's CA
+bundle (OpenSSL's `/etc/ssl` defaults, or `SSL_CERT_FILE`, which anyfs points at
+the RHEL/SUSE bundle when that is what exists).
 
 ### Windows (`anyfs-reader-<version>-win32.tar.gz` / `…-win64.tar.gz`)
 
@@ -106,31 +123,29 @@ The shipped `libanyfs-qemublk.{so,dll}` bundles QEMU's `libblock.a`, `libqemuuti
 `libio.a`, `libqom.a`, `libcrypto.a`, `libauthz.a`, and `libevent-loop-base.a` into a
 single shared object.
 
-Prereqs: QEMU is built with `-fPIC` + `b_pie=false`, and `util/fdmon-poll.c` is
+Prereqs: QEMU is built with `-fPIC` + `b_pie=false` (linux-amd64: configure's
+`--disable-pie`), and `util/fdmon-poll.c` is
 patched to drop the `static` from its `static __thread` declarations. GCC always
 uses local-exec TLS for `static __thread`, which produces `R_X86_64_TPOFF32`
 relocations that cannot live in a shared library.
 
 ```bash
-# 1) Build QEMU (PIC)
-scripts/build_qemu.sh \
-    --targets=linux-amd64 \
-    --qemu-src=$HOME/qemu \
-    --out-prefix=build-anyfs
-
-# 2) The script produces:
-#    $HOME/qemu/build-anyfs-linux-amd64/libanyfs-qemublk.so
+scripts/build_qemu.sh --targets=linux-amd64
+# → <qemu_src>/build-anyfs-linux-amd64/libanyfs-qemublk.so
 ```
 
-Internals of the merge (handled by `scripts/build_qemu.sh`):
+Internals of the merge (handled by `scripts/build_qemu.sh`; linux-amd64 links with
+`scripts/lib/zig-cc` against the static sysroot, with `-z defs` so a symbol missing
+at the glibc floor fails the link):
 
 ```bash
-gcc -shared -o libanyfs-qemublk.so \
+zig-cc -shared -o libanyfs-qemublk.so \
     -Wl,--whole-archive libblock.a \
     -Wl,--no-whole-archive \
     -Wl,--start-group libqemuutil.a libio.a libqom.a libcrypto.a libauthz.a \
                       libevent-loop-base.a -Wl,--end-group \
-    -lglib-2.0 -lz -lzstd -luring -laio -lbz2
+    $(pkg-config --static --libs glib-2.0 gthread-2.0 zlib libzstd libcurl liburing) \
+    -laio -lbz2 -lm -Wl,-z,defs
 ```
 
 Use `--whole-archive` only on `libblock.a` — pulling `libqemuutil.a` whole forces
@@ -139,6 +154,13 @@ emulator provides. The remaining archives go in `--start-group` to resolve the
 circular dependencies between them.
 
 ## Build Steps
+
+### Phase 0 — linux-amd64 toolchain and sysroot
+
+```bash
+./scripts/fetch_zig.sh            # pinned zig → ~/zig-<version> (build.config.toml)
+./scripts/build_linux_sysroot.sh  # static deps → ~/.cache/anyfs-linux-sysroot/…
+```
 
 ### Phase 1 — LKL kernels (one tree per target)
 
@@ -189,9 +211,9 @@ components with a warning rather than failing the whole build.
 ### Phase 4 — Package
 
 ```bash
-# Linux
+# Linux (runs check_linux_abi.sh 2.11 on every ELF before writing the tarball)
 ./scripts/package_linux.sh build-anyfs-linux-amd64
-# /tmp/anyfs-reader-<YYYYMMDD>-linux-amd64-pkg/  →  *.tar.gz
+# /tmp/anyfs-reader-<YYYYMMDD>-linux-amd64.tar.gz
 
 # Win32
 ./scripts/package_win32.sh 0.1.0
@@ -213,9 +235,7 @@ on Linux, and tars the output.
 | ----------------------- | ------------ | ------------------------------------ |
 | `liblkl.so`             | self-built   | LKL kernel + nfsd + ksmbd            |
 | `libanyfs-qemublk.so`   | self-built   | QEMU block layer                     |
-| `libglib-2.0.so`        | system pkg   | GLib (used by QEMU block)            |
-| `liburing.so.2`         | system pkg   | QEMU io_uring backend                |
-| `libaio.so.1t64`        | system pkg   | QEMU linux-aio backend               |
+| glibc ≥ 2.11            | system       | the only system dependency           |
 
 ### Windows
 

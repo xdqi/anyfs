@@ -2510,3 +2510,16 @@ Pushing: per `feedback_shared_tree_push_check.md`, inspect `git log origin/main.
 for commits from other sessions and get the user's go-ahead before `git push`. Then watch
 the linux workflow (`gh run watch`), including the squeeze smoke, which can only run on
 the runner.
+
+---
+
+## Execution notes (2026-10-05)
+
+- Task 6 Step 1's two gcc-isms (`-Wp,-v`, `-pie` with `-shared`) went into the wrapper
+  in Task 3 directly, with their test lines.
+- zig doesn't let a later plain `-g` undo `-g0` (`-g2`/`-ggdb` do), so the wrapper only
+  adds `-g0` when the caller passes no `-g*` flag.
+- `check_linux_abi.sh` follows symlinks (`find -L`): build dirs stage binaries as links.
+- `ts/packages/anyfs-native/scripts/build-linux-electron.sh` is tracked without the
+  executable bit; run it with `bash`.
+- The squeeze smoke passed locally despite the vsyscall=none host kernel.

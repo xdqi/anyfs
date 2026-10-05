@@ -1,8 +1,8 @@
 # Linux builds on zig cc with a pinned glibc floor and x86-64 baseline
 
 **Date:** 2026-10-05
-**Status:** approved direction (zig cc, two glibc floors, gcc for the kernel half, OpenSSL);
-implementation in a separate session
+**Status:** implemented 2026-10-05 (plan: `docs/superpowers/plans/2026-10-05-linux-zig-glibc-floor.md`;
+deviations under "Implementation notes")
 **Scope:** linux-amd64 only — `scripts/build_lkl.sh`, `scripts/build_qemu.sh`, `scripts/build_anyfs.sh`,
 `scripts/package_linux.sh`, new `scripts/lib/zig-cc.sh` / `scripts/build_linux_sysroot.sh` /
 `scripts/check_linux_abi.sh`, `meson.build`, `ts/packages/anyfs-native` build, `.github/workflows/linux.yml`.
@@ -168,6 +168,35 @@ land; from then on every phase must leave it green.
 - linux-arm64. It would follow the same scheme with `aarch64-linux-gnu.2.17` (the first glibc
   with aarch64) and is left to the arm64 work.
 - A promised minimum kernel version; the runtime fallbacks above are best-effort.
+
+## Implementation notes
+
+Where the implementation departs from the design above, and why:
+
+- **LKL dispatch signal.** Routing only `-D__KERNEL__ … -c` to gcc is not enough:
+  Kconfig's `cc-version.sh`, `$(CC) --version` and `cc-option` probes also run `$(CC)`,
+  and sent to zig they would record clang as the kernel compiler.
+  `scripts/lib/lkl-linux-cc.sh` sends every call made inside the kernel sub-make to gcc,
+  recognised by `sub_make_done=1` (exported by the kernel's top Makefile into the whole
+  `O=` build, never set by tools/lkl). gen_lkl_config.sh probes tools/lkl's Makefile.conf
+  through the same dispatcher.
+- **The wrapper does more than add `-target`.** zig cc defines `NDEBUG` at `-O1`+, enables
+  UBSan at `-O0`, emits DWARF without `-g`, rejects `-Wp,-v` and `-pie -shared`, and
+  answers `-print-search-dirs` with the host gcc's library dirs (meson then linked host
+  libraries). `scripts/lib/zig-cc.sh` undoes each; `tests/test_zig_cc.sh` checks them.
+- **ABI gate.** `check_linux_abi.sh` also fails on unversioned undefined dynamic symbols:
+  a `-shared` link leaves a function the floor lacks undefined with no version, which the
+  version scan alone misses.
+- **QEMU needs no patches.** Configure flags suffice. The old post-configure
+  `meson configure` was itself a host-library leak (the next ninja re-ran meson outside
+  our environment); `PKG_CONFIG` is now pinned in QEMU's machine file.
+- **`O_TMPFILE`** already fell back to `mkstemp` + `unlink` at runtime; nothing to add.
+- **libresolv** never appears in NEEDED (gio's resolver isn't linked), so the allowlist
+  stays as designed.
+- **Squeeze smoke and vsyscall.** glibc 2.11's `time()` jumps into the vsyscall page,
+  which kernels with `LEGACY_VSYSCALL_NONE` don't map. `anyfs-lspart`'s path doesn't call
+  it: the smoke passes even on such a host (verified on Debian 13's 6.12 kernel).
+- **CI** drops the link-only host `-dev` packages and the unused ksmbd-tools host build.
 
 ## Acceptance criteria
 
