@@ -85,7 +85,7 @@
   */
  struct wasm_timer {
  	pthread_t thread;
-@@ -598,6 +636,17 @@
+@@ -598,6 +636,21 @@
  #ifndef MAP_NORESERVE
  #define MAP_NORESERVE 0
  #endif
@@ -93,7 +93,11 @@
 +/*
 + * macOS has neither MAP_FIXED_NOREPLACE nor MAP_EXCL, so addr is passed as a
 + * plain hint: if the range is taken, mmap() maps somewhere else instead of
-+ * failing. Both callers treat ret != addr as failure.
++ * failing. lkl_shmem_mmap() then unmaps the stray mapping and fails.
++ * lkl_mmap() fails too, but its cleanup unmaps addr rather than ret, a bug
++ * shared with the other hosts. Neither runs in anyfs, which builds LKL
++ * without KASAN (the only caller of lkl_mmap()) and without MMU (the only
++ * user of lkl_shmem_mmap()).
 + * <sys/mman.h> does define MAP_NORESERVE, but only as a Sun-era leftover that
 + * mmap(2) does not document; keep it out of the flags.
 + */
@@ -103,7 +107,7 @@
  #elif defined(__linux__)
  #ifndef MAP_FIXED_NOREPLACE
  #define MAP_FIXED_NOREPLACE 0
-@@ -653,6 +702,13 @@
+@@ -653,6 +706,13 @@
  
  	if (ret == MAP_FAILED)
  		return NULL;
@@ -117,7 +121,7 @@
  	return ret;
  }
  #endif // LKL_HOST_CONFIG_MMU
-@@ -776,6 +832,38 @@
+@@ -776,6 +836,38 @@
  	return pwrite(fd, (const void *)buf, len, off);
  }
  
