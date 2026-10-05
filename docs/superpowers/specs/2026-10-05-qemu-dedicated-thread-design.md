@@ -1,8 +1,8 @@
 # QEMU dedicated-thread embedding design
 
 **Date:** 2026-10-05
-**Status:** implemented (phases 1–3, 2026-10-05); real-Windows / wine verification and phase 4
-pending — see "Implementation notes" at the end
+**Status:** implemented (phases 1–3, 2026-10-05; wine verified); real-Windows verification and
+phase 4 pending — see "Implementation notes" at the end
 **Scope:** `src/core/qemu_backend.c` (rewrite), `src/core/qemu_thread.{c,h}` (new),
 `patches/qemu/` (two new patches), `ts/native/anyfs_ts.c` + `ts/packages/core/src/worker.ts`
 (wasm API thread), `ts/packages/anyfs-native/src/binding.cc` (native addon)
@@ -339,8 +339,13 @@ Phases 1–3 landed as designed, with these differences:
 - **Native performance:** about 28 µs of extra hand-off per block request on a Hyper-V guest. On a
   workload of small requests (88k requests averaging 11.6 KB) that costs about 5–10% throughput.
   Per the user's decision, optimisation is deferred until the architecture is settled.
+- **Windows (wine):** `bench_backends.exe` read the whole compressed trusty qcow2 through the
+  QEMU thread under wine (win32 threads, aio-win32, private GMainContext) and exited cleanly.
+- **Shipping a changed QEMU patch:** CI caches the patched `deps/` tree keyed only on
+  `peru.yaml`, so editing 0004 in place left CI with the old version applied. The replaced file
+  now lives in `patches/qemu/retired/`, and both build scripts reverse-apply retired patches before
+  applying the active set.
 - **Not yet done:**
-  - Windows. The mingw build and wine run are blocked locally because the msys2-cross mingw64
-    sysroot is missing glib2/zstd/bzip2/curl. Real-Windows F9 verification is still open.
+  - Real-Windows F9 verification.
   - Phase 4 (narrowing Asyncify instrumentation) is untouched.
 
