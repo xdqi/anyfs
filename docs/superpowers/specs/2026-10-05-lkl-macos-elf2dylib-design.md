@@ -249,8 +249,8 @@ are recorded in a comment next to the export map in `build_kernel_dylib.sh`.
 
 - elf2dylib and the build scripts fail closed: any failed check aborts the build and
   leaves no output file.
-- `build_kernel_dylib.sh` also reruns the output checks after `llvm-lipo`, against each
-  slice.
+- After `llvm-lipo`, `build_kernel_dylib.sh --universal` extracts each slice and requires
+  it to be byte-identical to the per-arch dylib that passed the output checks.
 - At runtime, dyld reports a missing or unsigned dylib at load time, before any kernel
   code runs. `lkl_start_kernel` reports an over-long command line instead of truncating
   it.
