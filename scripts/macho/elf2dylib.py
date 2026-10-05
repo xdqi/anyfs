@@ -4,8 +4,8 @@
 The input must be what `ld.lld -shared -Bsymbolic -z now -z max-page-size=16384
 -z separate-loadable-segments --no-undefined` makes of position-independent
 code: four PT_LOAD segments (R, RX, RW with PT_GNU_RELRO, RW) on 16 KiB
-boundaries, and only R_*_RELATIVE dynamic relocations. Anything else is
-rejected.
+boundaries, only R_*_RELATIVE dynamic relocations, and no imports. Anything
+else is rejected.
 
 This tool does not write Mach-O itself. It generates assembly that .incbin's
 each segment into a 16 KiB-aligned section, turns every RELATIVE slot into
@@ -34,9 +34,20 @@ PF_X, PF_W, PF_R = 1, 2, 4
 SHT_SYMTAB, SHT_DYNSYM = 2, 11
 SHN_UNDEF, SHN_LORESERVE = 0, 0xFF00
 STT_OBJECT, STT_FUNC = 1, 2
-DT_NULL, DT_NEEDED, DT_RELA, DT_RELASZ = 0, 1, 7, 8
-DT_REL, DT_TEXTREL, DT_JMPREL, DT_FLAGS, DT_RELR = 17, 22, 23, 30, 36
+DT_NULL, DT_NEEDED, DT_HASH, DT_STRTAB, DT_SYMTAB = 0, 1, 4, 5, 6
+DT_RELA, DT_RELASZ, DT_RELAENT, DT_STRSZ, DT_SYMENT = 7, 8, 9, 10, 11
+DT_SONAME, DT_SYMBOLIC, DT_REL, DT_TEXTREL, DT_JMPREL = 14, 16, 17, 22, 23
+DT_BIND_NOW, DT_FLAGS, DT_RELR = 24, 30, 36
+DT_GNU_HASH, DT_VERSYM, DT_RELACOUNT = 0x6FFFFEF5, 0x6FFFFFF0, 0x6FFFFFF9
+DT_FLAGS_1, DT_VERDEF, DT_VERDEFNUM = 0x6FFFFFFB, 0x6FFFFFFC, 0x6FFFFFFD
 DF_TEXTREL = 0x4
+# Every other tag (init arrays, packed relocations, ...) carries meaning that
+# the conversion would drop, so it is rejected.
+DT_ACCEPTED = {DT_NULL, DT_SONAME, DT_SYMBOLIC, DT_BIND_NOW, DT_FLAGS, DT_FLAGS_1,
+               DT_RELA, DT_RELASZ, DT_RELAENT, DT_RELACOUNT, DT_SYMTAB, DT_SYMENT,
+               DT_STRTAB, DT_STRSZ, DT_HASH, DT_GNU_HASH, DT_VERSYM, DT_VERDEF,
+               DT_VERDEFNUM}
+RELA_SIZE = 24
 
 # --arch: (e_machine, R_*_RELATIVE type, clang triple prefix)
 ARCHES = {"arm64": (183, 1027, "arm64"), "x86_64": (62, 8, "x86_64")}
@@ -50,6 +61,9 @@ SECTIONS = [
     ("__DATA", "__lkl_data", ""),
 ]
 BSS = ("__DATA", "__lkl_bss")  # zero-fill tail of the last segment
+INSN = re.compile(r"\s*[0-9a-f]+:")     # an objdump -d instruction line
+ANNOTATION = re.compile(r"<.*>")         # "bl 0x40c0 <x18>" names a symbol
+X18 = re.compile(r"\b[xw]18\b")
 LIBSYSTEM = "/usr/lib/libSystem.B.dylib"
 
 
@@ -69,8 +83,20 @@ def tool(env, *names):
 def run(argv):
     r = subprocess.run(argv, capture_output=True, text=True)
     if r.returncode:
-        raise Reject(f"{' '.join(argv[:2])} failed:\n{r.stderr.strip()}")
+        raise Reject(f"{os.path.basename(argv[0])} failed:\n{r.stderr.strip()}")
     return r.stdout
+
+
+def run_lines(argv):
+    """Yield argv's output line by line, without holding all of it in memory."""
+    with tempfile.TemporaryFile() as err:
+        with subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=err, text=True,
+                              errors="replace") as proc:
+            yield from proc.stdout
+        if proc.returncode:
+            err.seek(0)
+            raise Reject(f"{os.path.basename(argv[0])} failed:\n"
+                         f"{err.read().decode(errors='replace').strip()}")
 
 
 class Elf:
@@ -119,6 +145,25 @@ class Image:
     """The checked input: segments, RELATIVE slots and symbols."""
 
     def __init__(self, path, arch, exports, objdump):
+        try:
+            self.parse(path, arch, exports)
+        except (OSError, struct.error, IndexError, KeyError, ValueError) as e:
+            # ValueError includes UnicodeDecodeError and a string without its NUL.
+            raise Reject(f"malformed ELF: {e}") from None
+        if arch == "arm64":
+            # Only instruction lines ("  4000:  mov ..."): the header line names
+            # the file. "<sym>" annotations name symbols, not registers.
+            hits = []
+            for line in run_lines([objdump, "-d", "--no-show-raw-insn", path]):
+                if INSN.match(line) and X18.search(ANNOTATION.sub("", line)):
+                    hits.append(line.rstrip())
+            if hits:
+                n = len(hits)
+                raise Reject(f"{n} instruction{' uses' if n == 1 else 's use'} x18/w18, "
+                             "which Darwin reserves (build with -ffixed-x18), e.g.:\n"
+                             + "\n".join(hits[:5]))
+
+    def parse(self, path, arch, exports):
         machine, rel_type, _ = ARCHES[arch]
         elf = self.elf = Elf(path)
         if elf.type != 3 or elf.machine != machine:
@@ -134,13 +179,20 @@ class Image:
                 raise Reject(f"PT_LOAD at {p[3]:#x} is not on a 16 KiB boundary with "
                              "p_offset == p_vaddr: link with -z max-page-size=16384 "
                              "-z separate-loadable-segments")
+            if p[2] + p[5] > len(elf.data):
+                raise Reject(f"malformed ELF: PT_LOAD at {p[3]:#x} extends past the "
+                             "end of the file")
+        for p, q in zip(self.loads, self.loads[1:]):
+            if q[3] < p[3] + p[6]:
+                raise Reject("PT_LOADs overlap or are out of order")
         if self.loads[0][3] != 0:
             raise Reject("the first PT_LOAD must start at address 0")
         for p in self.loads[:2]:
             if p[6] != p[5]:
                 raise Reject(f"read-only PT_LOAD at {p[3]:#x} has a zero-fill tail")
         relro = [p for p in elf.phdrs if p[0] == PT_GNU_RELRO]
-        if len(relro) != 1 or relro[0][3] != self.loads[2][3]:
+        if (len(relro) != 1 or relro[0][3] != self.loads[2][3]
+                or relro[0][6] != self.loads[2][6]):
             raise Reject("expected one PT_GNU_RELRO covering the third PT_LOAD")
 
         dyn = elf.dynamic()
@@ -151,13 +203,26 @@ class Image:
                           (DT_RELR, "DT_RELR relocations")):
             if tag in dyn:
                 raise Reject(f"input has {what}")
+        for tag in sorted(dyn):
+            if tag not in DT_ACCEPTED:
+                raise Reject(f"input has unsupported dynamic tag {tag:#x}")
         if dyn.get(DT_FLAGS, [0])[0] & DF_TEXTREL:
             raise Reject("input has DF_TEXTREL (relocations in read-only code)")
 
         self.slots = {}  # r_offset -> r_addend
-        if DT_RELA in dyn:
+        if DT_RELA in dyn or DT_RELASZ in dyn:
+            if DT_RELA not in dyn or DT_RELASZ not in dyn:
+                raise Reject("input has only one of DT_RELA and DT_RELASZ")
             start, size = dyn[DT_RELA][0], dyn[DT_RELASZ][0]
-            for off in range(start, start + size, 24):
+            if dyn.get(DT_RELAENT) != [RELA_SIZE] or size % RELA_SIZE:
+                raise Reject(f"DT_RELAENT is {dyn.get(DT_RELAENT)}, DT_RELASZ {size:#x}: "
+                             f"expected a table of {RELA_SIZE}-byte entries")
+            # The first PT_LOAD starts at file offset and address 0, so the table
+            # can be read at its address only if it lies in that segment's file data.
+            if start + size > self.loads[0][5]:
+                raise Reject(f"RELA table {start:#x}..{start + size:#x} is outside the "
+                             "first PT_LOAD's file data")
+            for off in range(start, start + size, RELA_SIZE):
                 where, info, addend = struct.unpack_from("<QQq", elf.data, off)
                 if info != rel_type:
                     raise Reject(f"relocation at {where:#x} has r_info {info:#x}; "
@@ -186,14 +251,6 @@ class Image:
                 self.label(value)
                 self.locals.append((name, value))
 
-        if arch == "arm64":
-            # Only instruction lines ("  4000:  mov ..."): the header line names the file.
-            hits = [line for line in run([objdump, "-d", "--no-show-raw-insn", path]).splitlines()
-                    if re.match(r"\s*[0-9a-f]+:", line) and re.search(r"\b[xw]18\b", line)]
-            if hits:
-                raise Reject(f"{len(hits)} instructions use x18/w18, which Darwin reserves "
-                             "(build with -ffixed-x18), e.g.:\n" + "\n".join(hits[:5]))
-
     def label(self, addr):
         """Assembler expression for an image address, relative to a segment label."""
         for i, p in enumerate(self.loads):
@@ -205,14 +262,22 @@ class Image:
         raise Reject(f"address {addr:#x} lies outside every segment")
 
 
+def incbin(lines, data, path):
+    """.incbin a whole file holding data. A file per chunk: the assembler keeps
+    every .incbin'd file mapped, so slices of one big file would map it once per
+    chunk."""
+    with open(path, "wb") as f:
+        f.write(data)
+    lines.append(f'\t.incbin "{path}"')
+
+
 def write_asm(img, exports, path, workdir):
     lines = []
+    data = memoryview(img.elf.data)
     for i, p in enumerate(img.loads):
         seg, sect, attrs = SECTIONS[i]
         vaddr, filesz, memsz = p[3], p[5], p[6]
-        blob = os.path.join(workdir, f"seg{i}.bin")
-        with open(blob, "wb") as f:
-            f.write(img.elf.data[p[2]:p[2] + filesz])
+        seg_data = data[p[2]:p[2] + filesz]
         lines += [f"\t.section {seg},{sect}{attrs}", "\t.p2align 14", f"Lseg{i}:"]
         pos = 0
         for where in sorted(w for w in img.slots if vaddr <= w < vaddr + filesz):
@@ -220,21 +285,25 @@ def write_asm(img, exports, path, workdir):
             if off < pos:
                 raise Reject(f"relocations at {where - 8:#x}..{where:#x} overlap")
             if off > pos:
-                lines.append(f'\t.incbin "{blob}", {pos}, {off - pos}')
+                incbin(lines, seg_data[pos:off], os.path.join(workdir, f"seg{i}.{pos:x}.bin"))
             lines.append(f"\t.quad {img.label(img.slots[where])}")
             pos = off + 8
         if filesz > pos:
-            lines.append(f'\t.incbin "{blob}", {pos}, {filesz - pos}')
+            incbin(lines, seg_data[pos:], os.path.join(workdir, f"seg{i}.{pos:x}.bin"))
         if memsz > filesz:
             if i == 3:
                 lines.append(f"\t.zerofill {BSS[0]},{BSS[1]},Lbss,{memsz - filesz},0")
             else:
                 lines.append(f"\t.space {memsz - filesz}")
-        if i < 3 and memsz % PAGE:
-            # Pad to the next segment's address. ld64.lld aligns x86_64 segments to
-            # 4 KiB only, so without this the next Mach-O segment would start below
-            # its section, which llvm-objdump's rebase decoder rejects.
-            lines.append(f"\t.space {PAGE - memsz % PAGE}")
+        gap = img.loads[i + 1][3] - (vaddr + memsz) if i < 3 else 0
+        if gap:
+            # Pad exactly to the next segment's address, so the next section starts
+            # at its ELF address + DELTA. .p2align 14 alone does not get there when
+            # segments are further apart (64 KiB on AArch64 by default), and an
+            # unpadded section end also lets the next Mach-O segment start below its
+            # section (ld64.lld aligns x86_64 segments to 4 KiB only), which
+            # llvm-objdump's rebase decoder rejects.
+            lines.append(f"\t.space {gap}")
     used = set(exports.values())
     for name, value in img.locals:
         sym, n = f"_{name}", 1
@@ -257,6 +326,10 @@ def link(asm, out, arch, min_os, install_name, libsystem, clang, ld64):
          "-o", out, obj, libsystem])
 
 
+def hexpair(t):
+    return f"({t[0]:#x}, {t[1]:#x})" if t else "missing"
+
+
 def check_output(img, exports, out, install_name, workdir, objdump, objcopy, nm):
     sections = {}
     for line in run([objdump, "--macho", "--section-headers", out]).splitlines():
@@ -266,11 +339,11 @@ def check_output(img, exports, out, install_name, workdir, objdump, objcopy, nm)
 
     for i, p in enumerate(img.loads):
         seg, sect, _ = SECTIONS[i]
-        vaddr, filesz, memsz = p[3], p[5], p[6]
-        size = filesz if i == 3 else -(-memsz // PAGE) * PAGE  # write_asm pads to PAGE
+        vaddr, filesz = p[3], p[5]
+        size = filesz if i == 3 else img.loads[i + 1][3] - vaddr  # write_asm pads to it
         if sections.get(sect) != (vaddr + DELTA, size):
-            raise Reject(f"{seg},{sect} is at {sections.get(sect)}, expected "
-                         f"({vaddr + DELTA:#x}, {size:#x}): ld64.lld laid it out differently")
+            raise Reject(f"{seg},{sect} (address, size) is {hexpair(sections.get(sect))}, "
+                         f"expected {hexpair((vaddr + DELTA, size))}")
         dump = os.path.join(workdir, f"out{i}.bin")
         run([objcopy, f"--dump-section={seg},{sect}={dump}", out, os.devnull])
         with open(dump, "rb") as f:
@@ -288,14 +361,18 @@ def check_output(img, exports, out, install_name, workdir, objdump, objcopy, nm)
     if p[6] > p[5]:
         want = (p[3] + p[5] + DELTA, p[6] - p[5])
         if sections.get(BSS[1]) != want:
-            raise Reject(f"{BSS[0]},{BSS[1]} is at {sections.get(BSS[1])}, expected {want}")
+            raise Reject(f"{BSS[0]},{BSS[1]} (address, size) is "
+                         f"{hexpair(sections.get(BSS[1]))}, expected {hexpair(want)}")
 
-    rebases = set()
+    rebases = []
     for line in run([objdump, "--macho", "--rebase", out]).splitlines():
         f = line.split()
-        if len(f) == 4 and f[3] == "pointer":
-            rebases.add(int(f[2], 16))
-    if rebases != {w + DELTA for w in img.slots}:
+        if len(f) >= 4 and f[2].startswith("0x"):  # types: pointer, text abs32, ...
+            if f[3:] != ["pointer"]:
+                raise Reject(f"rebase of type {' '.join(f[3:])} at {f[2]}; "
+                             "expected only pointer")
+            rebases.append(int(f[2], 16))
+    if sorted(rebases) != sorted(w + DELTA for w in img.slots):
         raise Reject(f"rebase table has {len(rebases)} entries, expected the "
                      f"{len(img.slots)} RELATIVE slots + {DELTA:#x}")
 
@@ -319,6 +396,23 @@ def check_output(img, exports, out, install_name, workdir, objdump, objcopy, nm)
         raise Reject(f"undefined symbols are {undefined}, expected only dyld_stub_binder")
 
 
+def same_file(a, b):
+    if os.path.exists(a) and os.path.exists(b):
+        return os.path.samefile(a, b)
+    return os.path.realpath(a) == os.path.realpath(b)
+
+
+def install(src, dst):
+    """Copy src to dst atomically: dst is either complete or untouched."""
+    tmp = dst + ".tmp"
+    try:
+        shutil.copy(src, tmp)  # copies the mode too
+        os.replace(tmp, dst)
+    finally:
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Convert a linked ELF shared object into a Mach-O dylib.")
     ap.add_argument("--arch", required=True, choices=sorted(ARCHES))
@@ -330,14 +424,18 @@ def main():
     ap.add_argument("-o", dest="output", required=True)
     ap.add_argument("input")
     a = ap.parse_args()
-    if os.path.exists(a.output):
-        os.unlink(a.output)
     try:
+        if same_file(a.input, a.output):
+            raise Reject(f"-o {a.output} is the input file")
+        if os.path.exists(a.output):
+            os.unlink(a.output)
         exports = {}
         for e in a.export:
             if "=" not in e:
                 raise Reject(f"--export {e}: expected ELF=MACHO")
             elfname, sym = e.split("=", 1)
+            if elfname in exports:
+                raise Reject(f"--export {elfname} is given more than once")
             exports[elfname] = sym
         objdump = tool("OBJDUMP", "llvm-objdump-19", "llvm-objdump")
         objcopy = tool("OBJCOPY", "llvm-objcopy-19", "llvm-objcopy")
@@ -351,7 +449,7 @@ def main():
             write_asm(img, exports, asm, tmp)
             link(asm, out, a.arch, a.min_os, a.install_name, a.libsystem, clang, ld64)
             check_output(img, exports, out, a.install_name, tmp, objdump, objcopy, nm)
-            shutil.move(out, a.output)
+            install(out, a.output)
     except Reject as e:
         print(f"elf2dylib: {a.input}: {e}", file=sys.stderr)
         return 1
