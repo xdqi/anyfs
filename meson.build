@@ -406,6 +406,9 @@ if host_machine.system() != 'windows'
     )
     test('session_reopen', test_session_reopen, suite: 'unit', timeout: 120)
 
+    # Build-script helper: the sccache launcher used for LKL builds.
+    test('sccache_cc', find_program('tests/test_sccache_cc.sh'), suite: 'unit')
+
     if enable_qemu
         test_qemu_thread = executable('test_qemu_thread',
             'tests/test_qemu_thread.c',
