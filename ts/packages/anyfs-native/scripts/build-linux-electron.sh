@@ -10,10 +10,9 @@
 # earlier belief that a host-ABI .node "fails to load inside Electron" was wrong;
 # the F11 failure was simply a MISSING build/Release/anyfs_native.node file.
 #
-# So `pnpm --filter @anyfs/native build` (host-targeted node-gyp rebuild) is
-# sufficient for the Electron demo too. This script is kept as a conventional
-# electron-targeted builder (mirrors drivelist's); use whichever you like — the
-# important thing is that the .node FILE EXISTS at build/Release/.
+# This script is the supported Linux build: it compiles with zig at glibc 2.25
+# (see scripts/lib/zig-cc.sh) and gates the result with check_linux_abi.sh. A
+# bare `node-gyp rebuild` would use the host gcc and link libstdc++ again.
 # (--runtime=electron would only matter for a raw-V8, non-N-API addon.)
 #
 # Default ELECTRON_TARGET tracks ts/examples/electron-demo's installed electron
@@ -36,6 +35,14 @@ if [[ -z "${ELECTRON_TARGET:-}" ]]; then
 fi
 echo ">>> Building anyfs_native.node against Electron v${ELECTRON_TARGET} headers"
 
+# zig at glibc 2.25: code loaded into Electron never needs more than Electron
+# itself (GLIBC_2.25), and zig links libc++ statically. LINK stays unset so
+# node-gyp links with $(CXX) — zig c++ is what pulls libc++ in.
+repo_root="$(cd ../../.. && pwd)"
+export CC="$repo_root/scripts/lib/zig-cc" CXX="$repo_root/scripts/lib/zig-c++"
+export ANYFS_ZIG_TARGET=x86_64-linux-gnu.2.25
+unset LINK
+
 # node-gyp's --runtime=electron --dist-url switches the headers tarball URL to
 # electronjs.org/headers (rather than nodejs.org/dist) and writes them under
 # ~/.cache/node-gyp/<ver>.
@@ -48,7 +55,11 @@ npx node-gyp rebuild \
     --target="$ELECTRON_TARGET" \
     --dist-url=https://electronjs.org/headers \
     --runtime=electron \
-    --arch=x64
+    --arch=x64 \
+    -j "$(nproc)"
+
+"$repo_root/scripts/check_linux_abi.sh" --allow-undefined='^(napi_|node_api_)' \
+    2.25 build/Release/anyfs_native.node
 
 echo
 echo "Built: $(file build/Release/anyfs_native.node | head -1)"

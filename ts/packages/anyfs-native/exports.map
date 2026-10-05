@@ -1,0 +1,8 @@
+/* N-API entry points only. Wildcards: lld rejects a listed name the addon
+ * doesn't define, and the version suffix differs across node-addon-api. */
+{
+  global:
+    napi_register_module_v*;
+    node_api_module_get_api_version_v*;
+  local: *;
+};
