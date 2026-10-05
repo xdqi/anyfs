@@ -84,31 +84,12 @@ mkdir -p "$WORK" "$SYSROOT/lib/pkgconfig" "$SYSROOT/include"
 
 NPROC="$(nproc)"
 
-# fetch <url> <sha256> <dest> — download (with cache) and verify.
-fetch() {
-    local url="$1" sha="$2" dest="$3"
-    if [[ ! -f "$dest" ]] || ! echo "$sha  $dest" | sha256sum --check --quiet - 2>/dev/null; then
-        echo ">>> fetch $url"
-        curl -fL --retry 3 -o "$dest" "$url"
-    fi
-    echo "$sha  $dest" | sha256sum --check --quiet -
-}
-
-# unpack <tarball> <dirname> — fresh-extract into $WORK/<dirname>.
-unpack() {
-    local tarball="$1" dirname="$2"
-    rm -rf "${WORK:?}/$dirname"
-    tar -xf "$tarball" -C "$WORK"
-    [[ -d "$WORK/$dirname" ]] || { echo "expected $dirname after extracting $tarball" >&2; exit 1; }
-}
+# shellcheck source=lib/sysroot_sources.sh
+source "$SCRIPT_DIR/lib/sysroot_sources.sh"   # version pins + fetch/unpack
 
 # ---------------------------------------------------------------------------
 # zlib 1.3.1
 # ---------------------------------------------------------------------------
-ZLIB_V=1.3.1
-# zlib.net 404s superseded releases; fossils/ archives every version.
-ZLIB_URL="https://zlib.net/fossils/zlib-$ZLIB_V.tar.gz"
-ZLIB_SHA=9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
 build_zlib() {
     echo "=== zlib $ZLIB_V ==="
     fetch "$ZLIB_URL" "$ZLIB_SHA" "$WORK/zlib-$ZLIB_V.tar.gz"
@@ -126,9 +107,6 @@ build_zlib() {
 # compile the 7 library sources directly (the hand-built archive's members
 # are exactly these, named *.c.o).
 # ---------------------------------------------------------------------------
-BZ2_V=1.0.8
-BZ2_URL="https://sourceware.org/pub/bzip2/bzip2-$BZ2_V.tar.gz"
-BZ2_SHA=ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269
 build_bzip2() {
     echo "=== bzip2 $BZ2_V ==="
     fetch "$BZ2_URL" "$BZ2_SHA" "$WORK/bzip2-$BZ2_V.tar.gz"
@@ -150,9 +128,6 @@ build_bzip2() {
 # zstd 1.5.7 — lib/Makefile native targets (the hand-built tree shows the
 # obj/conf_*/static layout that Makefile produces).
 # ---------------------------------------------------------------------------
-ZSTD_V=1.5.7
-ZSTD_URL="https://github.com/facebook/zstd/releases/download/v$ZSTD_V/zstd-$ZSTD_V.tar.gz"
-ZSTD_SHA=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
 build_zstd() {
     echo "=== zstd $ZSTD_V ==="
     fetch "$ZSTD_URL" "$ZSTD_SHA" "$WORK/zstd-$ZSTD_V.tar.gz"
@@ -169,9 +144,6 @@ build_zstd() {
 # libffi 3.5.2 — upstream wasm32 support via emconfigure; exact configure
 # line recovered from the hand-built tree's config.log.
 # ---------------------------------------------------------------------------
-FFI_V=3.5.2
-FFI_URL="https://github.com/libffi/libffi/releases/download/v$FFI_V/libffi-$FFI_V.tar.gz"
-FFI_SHA=f3a3082a23b37c293a4fcd1053147b371f2ff91fa7ea1b2a52e335676bac82dc
 build_libffi() {
     echo "=== libffi $FFI_V ==="
     fetch "$FFI_URL" "$FFI_SHA" "$WORK/libffi-$FFI_V.tar.gz"
@@ -201,9 +173,6 @@ build_libffi() {
 # Depends on zlib + libffi (pkgconfig) AND libresolv (gio hard-requires
 # res_query()) already being in $SYSROOT.
 # ---------------------------------------------------------------------------
-GLIB_V=2.88.0
-GLIB_URL="https://download.gnome.org/sources/glib/${GLIB_V%.*}/glib-$GLIB_V.tar.xz"
-GLIB_SHA=3546251ccbb3744d4bc4eb48354540e1f6200846572bab68e3a2b7b2b64dfd07
 build_glib() {
     echo "=== glib $GLIB_V (+pcre2 subproject, +girepository) ==="
     fetch "$GLIB_URL" "$GLIB_SHA" "$WORK/glib-$GLIB_V.tar.xz"
@@ -277,7 +246,6 @@ build_glib() {
 # pkgconfig files. The tree must be on the v2.40.4 release (stable/v2.40)
 # and have a generated ./configure (run autogen.sh once if not).
 # ---------------------------------------------------------------------------
-UL_V=2.40.4
 build_blkid() {
     echo "=== util-linux $UL_V (libblkid + libuuid) ==="
     if [[ ! -f "$UL_SRC/configure" ]]; then

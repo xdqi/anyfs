@@ -17,6 +17,7 @@ scripts/build_qemu_wasm.sh
 scripts/build_anyfs.sh
 scripts/build_anyfs_wasm.sh
 scripts/build_wasm_sysroot.sh
+scripts/lib/sysroot_sources.sh
 scripts/fetch_wasm_sysroot.sh
 scripts/fetch_wasm_ld.sh
 scripts/fetch_zig.sh
