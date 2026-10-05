@@ -31,7 +31,7 @@ concurrency:
 
 jobs:
   wasm-build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -217,7 +217,7 @@ jobs:
 
   web-package:
     needs: wasm-build
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -259,7 +259,7 @@ jobs:
 
   ghcr-image:
     needs: web-package
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -315,7 +315,7 @@ jobs:
 
   electron-package:
     needs: web-package
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     strategy:
       fail-fast: false

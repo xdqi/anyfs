@@ -30,7 +30,7 @@ jobs:
   sccache-workers:
     name: sccache worker ${{ matrix.idx }}
     if: ${{ github.event_name != 'pull_request' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 75
     strategy:
       matrix:
@@ -52,7 +52,7 @@ jobs:
 
   build:
     name: linux-amd64
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 75
 
     env:
