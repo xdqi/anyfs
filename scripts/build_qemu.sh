@@ -314,6 +314,7 @@ build_one() {
 # shared source tree before any target builds.
 # shellcheck source=lib/qemu_patches.sh
 source "$SCRIPT_DIR/lib/qemu_patches.sh"
+qemu_revert_retired "$QEMU_SRC" "$SCRIPT_DIR/../patches/qemu/retired" || exit 1
 qemu_apply_series "$QEMU_SRC" "$SCRIPT_DIR/../patches/qemu/series.native" || exit 1
 
 FAILED=()

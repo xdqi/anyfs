@@ -51,6 +51,7 @@ source "$EMSDK_DIR/emsdk_env.sh" >/dev/null 2>&1
 # ── Apply patches/qemu (idempotent, same mechanism as oot_fs.sh) ──────
 # shellcheck source=lib/qemu_patches.sh
 source "$REPO_ROOT/scripts/lib/qemu_patches.sh"
+qemu_revert_retired "$QEMU_ROOT" "$REPO_ROOT/patches/qemu/retired" || exit 1
 for p in "$REPO_ROOT"/patches/qemu/*.patch; do
     qemu_apply_patch "$QEMU_ROOT" "$p" || exit 1
 done
