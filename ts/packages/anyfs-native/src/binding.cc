@@ -1,4 +1,6 @@
+#include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -38,6 +40,9 @@ int anyfs_ts_kernel_init(uint32_t mem_mb, uint32_t loglevel);
 int anyfs_ts_kernel_halt(void);
 
 const char* anyfs_get_last_error(void);
+void anyfs_set_last_error(const char* fmt, ...);
+typedef void (*anyfs_fatal_hook_fn)(const char* reason);
+void anyfs_set_fatal_hook(anyfs_fatal_hook_fn fn);
 
 int anyfs_ts_session_open(const char* image_path, uint32_t flags);
 int anyfs_ts_session_close(int h);
@@ -137,9 +142,7 @@ class JsonOutWorker : public Napi::AsyncWorker
 	void OnOK() override
 	{
 		if (!err_.empty()) {
-			Napi::Error::New(Env(), err_)
-			    .ThrowAsJavaScriptException();
-			deferred_.Resolve(Env().Null());
+			deferred_.Reject(Napi::Error::New(Env(), err_).Value());
 			return;
 		}
 		deferred_.Resolve(
@@ -183,10 +186,10 @@ class StrOutWorker : public Napi::AsyncWorker
 	void OnOK() override
 	{
 		if (rc_ != 0) {
-			Napi::Error::New(Env(),
-					 "operation: rc=" + std::to_string(rc_))
-			    .ThrowAsJavaScriptException();
-			deferred_.Resolve(Env().Null());
+			deferred_.Reject(
+			    Napi::Error::New(Env(), "operation: rc=" +
+							std::to_string(rc_))
+				.Value());
 			return;
 		}
 		deferred_.Resolve(
@@ -257,50 +260,123 @@ class PreadWorker : public Napi::AsyncWorker
 };
 
 // ── lifecycle ────────────────────────────────────────────────────────────
-// kernelInit / kernelHalt / sessionOpen / sessionClose stay sync because
-// QEMU's blk_new_open / blk_unref assert qemu_in_main_thread().  Moving
-// these to a thread pool would require a dedicated LKL thread; for now the
-// IO-heavy ops (listParts, enter, readdir, pread, …) are the ones that
-// actually block the event loop for significant time.
+// Every op runs on the libuv thread pool, including the lifecycle ones.
+// QEMU no longer cares which thread calls in: its block layer lives on the
+// dedicated QEMU thread (src/core/qemu_thread.c), which keeps its event loop
+// off Electron's GLib main loop — the F7/F9 entanglement that used to pin
+// these to the main thread.
 
-static Napi::Value KernelInit(const Napi::CallbackInfo& info)
+// Lifecycle op resolving with the int rc (or, for string ops, the string it
+// wrote). The last-error buffer is thread-local, so it is captured here on
+// the worker thread. reject_on_error: reject with that message when rc < 0
+// instead of resolving with rc.
+class CallWorker : public Napi::AsyncWorker
 {
-	std::lock_guard<std::mutex> lock(g_op_mutex);
-	uint32_t mem = info[0].As<Napi::Number>().Uint32Value();
-	uint32_t lvl = info[1].As<Napi::Number>().Uint32Value();
-	return Napi::Number::New(info.Env(), anyfs_ts_kernel_init(mem, lvl));
+      public:
+	using Fn = std::function<int(std::string& out)>;
+
+	CallWorker(Napi::Env env, Napi::Promise::Deferred deferred,
+		   std::string name, bool string_result, bool reject_on_error,
+		   Fn fn)
+	    : Napi::AsyncWorker(env), deferred_(std::move(deferred)),
+	      name_(std::move(name)), string_result_(string_result),
+	      reject_on_error_(reject_on_error), fn_(std::move(fn)), rc_(-1)
+	{
+	}
+
+	void Execute() override
+	{
+		std::lock_guard<std::mutex> lock(g_op_mutex);
+		anyfs_set_last_error("%s", "");
+		rc_ = fn_(out_);
+		if (rc_ < 0) {
+			const char* e = anyfs_get_last_error();
+			err_ =
+			    (e && *e)
+				? e
+				: name_ + " failed: rc=" + std::to_string(rc_);
+		}
+	}
+
+	void OnOK() override
+	{
+		if (rc_ < 0 && reject_on_error_) {
+			deferred_.Reject(Napi::Error::New(Env(), err_).Value());
+			return;
+		}
+		if (string_result_ && rc_ >= 0)
+			deferred_.Resolve(Napi::String::New(Env(), out_));
+		else
+			deferred_.Resolve(Napi::Number::New(Env(), rc_));
+	}
+
+	void OnError(const Napi::Error& e) override
+	{
+		deferred_.Reject(e.Value());
+	}
+
+      private:
+	Napi::Promise::Deferred deferred_;
+	std::string name_;
+	bool string_result_;
+	bool reject_on_error_;
+	Fn fn_;
+	std::string out_;
+	std::string err_;
+	int rc_;
+};
+
+static Napi::Value QueueCall(Napi::Env env, const char* name,
+			     bool string_result, bool reject_on_error,
+			     CallWorker::Fn fn)
+{
+	auto deferred = Napi::Promise::Deferred::New(env);
+	auto promise = deferred.Promise();
+	auto* w = new CallWorker(env, std::move(deferred), name, string_result,
+				 reject_on_error, std::move(fn));
+	w->Queue();
+	return promise;
 }
 
+// kernelInit(memMb, loglevel) → Promise<rc>
+static Napi::Value KernelInit(const Napi::CallbackInfo& info)
+{
+	uint32_t mem = info[0].As<Napi::Number>().Uint32Value();
+	uint32_t lvl = info[1].As<Napi::Number>().Uint32Value();
+	return QueueCall(info.Env(), "kernelInit", false, false,
+			 [mem, lvl](std::string&) {
+				 return anyfs_ts_kernel_init(mem, lvl);
+			 });
+}
+
+// kernelHalt() → Promise<rc>
 static Napi::Value KernelHalt(const Napi::CallbackInfo& info)
 {
-	return Napi::Number::New(info.Env(), anyfs_ts_kernel_halt());
+	return QueueCall(info.Env(), "kernelHalt", false, false,
+			 [](std::string&) { return anyfs_ts_kernel_halt(); });
 }
 
 // ── disk handle ──────────────────────────────────────────────────────────
 
+// sessionOpen(path, flags) → Promise<handle>; rejects with the backend's
+// error message.
 static Napi::Value SessionOpen(const Napi::CallbackInfo& info)
 {
 	std::string p = info[0].As<Napi::String>();
 	uint32_t fl = info[1].As<Napi::Number>().Uint32Value();
-	std::lock_guard<std::mutex> lock(g_op_mutex);
-	int rc = anyfs_ts_session_open(p.c_str(), fl);
-	if (rc < 0) {
-		const char* err = anyfs_get_last_error();
-		if (err && *err)
-			Napi::Error::New(info.Env(), err)
-			    .ThrowAsJavaScriptException();
-		else
-			Napi::Error::New(info.Env(), "sessionOpen failed")
-			    .ThrowAsJavaScriptException();
-		return info.Env().Undefined();
-	}
-	return Napi::Number::New(info.Env(), rc);
+	return QueueCall(info.Env(), "sessionOpen", false, true,
+			 [p, fl](std::string&) {
+				 return anyfs_ts_session_open(p.c_str(), fl);
+			 });
 }
 
+// sessionClose(h) → Promise<rc>
 static Napi::Value SessionClose(const Napi::CallbackInfo& info)
 {
 	int h = info[0].As<Napi::Number>().Int32Value();
-	return Napi::Number::New(info.Env(), anyfs_ts_session_close(h));
+	return QueueCall(
+	    info.Env(), "sessionClose", false, false,
+	    [h](std::string&) { return anyfs_ts_session_close(h); });
 }
 
 // ── IO ops (async via thread pool) ──────────────────────────────────────
@@ -333,35 +409,22 @@ static Napi::Value SessionMetaJson(const Napi::CallbackInfo& info)
 	return promise;
 }
 
-// SessionEnter (partition mount) is SYNCHRONOUS, unlike the other IO ops.
-// Running the ext4/btrfs mount on a libuv thread-pool thread (the AsyncWorker
-// path) deadlocks/crashes inside the Electron main process: QEMU's libblock
-// AioContext gets dispatched by Electron's GLib main loop and collides with
-// QEMU's own io_uring/epoll fdmon driving the same ring (see FINDINGS F7 — the
-// SIGABRT at fdmon-io_uring.c get_sqe). The pre-3388c5b synchronous behavior
-// runs the mount on the calling (main) thread, which avoids the foreign-loop
-// entanglement and mounts cleanly. The cost is a brief main-thread block for
-// the duration of the mount — acceptable vs. a hang/crash. (Node/CLI keep
-// working; only the threading changed.)
+// sessionEnter(h, part, flags) → Promise<mountPath>; rejects with the
+// backend's error message.
 static Napi::Value SessionEnter(const Napi::CallbackInfo& info)
 {
 	int h = info[0].As<Napi::Number>().Int32Value();
 	uint32_t part = info[1].As<Napi::Number>().Uint32Value();
 	uint32_t flags = info[2].As<Napi::Number>().Uint32Value();
-	char out[256];
-	int rc;
-	{
-		std::lock_guard<std::mutex> lock(g_op_mutex);
-		rc = anyfs_ts_session_enter(h, part, flags, out, sizeof(out));
-	}
-	if (rc < 0) {
-		const char* err = anyfs_get_last_error();
-		Napi::Error::New(info.Env(),
-				 (err && *err) ? err : "sessionEnter failed")
-		    .ThrowAsJavaScriptException();
-		return info.Env().Undefined();
-	}
-	return Napi::String::New(info.Env(), out);
+	return QueueCall(info.Env(), "sessionEnter", true, true,
+			 [h, part, flags](std::string& out) {
+				 char buf[256];
+				 int rc = anyfs_ts_session_enter(
+				     h, part, flags, buf, sizeof(buf));
+				 if (rc >= 0)
+					 out = buf;
+				 return rc;
+			 });
 }
 
 // ── path ops ─────────────────────────────────────────────────────────────
@@ -494,10 +557,50 @@ static Napi::Value FileClose(const Napi::CallbackInfo& info)
 	return promise;
 }
 
+// ── fatal errors ─────────────────────────────────────────────────────────
+// The core reports a wedged engine (QEMU thread past its watchdog) through
+// anyfs_fatal() on whatever thread was waiting, then keeps that thread
+// blocked. onFatal(cb) forwards the reason to JS so the host can tell the
+// user and stop using this addon; without a listener it is only logged.
+
+static Napi::ThreadSafeFunction g_fatal_tsfn;
+static std::atomic<bool> g_fatal_tsfn_set{false};
+
+static void NativeFatalHook(const char* reason)
+{
+	fprintf(stderr, "[anyfs-native] fatal: %s\n", reason);
+	if (!g_fatal_tsfn_set.load())
+		return;
+	auto* r = new std::string(reason);
+	napi_status st = g_fatal_tsfn.BlockingCall(
+	    r, [](Napi::Env env, Napi::Function cb, std::string* data) {
+		    cb.Call({Napi::String::New(env, *data)});
+		    delete data;
+	    });
+	if (st != napi_ok)
+		delete r;
+}
+
+// onFatal(cb: (reason: string) => void) — register the (single) listener.
+static Napi::Value OnFatal(const Napi::CallbackInfo& info)
+{
+	Napi::Env env = info.Env();
+	if (g_fatal_tsfn_set.exchange(false))
+		g_fatal_tsfn.Release();
+	g_fatal_tsfn = Napi::ThreadSafeFunction::New(
+	    env, info[0].As<Napi::Function>(), "anyfs-fatal", 0, 1);
+	g_fatal_tsfn.Unref(env); // never keep the process alive by itself
+	g_fatal_tsfn_set.store(true);
+	return env.Undefined();
+}
+
 // ── exports ──────────────────────────────────────────────────────────────
 
 static Napi::Object InitModule(Napi::Env env, Napi::Object exports)
 {
+	anyfs_set_fatal_hook(NativeFatalHook);
+	exports.Set("onFatal", Napi::Function::New(env, OnFatal));
+
 	exports.Set("kernelInit", Napi::Function::New(env, KernelInit));
 	exports.Set("kernelHalt", Napi::Function::New(env, KernelHalt));
 

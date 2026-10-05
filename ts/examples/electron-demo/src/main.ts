@@ -420,16 +420,18 @@ function installDrivesIpc() {
 // with packages/anyfs-native/src/binding.cc or every IPC handler below calls
 // an undefined function.
 //
-// Return-type convention: sync ops (lifecycle, QEMU-thread-affine) return
-// plain values; async ops (IO-heavy, moved to libuv thread pool via
-// AsyncWorker) return Promise<T>.
+// Every op is async (libuv thread pool via AsyncWorker) and returns a
+// Promise. The addon's QEMU block layer runs on its own thread, so nothing
+// is pinned to the main thread any more.
 type AnyfsNativeModule = {
-    // sync lifecycle
-    kernelInit(memMb: number, loglevel: number): number;
-    kernelHalt(): number;
-    sessionOpen(imagePath: string, flags: number): number;
-    sessionClose(h: number): number;
-    // async IO (thread pool)
+    // fatal engine errors (QEMU thread watchdog); single listener
+    onFatal(cb: (reason: string) => void): void;
+    // lifecycle
+    kernelInit(memMb: number, loglevel: number): Promise<number>;
+    kernelHalt(): Promise<number>;
+    sessionOpen(imagePath: string, flags: number): Promise<number>;
+    sessionClose(h: number): Promise<number>;
+    // IO
     sessionListJson(h: number): Promise<string>;
     sessionMetaJson(h: number): Promise<string>;
     sessionEnter(h: number, part: number, flags: number): Promise<string>;
@@ -459,6 +461,14 @@ function loadNativeAddon(): AnyfsNativeModule | null {
     try {
         const m = loadAnyfsNativeAddon() as AnyfsNativeModule | null;
         if (!m) throw new Error('anyfs_native.node not found at any staged path');
+        // A wedged engine (QEMU thread past its watchdog) never answers the
+        // pending IPC call; tell every renderer so the session can fail.
+        m.onFatal((reason) => {
+            console.error(`[anyfs-native] fatal: ${reason}`);
+            for (const w of BrowserWindow.getAllWindows()) {
+                w.webContents.send('anyfs-native:fatal', reason);
+            }
+        });
         nativeMod = m;
         return m;
     } catch (e) {
@@ -486,19 +496,18 @@ function installAnyfsNativeIpc() {
 
     ipcMain.handle('anyfs-native:available', () => loadNativeAddon() !== null);
 
-    ipcMain.handle('anyfs-native:init', (_event, memMb: number, loglevel: number) => {
+    ipcMain.handle('anyfs-native:init', async (_event, memMb: number, loglevel: number) => {
         const m = loadNativeAddon();
         if (!m) throw new Error('anyfs-native addon not loadable');
         if (nativeInitDone) return 0; // idempotent — kernel is global
-        const rc = m.kernelInit(memMb >>> 0, loglevel >>> 0);
+        const rc = await m.kernelInit(memMb >>> 0, loglevel >>> 0);
         if (rc === 0) nativeInitDone = true;
         return rc;
     });
 
-    ipcMain.handle('anyfs-native:diskOpen', (_event, path: string, flags: number) => {
-        const m = loadNativeAddon()!;
-        return m.sessionOpen(path, flags >>> 0);
-    });
+    ipcMain.handle('anyfs-native:diskOpen', (_event, path: string, flags: number) =>
+        loadNativeAddon()!.sessionOpen(path, flags >>> 0),
+    );
 
     // Unified per-disk HTTP proxy: each disk gets its own Worker thread
     // running an HTTP server on a random port. Handles both remote URLs
@@ -627,20 +636,20 @@ void app.whenReady().then(async () => {
             try {
                 const m = loadNativeAddon();
                 if (!m) throw new Error('addon not loadable');
-                const rc = m.kernelInit(512, 4);
+                const rc = await m.kernelInit(512, 4);
                 if (rc !== 0) throw new Error(`init rc=${rc}`);
                 nativeInitDone = true;
                 const img =
                     process.env.ANYFS_NATIVE_IMAGE ||
                     resolve(__dirname, '../../vite-demo/public/disks/multi.img');
-                const h = m.sessionOpen(img, 0);
+                const h = await m.sessionOpen(img, 0);
                 if (h < 0) throw new Error(`diskOpen rc=${h}`);
                 const list = await m.sessionListJson(h);
                 const out = process.env.ANYFS_NATIVE_OUT || '/tmp/anyfs-native-smoke.json';
                 const fs = await import('node:fs/promises');
                 await fs.writeFile(out, list);
                 console.log(`[native:smoke] wrote disk list for ${img} to ${out}`);
-                m.sessionClose(h);
+                await m.sessionClose(h);
             } catch (e) {
                 console.error('[native:smoke] failed:', e);
                 app.exit(1);

@@ -244,21 +244,20 @@ async function wasmSessionEnter(M, callP, h, part, flags) {
 
 async function testNative(imagePath) {
   const m = require_(NATIVE_NODE);
-  // kernelInit/sessionOpen/sessionEnter/sessionClose/kernelHalt are sync;
-  // sessionListJson/readdirJson (AsyncWorker-based) return promises.
-  const rc = m.kernelInit(64, 7);
+  // Every addon op is AsyncWorker-based and returns a promise.
+  const rc = await m.kernelInit(64, 7);
   assert(rc === 0, `kernelInit(64,7) = ${rc}`);
 
   // ── file ──────────────────────────────────────────────────────────────
   console.log(`\n  ${BOLD}[native+file]${RST} ${imagePath}`);
-  let h = m.sessionOpen(imagePath, 1);
+  let h = await m.sessionOpen(imagePath, 1);
   assert(h >= 0, `sessionOpen(file) = ${h}`);
   await mountAndReaddir(
     () => m.sessionListJson(h),
     (p, f) => m.sessionEnter(h, p, f),
     (p) => m.readdirJson(p),
   );
-  m.sessionClose(h);
+  await m.sessionClose(h);
 
   // ── URL ────────────────────────────────────────────────────────────────
   console.log(`\n  ${BOLD}[native+url]${RST} ${imagePath}`);
@@ -269,19 +268,19 @@ async function testNative(imagePath) {
     const url = `http://127.0.0.1:${r.port}/disk`;
     console.log(`    http server: ${url}`);
 
-    h = m.sessionOpen(url, 1);
+    h = await m.sessionOpen(url, 1);
     assert(h >= 0, `sessionOpen(url) = ${h}`);
     await mountAndReaddir(
       () => m.sessionListJson(h),
       (p, f) => m.sessionEnter(h, p, f),
       (p) => m.readdirJson(p),
     );
-    m.sessionClose(h);
+    await m.sessionClose(h);
   } finally {
     if (worker) worker.postMessage('stop');
   }
 
-  m.kernelHalt();
+  await m.kernelHalt();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

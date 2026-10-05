@@ -45,15 +45,15 @@ console.log(`Exports: ${Object.keys(addon).sort().join(', ')}\n`);
 
 let handle = -1;
 
-await test('kernelInit(256, 7) returns 0', () => {
-    const rc = addon.kernelInit(256, 7);
+await test('kernelInit(256, 7) returns 0', async () => {
+    const rc = await addon.kernelInit(256, 7);
     strictEqual(rc, 0);
 });
 
 // ── 2. Session open ───────────────────────────────
 
-await test('sessionOpen(path, 1) returns handle >= 0', () => {
-    handle = addon.sessionOpen(IMAGE, 1);
+await test('sessionOpen(path, 1) returns handle >= 0', async () => {
+    handle = await addon.sessionOpen(IMAGE, 1);
     assert(handle >= 0, `handle=${handle} expected >= 0`);
 });
 
@@ -85,7 +85,7 @@ await test('sessionMetaJson returns expected shape', async () => {
 // ── 5. Enter partition ──────────────────────
 
 await test('sessionEnter(handle, 2, 0) mounts partition', async () => {
-    const mp = addon.sessionEnter(handle, 2, 0);
+    const mp = await addon.sessionEnter(handle, 2, 0);
     assert(mp && mp.length > 0, `mount path empty: "${mp}"`);
     console.log(`    mount path: "${mp}"`);
 
@@ -101,18 +101,17 @@ await test('sessionEnter(handle, 2, 0) mounts partition', async () => {
 
 // ── 6. Close ──────────────────────────────────────
 
-await test('sessionClose(handle) returns 0', () => {
-    const rc = addon.sessionClose(handle);
+await test('sessionClose(handle) returns 0', async () => {
+    const rc = await addon.sessionClose(handle);
     strictEqual(rc, 0);
     handle = -1;
 });
 
 // ── 7. Halt ───────────────────────────────────────
 
-await test('kernelHalt succeeds', () => {
-    addon.kernelHalt();
-    // kernelHalt is void
-    assert(true, 'kernelHalt completed');
+await test('kernelHalt succeeds', async () => {
+    const rc = await addon.kernelHalt();
+    strictEqual(rc, 0);
 });
 
 // ── Summary ───────────────────────────────────────

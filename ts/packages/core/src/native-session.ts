@@ -24,6 +24,10 @@ export interface AnyfsNativeBridge {
     fileOpen(path: string, flags: number): Promise<number>;
     pread(fd: number, n: number, off: number): Promise<{ rc: number; data: Uint8Array }>;
     fileClose(fd: number): Promise<number>;
+    /** Subscribe to fatal engine errors (the addon's QEMU thread missed its
+     *  watchdog; pending calls never settle). Returns an unsubscribe fn.
+     *  Optional: older hosts don't push these. */
+    onFatal?(cb: (reason: string) => void): () => void;
 }
 
 /** Returns the host-injected native bridge, or null if unavailable. */
@@ -51,9 +55,19 @@ export class NativeSession extends AnyfsSessionBase {
     // the same kernel.
     private opChain: Promise<unknown> = Promise.resolve();
 
+    // Set once the host reports the engine wedged: every pending and future
+    // call would hang, so dispose must not wait on them.
+    private engineFailed = false;
+    private readonly unsubscribeFatal: (() => void) | null;
+
     constructor(bridge: AnyfsNativeBridge) {
         super();
         this.bridge = bridge;
+        this.unsubscribeFatal =
+            bridge.onFatal?.((reason) => {
+                this.engineFailed = true;
+                this.fireFatal(new Error(`anyfs-native engine failed: ${reason}`));
+            }) ?? null;
     }
 
     // ── Boot (platform-specific, not on AnyfsSession) ──
@@ -198,6 +212,9 @@ export class NativeSession extends AnyfsSessionBase {
 
     /** @internal */
     protected async _dispose(): Promise<void> {
+        this.unsubscribeFatal?.();
+        // A wedged engine never settles the in-flight op or a close call.
+        if (this.engineFailed) return;
         // Wait for any in-flight op to settle.
         try {
             await this.opChain;

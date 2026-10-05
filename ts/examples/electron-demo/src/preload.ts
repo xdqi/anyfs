@@ -120,6 +120,16 @@ if (!process.env.ANYFS_DISABLE_NATIVE) {
             }>,
         fileClose: (fd: number) =>
             ipcRenderer.invoke('anyfs-native:fileClose', fd) as Promise<number>,
+        // Fatal engine error pushed by main (the addon's QEMU thread missed
+        // its watchdog; pending calls will never settle). Returns an
+        // unsubscribe function.
+        onFatal: (cb: (reason: string) => void) => {
+            const listener = (_e: unknown, reason: string) => cb(reason);
+            ipcRenderer.on('anyfs-native:fatal', listener);
+            return () => {
+                ipcRenderer.removeListener('anyfs-native:fatal', listener);
+            };
+        },
     };
     contextBridge.exposeInMainWorld('anyfsNative', anyfsNative);
 }
