@@ -240,10 +240,15 @@ build_one() {
               "${COMMON_CONFIGURE[@]}" "${target_cfg[@]}" "${cc_cfg[@]}" ) \
             || return 1
         # b_pie=false matches the -fno-pie/-fPIC flags; needed for the shared
-        # link on Linux and harmless on mingw. werror=false keeps the build
-        # from tripping over glibc-vs-QEMU prototype drift (e.g.
+        # link on Linux (with PIE objects it fails with "failed to set dynamic
+        # section sizes: bad value") and harmless on mingw. werror=false keeps
+        # the build from tripping over glibc-vs-QEMU prototype drift (e.g.
         # `redundant redeclaration of memfd_create`).
-        ( cd "$builddir" && meson configure -Db_pie=false -Dwerror=false ) || true
+        # Use the meson configure just ran (QEMU's pyvenv): when the system
+        # meson is too old (Ubuntu 24.04 apt: 1.3.2), configure installs a
+        # newer one there, and the system meson cannot read its build.dat.
+        "$builddir/pyvenv/bin/meson" configure "$builddir" \
+            -Db_pie=false -Dwerror=false || return 1
     fi
 
     # Build the static libs ---------------------------------------------------
