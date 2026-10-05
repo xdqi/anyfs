@@ -119,6 +119,13 @@ build_one() {
         echo "  CC: $scc"
     fi
 
+    # linux-arm64 is also the kernel for macOS on Apple Silicon, converted by
+    # scripts/macho/build_kernel_dylib.sh. Darwin reserves x18 and may clear
+    # it at any time, and GCC's outline atomics need getauxval(), which macOS
+    # lacks. Both flags are harmless on Linux.
+    local kcflags_arg=()
+    [[ "$NAME" == linux-arm64 ]] && kcflags_arg=(KCFLAGS="-ffixed-x18 -mno-outline-atomics")
+
     # OUTPUT must go through the environment, not as a make CLI arg — the
     # tools/lkl Makefile rewrites OUTPUT to "$OUTPUT/tools/lkl/", and a CLI
     # assignment would defeat that rewrite (GNU make precedence).
@@ -130,7 +137,7 @@ build_one() {
     # build_one runs as `if ! build_one …`, where bash suspends `set -e`:
     # without the explicit return a failed make still reports success.
     OUTPUT="$OUT" make -C "$LINUX_DIR/tools/lkl" -j"$JOBS" \
-         ARCH=lkl "${cross_arg[@]}" "${cc_arg[@]}" || return 1
+         ARCH=lkl "${cross_arg[@]}" "${cc_arg[@]}" "${kcflags_arg[@]}" || return 1
 
     echo
     echo "Output for lkl-$NAME:"

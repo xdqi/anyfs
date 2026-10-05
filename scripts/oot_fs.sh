@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage out-of-tree filesystem drivers (and wasm-only kernel patches)
+# Stage out-of-tree filesystem drivers (and target-specific kernel patches)
 # into $LINUX_DIR. Reversible — `unstage` puts the kernel tree back to
 # pristine.
 #
@@ -7,10 +7,14 @@
 #   fetch [--update]                  clone ~/oot-fs/{zfs,apfs,ntfsplus} at the
 #                                     pinned revs; --update also moves existing
 #                                     checkouts to the pins (discarding edits).
-#   stage [--wasm] [--targets=LIST]   apply OOT symlinks + Kconfig/Makefile
-#                                     hooks. With --wasm, also apply
-#                                     patches/linux/wasm/series against $LINUX_DIR.
-#   unstage [--wasm]                  reverse everything stage applied.
+#   stage [--wasm] [--macho]          apply OOT symlinks + Kconfig/Makefile
+#         [--targets=LIST]            hooks. With --wasm / --macho, also apply
+#                                     patches/linux/<flavor>/series against
+#                                     $LINUX_DIR. The macho patches touch only
+#                                     the LKL host library (macOS port), under
+#                                     __APPLE__ or Darwin-only header values:
+#                                     no-ops for the elf/pe/wasm builds.
+#   unstage [--wasm] [--macho]        reverse everything stage applied.
 #   status                            show currently staged drivers + patches.
 #
 # Layout assumptions:
@@ -99,30 +103,33 @@ append_marker_block() {
     } >> "$file"
 }
 
-# Apply patches/linux/wasm/series to $LINUX_DIR. Records each applied patch
-# in $OOT_DIR/.applied.wasm so unstage --wasm can reverse exactly the same set.
-apply_wasm_patches() {
-    local series="$REPO_DIR/patches/linux/wasm/series"
+# Apply patches/linux/<flavor>/series to $LINUX_DIR. Records each applied patch
+# in $OOT_DIR/.applied.<flavor> so unstage --<flavor> can reverse exactly the
+# same set. $1 is the flavor: wasm | macho.
+apply_patch_series() {
+    local flavor="$1"
+    local dir="$REPO_DIR/patches/linux/$flavor"
+    local series="$dir/series"
     [[ -f "$series" ]] || die "no patch series at $series"
 
     mkdir -p "$OOT_DIR"
-    local applied_log="$OOT_DIR/.applied.wasm"
+    local applied_log="$OOT_DIR/.applied.$flavor"
     : > "$applied_log.new"
 
     while IFS= read -r p; do
         [[ -z "$p" || "$p" == \#* ]] && continue
-        local patch_file="$REPO_DIR/patches/linux/wasm/$p"
+        local patch_file="$dir/$p"
         [[ -f "$patch_file" ]] || die "missing $patch_file"
 
         # Idempotent — if a forward dry-run fails, but a reverse dry-run
         # succeeds, treat the patch as already applied.
         if (cd "$LINUX_DIR" && patch -p1 --dry-run --silent < "$patch_file") >/dev/null 2>&1; then
             (cd "$LINUX_DIR" && patch -p1 --silent < "$patch_file") || die "apply $p failed"
-            log "applied wasm patch: $p"
+            log "applied $flavor patch: $p"
         elif (cd "$LINUX_DIR" && patch -p1 -R --dry-run --silent < "$patch_file") >/dev/null 2>&1; then
-            log "wasm patch already applied: $p"
+            log "$flavor patch already applied: $p"
         else
-            die "wasm patch $p neither applies forward nor is already applied"
+            die "$flavor patch $p neither applies forward nor is already applied"
         fi
         echo "$p" >> "$applied_log.new"
     done < "$series"
@@ -130,21 +137,23 @@ apply_wasm_patches() {
     mv "$applied_log.new" "$applied_log"
 }
 
-revert_wasm_patches() {
-    local applied_log="$OOT_DIR/.applied.wasm"
-    [[ -f "$applied_log" ]] || { log "no wasm patches recorded"; return 0; }
+revert_patch_series() {
+    local flavor="$1"
+    local dir="$REPO_DIR/patches/linux/$flavor"
+    local applied_log="$OOT_DIR/.applied.$flavor"
+    [[ -f "$applied_log" ]] || { log "no $flavor patches recorded"; return 0; }
 
     # Reverse-apply in reverse order.
     tac "$applied_log" | while IFS= read -r p; do
         [[ -z "$p" ]] && continue
-        local patch_file="$REPO_DIR/patches/linux/wasm/$p"
+        local patch_file="$dir/$p"
         [[ -f "$patch_file" ]] || { log "WARN: missing $patch_file for unstage"; continue; }
 
         if (cd "$LINUX_DIR" && patch -p1 -R --dry-run --silent < "$patch_file") >/dev/null 2>&1; then
             (cd "$LINUX_DIR" && patch -p1 -R --silent < "$patch_file") || die "revert $p failed"
-            log "reverted wasm patch: $p"
+            log "reverted $flavor patch: $p"
         elif (cd "$LINUX_DIR" && patch -p1 --dry-run --silent < "$patch_file") >/dev/null 2>&1; then
-            log "wasm patch already reverted: $p"
+            log "$flavor patch already reverted: $p"
         else
             log "WARN: $p did not reverse cleanly (kernel tree changed?)"
         fi
@@ -197,10 +206,11 @@ cmd_fetch() {
 # branches below are no-ops until ~/oot-fs/{ntfsplus,apfs,zfs} exist.
 cmd_stage() {
     ensure_linux
-    local want_wasm=0
+    local want_wasm=0 want_macho=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --wasm) want_wasm=1; shift ;;
+            --macho) want_macho=1; shift ;;
             *) die "stage: unknown arg $1" ;;
         esac
     done
@@ -214,9 +224,12 @@ cmd_stage() {
     rebuild_fs_kconfig_block
     rebuild_fs_makefile_block
 
-    # wasm-only kernel patches ─────────────────────────────────────────────
+    # target-specific kernel patches ───────────────────────────────────────
     if [[ $want_wasm -eq 1 ]]; then
-        apply_wasm_patches
+        apply_patch_series wasm
+    fi
+    if [[ $want_macho -eq 1 ]]; then
+        apply_patch_series macho
     fi
 
     log "stage complete"
@@ -224,16 +237,22 @@ cmd_stage() {
 
 cmd_unstage() {
     ensure_linux
-    local want_wasm=0
+    local want_wasm=0 want_macho=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --wasm) want_wasm=1; shift ;;
+            --macho) want_macho=1; shift ;;
             *) die "unstage: unknown arg $1" ;;
         esac
     done
 
+    # Reverse of cmd_stage's apply order, in case the two series ever
+    # touch the same file.
+    if [[ $want_macho -eq 1 ]]; then
+        revert_patch_series macho
+    fi
     if [[ $want_wasm -eq 1 ]]; then
-        revert_wasm_patches
+        revert_patch_series wasm
     fi
 
     strip_marker_block "$LINUX_DIR/fs/Kconfig"
@@ -269,12 +288,14 @@ cmd_status() {
         fi
     done
     echo
-    if [[ -f "$OOT_DIR/.applied.wasm" ]]; then
-        echo "  wasm patches applied:"
-        sed 's/^/    /' "$OOT_DIR/.applied.wasm"
-    else
-        echo "  wasm patches: none"
-    fi
+    for flavor in wasm macho; do
+        if [[ -f "$OOT_DIR/.applied.$flavor" ]]; then
+            echo "  $flavor patches applied:"
+            sed 's/^/    /' "$OOT_DIR/.applied.$flavor"
+        else
+            echo "  $flavor patches: none"
+        fi
+    done
 }
 
 # ── per-driver staging (phases 1-3 fill these in) ───────────────────────────
@@ -348,6 +369,25 @@ stage_apfs() {
 }
 unstage_apfs() {
     rm -f "$LINUX_DIR/fs/apfs"
+}
+
+# Rewrite every line of ZFS source file $1 that reads exactly $2 into $3.
+# Returns 0 if it patched, 1 if no $2 line is left and $3 is already there
+# (re-stage). Dies if neither is present, so a ZFS pin bump that moves the
+# anchor fails here instead of logging success over an unpatched file.
+zfs_rewrite_line() {
+    local f="$1" from="$2" to="$3"
+    if ! grep -qxF -- "$from" "$f"; then
+        grep -qxF -- "$to" "$f" && return 1
+        die "stage_zfs: anchor '$from' not found in $f"
+    fi
+    # Called as an `if` condition, where set -e is off: fail explicitly.
+    # ENVIRON, not awk -v, which would interpret backslashes in the lines;
+    # concatenating "" forces a string comparison.
+    ZFS_FROM="$from" ZFS_TO="$to" \
+        awk '($0 "") == (ENVIRON["ZFS_FROM"] "") { $0 = ENVIRON["ZFS_TO"] } { print }' \
+        "$f" > "$f.anyfs.tmp" && mv "$f.anyfs.tmp" "$f" \
+        || die "stage_zfs: rewrite of '$from' failed in $f"
 }
 
 stage_zfs() {
@@ -479,6 +519,18 @@ EOF
         log "patched ZFS simd.h to skip x86 SIMD on CONFIG_LKL builds"
     fi
 
+    # 4a-2. Same problem on the aarch64 branch, which matters for the
+    #       linux-arm64 LKL target (also the macOS kernel): simd_aarch64.h
+    #       #include's <asm/neon.h>, <asm/hwcap.h> and <asm/sysreg.h>, none of
+    #       which arch/lkl provides.
+    #       Gate it behind !CONFIG_LKL so LKL falls through to the same
+    #       SIMD-disabled stub the x86 gate relies on. Idempotent.
+    if [[ -f "$simdh" ]] && zfs_rewrite_line "$simdh" \
+            '#elif defined(__aarch64__)' \
+            '#elif defined(__aarch64__) && !defined(CONFIG_LKL)'; then
+        log "patched ZFS simd.h to skip aarch64 SIMD on CONFIG_LKL builds"
+    fi
+
     # 4b. simd_stat.c references every zfs_*_available() declared in
     #     simd_x86.h directly from an `#if defined(__x86_64__) || defined(__i386__)`
     #     block. Now that simd_x86.h is excluded on LKL, those references
@@ -489,6 +541,68 @@ EOF
         sed -i 's@^#if defined(__x86_64__) || defined(__i386__)$@#if (defined(__x86_64__) || defined(__i386__)) \&\& !defined(CONFIG_LKL)@' "$simdstat"
         log "patched ZFS simd_stat.c to skip x86 SIMD-stat on CONFIG_LKL builds"
     fi
+
+    # 4b-2. Same for the ARM/aarch64 SIMD-stat block, and for the two sha2 ICP
+    #       implementations. All three call zfs_neon_available() /
+    #       zfs_sha{256,512}_available(), which only simd_aarch64.h declares --
+    #       and 4a-2 just excluded that header on LKL. Gate each arch block
+    #       behind !CONFIG_LKL so it disappears together with the declarations.
+    #       Idempotent, and dies if an anchor line is gone (zfs_rewrite_line).
+    if [[ -f "$simdstat" ]] && zfs_rewrite_line "$simdstat" \
+            '#if defined(__arm__) || defined(__aarch64__)' \
+            '#if (defined(__arm__) || defined(__aarch64__)) && !defined(CONFIG_LKL)'; then
+        log "patched ZFS simd_stat.c to skip arm SIMD-stat on CONFIG_LKL builds"
+    fi
+    local sha256impl="$src/module/icp/algs/sha2/sha256_impl.c"
+    if [[ -f "$sha256impl" ]] && zfs_rewrite_line "$sha256impl" \
+            '#if __ARM_ARCH > 6' \
+            '#if __ARM_ARCH > 6 && !defined(CONFIG_LKL)'; then
+        log "patched ZFS sha256_impl.c to skip ARM SIMD paths on CONFIG_LKL builds"
+    fi
+    local sha512impl="$src/module/icp/algs/sha2/sha512_impl.c"
+    if [[ -f "$sha512impl" ]] && zfs_rewrite_line "$sha512impl" \
+            '#if defined(__aarch64__)' \
+            '#if defined(__aarch64__) && !defined(CONFIG_LKL)'; then
+        log "patched ZFS sha512_impl.c to skip aarch64 SIMD paths on CONFIG_LKL builds"
+    fi
+
+    # 4b-3. The rest of ZFS's arm64 SIMD: fletcher-4, RAID-Z, BLAKE3 and the
+    #       sha2 armv7/NEON/armv8 code list aarch64 implementations whose
+    #       objects module/Kbuild builds only for CONFIG_ARM64, which
+    #       ARCH=lkl never sets, so an arm64 LKL link ends with 11 undefined
+    #       symbols (fletcher_4_aarch64_neon_ops,
+    #       vdev_raidz_aarch64_neon{,x2}_impl, zfs_blake3_*_sse{2,41},
+    #       zfs_sha{256,512}_block_armv7). Drop those blocks on CONFIG_LKL, as
+    #       4a-2 does for the SIMD header. Each rewrite keeps the line count,
+    #       so __LINE__ and the x86 objects do not change. Idempotent, and dies
+    #       if an anchor line is gone (zfs_rewrite_line).
+    local f
+    for f in "$src/module/zcommon/zfs_fletcher.c" "$src/module/zfs/vdev_raidz_math.c"; do
+        if [[ -f "$f" ]] && zfs_rewrite_line "$f" \
+                '#if defined(__aarch64__) && !defined(__FreeBSD__)' \
+                '#if defined(__aarch64__) && !defined(__FreeBSD__) && !defined(CONFIG_LKL)'; then
+            log "patched ZFS ${f##*/} to skip aarch64 SIMD on CONFIG_LKL builds"
+        fi
+    done
+    local blake3="$src/module/icp/algs/blake3/blake3_impl.c"
+    if [[ -f "$blake3" ]] && zfs_rewrite_line "$blake3" \
+            '#if defined(__aarch64__) || \' \
+            '#if (defined(__aarch64__) && !defined(CONFIG_LKL)) || \'; then
+        log "patched ZFS blake3_impl.c to skip aarch64 SIMD on CONFIG_LKL builds"
+    fi
+    for f in "$sha256impl" "$sha512impl"; do
+        [[ -f "$f" ]] || continue
+        if zfs_rewrite_line "$f" \
+                '#elif defined(__aarch64__) || defined(__arm__)' \
+                '#elif (defined(__aarch64__) || defined(__arm__)) && !defined(CONFIG_LKL)'; then
+            log "patched ZFS ${f##*/} to skip ARM implementations on CONFIG_LKL builds"
+        fi
+        if zfs_rewrite_line "$f" \
+                '#if defined(__aarch64__) || defined(__arm__)' \
+                '#if (defined(__aarch64__) || defined(__arm__)) && !defined(CONFIG_LKL)'; then
+            log "patched ZFS ${f##*/} implementation table for CONFIG_LKL builds"
+        fi
+    done
 
     # 4c. ICP C sources reference x86_64 ASM symbols (aes_x86_64_impl,
     #     zfs_sha{256,512}_transform_x64, etc.) gated on
@@ -728,7 +842,7 @@ case "${1:-}" in
     unstage) shift; cmd_unstage "$@" ;;
     status)  shift; cmd_status  "$@" ;;
     ""|-h|--help)
-        sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
         ;;
     *) die "unknown subcommand: $1 (try: fetch|stage|unstage|status)" ;;
 esac

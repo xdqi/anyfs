@@ -1,0 +1,119 @@
+--- a/tools/lkl/lib/posix-host.c
++++ b/tools/lkl/lib/posix-host.c
+@@ -17,7 +17,9 @@
+ #include <sys/uio.h>
+ #include <sys/types.h>
+ #include <sys/socket.h>
++#ifndef __APPLE__
+ #include <sys/syscall.h>
++#endif
+ #include <sys/mman.h>
+ #include <poll.h>
+ #include <limits.h>
+@@ -28,6 +30,17 @@
+ /* Let's see if the host has semaphore.h */
+ #include <unistd.h>
+ 
++/*
++ * POSIX defines _POSIX_SEMAPHORES == -1 as "unsupported", yet macOS, which
++ * defines it that way, still declares and exports sem_init() -- it fails with
++ * ENOSYS for unnamed semaphores. That compiles and links cleanly, so nothing
++ * catches it until boot. Drop the macro when it says -1, and this file falls
++ * back to the pthread mutex+condvar semaphore it already carries.
++ */
++#if defined(_POSIX_SEMAPHORES) && _POSIX_SEMAPHORES < 0
++#undef _POSIX_SEMAPHORES
++#endif
++
+ #ifdef _POSIX_SEMAPHORES
+ #include <semaphore.h>
+ /* TODO(pscollins): We don't support fork() for now, but maybe one day
+@@ -277,6 +290,28 @@
+ #define pthread_getattr_np pthread_attr_get_np
+ #endif
+ 
++#ifdef __APPLE__
++/*
++ * Darwin has no pthread_getattr_np(). It exposes the stack directly, but
++ * pthread_get_stackaddr_np() returns the stack BASE -- the highest address --
++ * whereas pthread_attr_getstack() reports the lowest. Convert, or the kernel
++ * gets a stack region one stack-size too high.
++ */
++void *thread_stack(lkl_ulong_t *size)
++{
++	pthread_t self = pthread_self();
++	size_t stack_size = pthread_get_stacksize_np(self);
++	void *stack_high = pthread_get_stackaddr_np(self);
++
++	if (!stack_high || !stack_size)
++		return NULL;
++
++	if (size)
++		*size = stack_size;
++
++	return (char *)stack_high - stack_size;
++}
++#else
+ void *thread_stack(lkl_ulong_t *size)
+ {
+ 	pthread_attr_t thread_attr;
+@@ -296,6 +331,7 @@
+ 
+ 	return thread_stack;
+ }
++#endif /* __APPLE__ */
+ 
+ static struct lkl_tls_key *tsd_alloc(void (*destructor)(void *))
+ {
+@@ -417,12 +453,14 @@
+ 	return 1e9*ts.tv_sec + ts.tv_nsec;
+ }
+ 
+-#ifdef __wasm__
++#if defined(__wasm__) || defined(__APPLE__)
+ /*
+- * emscripten declares POSIX timer_create/timer_settime/timer_delete in
+- * <time.h> but does not implement them. Emulate one-shot timers with a
+- * dedicated pthread per timer: the thread sleeps on a condvar (or until the
+- * armed deadline), fires the callback, and loops. -pthread is required.
++ * Both emscripten and macOS declare POSIX timer_create/timer_settime/
++ * timer_delete in <time.h> without implementing them (on macOS the symbols do
++ * not exist at all, so it is a link error rather than a runtime one). Emulate
++ * one-shot timers with a dedicated pthread per timer: the thread sleeps on a
++ * condvar (or until the armed deadline), fires the callback, and loops.
++ * -pthread is required.
+  */
+ struct wasm_timer {
+ 	pthread_t thread;
+@@ -598,6 +636,17 @@
+ #ifndef MAP_NORESERVE
+ #define MAP_NORESERVE 0
+ #endif
++#elif defined(__APPLE__)
++/*
++ * macOS has neither MAP_FIXED_NOREPLACE nor MAP_EXCL, so addr is passed as a
++ * plain hint: if the range is taken, mmap() maps somewhere else instead of
++ * failing. Both callers treat ret != addr as failure.
++ * <sys/mman.h> does define MAP_NORESERVE, but only as a Sun-era leftover that
++ * mmap(2) does not document; keep it out of the flags.
++ */
++#define MAP_FIXED_NOREPLACE 0
++#undef MAP_NORESERVE
++#define MAP_NORESERVE 0
+ #elif defined(__linux__)
+ #ifndef MAP_FIXED_NOREPLACE
+ #define MAP_FIXED_NOREPLACE 0
+@@ -653,6 +702,13 @@
+ 
+ 	if (ret == MAP_FAILED)
+ 		return NULL;
++#ifdef __APPLE__
++	/* addr was only a hint (no MAP_FIXED_NOREPLACE, see above). */
++	if (ret != addr) {
++		munmap(ret, size);
++		return NULL;
++	}
++#endif
+ 	return ret;
+ }
+ #endif // LKL_HOST_CONFIG_MMU
