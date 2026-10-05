@@ -26,16 +26,6 @@ const whole = fx.parts[0]; // whole-disk -> synthetic index 0
 // Electron launches its app at fixture use-time; pin the host image path first.
 test.beforeEach(() => setElectronImage(fx.file));
 
-// Same F9 teardown defect as open-browse-download: the electron-native
-// fixture's app.close() hangs ~2 min after a native QEMU+LKL mount. Skip there;
-// the flow runs fully on web and electron-wasm. See FINDINGS.md F9.
-test.beforeEach(({}, testInfo) => {
-    test.fixme(
-        testInfo.project.name === 'electron-native',
-        'F9: ElectronApplication.close() hangs ~2min after a native mount, blowing the fixture teardown timeout',
-    );
-});
-
 test('@smoke open whole-disk ext4, mount read-only, see known files', async ({ driver }) => {
     await driver.openImage(fx);
 

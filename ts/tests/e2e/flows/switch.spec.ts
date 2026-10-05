@@ -29,16 +29,6 @@ test.afterAll(async () => {
     await singleSrv?.close();
 });
 
-// FINDING F9: electron-native teardown (app.close()) hangs ~2min after a native
-// QEMU+LKL mount. Gate it off here (the fixme aborts before the driver fixture
-// launches the app). web + electron-wasm exercise the same renderer logic.
-test.beforeEach(({}, testInfo) => {
-    test.fixme(
-        testInfo.project.name === 'electron-native',
-        'F9: ElectronApplication.close() hangs ~2min after a native mount',
-    );
-});
-
 // Poll the partition picker until it reflects the EXPECTED disk. listParts is
 // the "reached ready on the right disk" signal: DiskView is keyed by source, so
 // the new disk's partition buttons replace the old set once it mounts. Polling

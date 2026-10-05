@@ -182,7 +182,7 @@ verified real this way (multi.img → partitions `[0,1,2]`, `backendMode==='nati
 
 ---
 
-## F7 — native `sessionEnter` (partition mount) hangs/crashes in the Electron main process (✅ FIXED — sync enter, was High)
+## F7 — native `sessionEnter` (partition mount) hangs/crashes in the Electron main process (✅ FIXED — sync enter, was High; root cause removed 2026-10-05 by the dedicated QEMU thread, see F9)
 
 **Observed (Phase 3.3, Electron native backend):** With the native addon active in Electron,
 `sessionOpen` + `sessionListJson` work (multi.img → `vda: vda1 vda2`, partitions `[0,1,2]`
@@ -314,7 +314,7 @@ native doesn't use `fileToSource`). No regression in either.
 
 ---
 
-## F9 — Electron **native** main process stalls after a native mount: `app.close()` / switching files hangs ~2 min (CONFIRMED native incl. real Windows; deferred → utilityProcess/IPC rework)
+## F9 — Electron **native** main process stalls after a native mount: `app.close()` / switching files hangs ~2 min (✅ FIXED on Linux 2026-10-05 — dedicated QEMU thread; real Windows still to be verified, was High)
 
 **Observed (Phase 4, electron-native, open-browse-download flow):** Every test BODY on the
 native backend PASSES in isolation — `flows/open-browse-download.spec.ts` run one test at a time
@@ -382,6 +382,19 @@ isolation, and the real 13-byte IPC-download proof (`mechanism === 'electron-ipc
 green on the **electron-wasm** project (3/3), which exercises the identical
 `download:open/write/close` IPC path. Web runs all three including `download` (the F4 skip was
 removed once F4 was fixed — web now downloads via the service-worker mechanism).
+
+**Resolution (2026-10-05, instead of the utilityProcess rework):** QEMU's block layer now runs
+on one dedicated thread per process that owns its AioContext, attached to a private
+GMainContext via the new `qemu_main_loop_set_gcontext()` patch (`patches/qemu/0010`); every
+other thread hands it work and waits (`src/core/qemu_thread.c`). Chromium's GLib loop can no
+longer dispatch QEMU's sources (F7's root cause), and teardown drains on the thread that is
+always polling. With that, every addon op — `kernelInit`, `sessionOpen/Close/Enter`,
+`kernelHalt` included — runs as an AsyncWorker off the Electron main thread. All F9 `test.fixme`
+gates are removed: the electron-native project runs every flow (14 passed, 3 expected skips) with
+`app.close()` completing in about a second. Un-gating surfaced F17 and F18 below. Real-Windows
+verification is still pending; if the hang survives there, it has a Windows-specific cause and
+the utilityProcess isolation above becomes the fallback. Design:
+`docs/superpowers/specs/2026-10-05-qemu-dedicated-thread-design.md`.
 
 ---
 
@@ -857,3 +870,41 @@ URL name fallback (WasmSession already derives the filename); stale per-row stat
 (blocked by the synchronous nav-generation guard); empty/icon-only row names (input not reachable);
 global confirm not cleared on source change (harmless); KernelStatusBar long-error overflow (it's a
 block div that wraps).
+
+---
+
+## F17 — native: reopening a disk in the same kernel listed no partitions (✅ FIXED 2026-10-05, was High)
+
+**Observed:** first surfaced by `switch.spec.ts` "reopen after an abandoned mid-attach switch" once
+the F9 gates came off electron-native: after open multi → open single → open multi, the picker
+showed only `[0]` instead of `[0, 1, 2]`. Reproduced below the UI with the addon in plain Node
+(single → close → multi: `parts=[]`) and with the **raw** backend too, so it is not QEMU-related.
+web/electron-wasm never hit it because every wasm session boots a fresh kernel.
+
+**Root cause:** the session layer named the kernel block device `"vd" + ('a' + disk_id)`
+(`anyfs_session.c`). LKL never reuses disk ids (the 2nd disk ever added is id 1 even after the
+1st was removed), while the kernel reuses virtio-blk indexes once a removed disk is released —
+and names the next disk `vdb` while it is not. Either way the session walked the wrong (or a
+missing) `/sys/block/<name>` and found no partitions. Mounting was unaffected because
+`anyfs_mount()` uses `lkl_get_virtio_blkdev()`, which maps the id correctly.
+
+**Fix:** `anyfs_sysfs_virtio_disk_name()` (`src/core/anyfs_sysfs.c`) resolves the name through
+the disk's virtio-mmio device under the already-mounted `/sys`, mirroring
+`lkl_get_virtio_blkdev()`; the session layer uses it for the walk and every `/sys/block` lookup.
+Regression test: `tests/test_session_reopen.c` (unit suite) — fails on the old code
+(`mbr #3: 0 partition(s)`), passes on the fix.
+
+---
+
+## F18 — native addon errors threw inside the AsyncWorker callback instead of rejecting (✅ FIXED 2026-10-05, was Medium)
+
+**Observed:** while debugging F17, `readdirJson('/missing')` killed a plain-Node script even
+though the call had a `.catch()`. `JsonOutWorker` / `StrOutWorker` (`binding.cc`) handled errors
+with `ThrowAsJavaScriptException()` followed by `Resolve(null)`: the promise *resolved* with
+`null` and an uncaught exception was raised from the N-API callback. In Electron that is an
+uncaught exception in the main process, and the renderer received `null` where the
+`AnyfsSession` contract promises a `Stat` / `DirEntry[]` / `string`.
+
+**Fix:** both workers now `Reject()` with the error, matching the wasm backend. Verified:
+`readdirJson`, `lstatJson` and `readlink` on a missing path reject with `rc=-2`.
+

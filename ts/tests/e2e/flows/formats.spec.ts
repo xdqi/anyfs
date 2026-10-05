@@ -8,22 +8,6 @@ import { expectKnownTree } from '../lib/assertions';
 // back to the partition list between partitions via backToPartitions() — so the
 // multi-partition navigation path is exercised, not just a single mount.
 
-// FINDING F9: on the electron-NATIVE backend a native QEMU+LKL mount succeeds
-// in isolation, but the `driver` fixture's `app.close()` teardown HANGS ~2 min
-// after one, blowing the per-test timeout and cascading onto siblings. Every
-// formats test mounts at least one partition, so all of them would hit the
-// shutdown defect on native. Gate the whole spec off that project: the fixme
-// aborts before the `driver` fixture is requested, so no Electron app launches
-// and the hang can't fire. The mount itself is proven working elsewhere (web +
-// electron-wasm run these green); we do not weaken any assertion. See
-// ts/tests/e2e/FINDINGS.md F9.
-test.beforeEach(({}, testInfo) => {
-    test.fixme(
-        testInfo.project.name === 'electron-native',
-        'F9: ElectronApplication.close() hangs ~2min after a native mount, blowing the fixture teardown timeout',
-    );
-});
-
 // Raw images whose container the partition scanner reads directly (no qcow2/
 // vmdk decode needed). multiRaw is a GPT disk (ext4 #1 + vfat #2); mbrExtended
 // is an MBR disk with two primary partitions (#1 ext4, #2 vfat) plus two

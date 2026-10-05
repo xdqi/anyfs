@@ -14,23 +14,6 @@ const ext4 = fx.parts.find((p) => p.fs === 'ext4')!;
 // pinned before that — setElectronImage stashes it for launchElectron to read.
 test.beforeEach(() => setElectronImage(fx.file));
 
-// FINDING F9: on the electron-NATIVE backend the test bodies all PASS in
-// isolation (mount → list → properties → 13-byte IPC download), but the
-// `driver` fixture's `app.close()` teardown HANGS ~2 min after a native
-// QEMU+LKL mount — it blows the per-test timeout, recycles the worker, and
-// cascades failures onto sibling tests in the same file. It is a real
-// process-SHUTDOWN defect (QEMU AioContext still wired into Electron's GLib
-// loop at exit; F7's sync-enter fix only addressed the crash DURING mount), not
-// a harness/selector issue, so we do not weaken any assertion. The same flow
-// runs fully on electron-WASM (3/3 green, electron-ipc 13-byte proof) and on
-// web. See ts/tests/e2e/FINDINGS.md F9.
-test.beforeEach(({}, testInfo) => {
-    test.fixme(
-        testInfo.project.name === 'electron-native',
-        'F9: ElectronApplication.close() hangs ~2min after a native mount, blowing the fixture teardown timeout and recycling the worker',
-    );
-});
-
 test('@smoke open multiRaw, enter ext4, see known files', async ({ driver }) => {
     await driver.openImage(fx);
     const parts = await driver.listPartitionIndices();
