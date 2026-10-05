@@ -223,11 +223,13 @@ int anyfs_session_open(const char* image_path, uint32_t flags,
 	strncpy(d->image_path, image_path, sizeof(d->image_path) - 1);
 	strncpy(d->display, image_basename(image_path), sizeof(d->display) - 1);
 	pthread_mutex_init(&d->lock, NULL);
+	pthread_cond_init(&d->whole_cv, NULL);
 
 	d->parts_cap = MAX_PARTS;
 	d->parts = (PartSlot*)calloc(d->parts_cap, sizeof(PartSlot));
 	if (!d->parts) {
 		anyfs_disk_remove(disk_id);
+		pthread_cond_destroy(&d->whole_cv);
 		pthread_mutex_destroy(&d->lock);
 		free(d);
 		return -1;
@@ -245,6 +247,7 @@ int anyfs_session_open(const char* image_path, uint32_t flags,
 				     disk_id);
 		anyfs_disk_remove(disk_id);
 		free(d->parts);
+		pthread_cond_destroy(&d->whole_cv);
 		pthread_mutex_destroy(&d->lock);
 		free(d);
 		return -1;
@@ -288,6 +291,9 @@ void anyfs_session_close(AnyfsSession* d)
 	if (!d)
 		return;
 
+	if (d->whole_state == ANYFS_PART_MOUNTED)
+		(void)anyfs_session_leave(d, 0);
+
 	/* Tear down in reverse order so children unmount before parents. */
 	if (d->parts) {
 		for (ssize_t i = (ssize_t)d->n_parts - 1; i >= 0; i--) {
@@ -315,6 +321,7 @@ void anyfs_session_close(AnyfsSession* d)
 
 	if (d->disk_id >= 0)
 		anyfs_disk_remove(d->disk_id);
+	pthread_cond_destroy(&d->whole_cv);
 	pthread_mutex_destroy(&d->lock);
 	free(d);
 }
@@ -466,6 +473,82 @@ const char* anyfs_session_fail_reason_slot(AnyfsSession* d, int slot_id)
 }
 
 /* Mount a KIND_FS slot. Caller must NOT hold the lock. */
+/* ── Whole disk vs partitions ─────────────────────────────────────
+ * The kernel cannot mount a disk and one of its partitions at once: both
+ * claim the block device exclusively, and the second mount fails with
+ * EBUSY (e.g. a hybrid ISO's iso9660 whole disk and its FAT EFI
+ * partition). */
+
+/* Is entering `part` (0 = whole disk) blocked by another mount of this
+ * session? Caller must hold the lock. */
+static int conflict_mounted_locked(AnyfsSession* d, unsigned int part)
+{
+	if (part != 0)
+		return d->whole_state != ANYFS_PART_NEW;
+	for (size_t i = 0; i < d->n_parts; i++) {
+		const PartSlot* p = &d->parts[i];
+		if (p->parent_slot == ROOT_PARENT &&
+		    p->kind == ANYFS_PART_KIND_FS &&
+		    (p->state == ANYFS_PART_MOUNTING ||
+		     p->state == ANYFS_PART_MOUNTED))
+			return 1;
+	}
+	return 0;
+}
+
+/* ANYFS_MOUNT_REPLACE: unmount whatever blocks entering `part`. A busy
+ * mount (open files) stays, and the mount that follows fails with EBUSY. */
+static void release_conflicts(AnyfsSession* d, unsigned int part)
+{
+	if (part != 0) {
+		pthread_mutex_lock(&d->lock);
+		int whole = d->whole_state == ANYFS_PART_MOUNTED;
+		pthread_mutex_unlock(&d->lock);
+		if (whole)
+			(void)anyfs_session_leave(d, 0);
+		return;
+	}
+	for (size_t i = 0;; i++) {
+		pthread_mutex_lock(&d->lock);
+		if (i >= d->n_parts) {
+			pthread_mutex_unlock(&d->lock);
+			break;
+		}
+		const PartSlot* p = &d->parts[i];
+		int mounted = p->parent_slot == ROOT_PARENT &&
+			      p->kind == ANYFS_PART_KIND_FS &&
+			      p->state == ANYFS_PART_MOUNTED;
+		unsigned int index = p->index;
+		pthread_mutex_unlock(&d->lock);
+		if (mounted)
+			(void)anyfs_session_leave(d, index);
+	}
+}
+
+/* umount releases the block device asynchronously: LKL's host tasks are
+ * kernel threads, so the final fput goes through delayed_fput, a jiffy
+ * later. A mount right after a leave can see EBUSY in that window. Called
+ * after an EBUSY mount of `part`: returns 1 (after a short sleep) while
+ * the retry budget lasts and no mount of this session really conflicts. */
+#define BUSY_RETRY_TOTAL_MS 500
+#define BUSY_RETRY_STEP_MS 10
+static int busy_is_transient(AnyfsSession* d, unsigned int part,
+			     int* waited_ms)
+{
+	if (*waited_ms >= BUSY_RETRY_TOTAL_MS)
+		return 0;
+	pthread_mutex_lock(&d->lock);
+	int conflict = conflict_mounted_locked(d, part);
+	pthread_mutex_unlock(&d->lock);
+	if (conflict)
+		return 0;
+	struct __lkl__kernel_timespec ts = {
+	    .tv_sec = 0, .tv_nsec = BUSY_RETRY_STEP_MS * 1000000L};
+	lkl_sys_nanosleep(&ts, NULL);
+	*waited_ms += BUSY_RETRY_STEP_MS;
+	return 1;
+}
+
 static int enter_fs_slot(AnyfsSession* d, int slot_id, uint32_t flags,
 			 char lkl_path[ANYFS_LKL_PATH_MAX])
 {
@@ -515,8 +598,14 @@ static int enter_fs_slot(AnyfsSession* d, int slot_id, uint32_t flags,
 
 	int rc;
 	if (is_top) {
-		rc = anyfs_mount(d->disk_id, top_part_idx, fstype_hint,
-				 mount_name, mflags, &mnt);
+		if (flags & ANYFS_MOUNT_REPLACE)
+			release_conflicts(d, top_part_idx);
+		int waited = 0;
+		do {
+			rc = anyfs_mount(d->disk_id, top_part_idx, fstype_hint,
+					 mount_name, mflags, &mnt);
+		} while (rc == -LKL_EBUSY &&
+			 busy_is_transient(d, top_part_idx, &waited));
 	} else {
 		/* Child of a container — go through anyfs_mount_blkdev so the
 		 * dm-backed device path is used directly. */
@@ -530,6 +619,10 @@ static int enter_fs_slot(AnyfsSession* d, int slot_id, uint32_t flags,
 		strncpy(p->fstype_cache, mnt.fstype,
 			sizeof(p->fstype_cache) - 1);
 		snprintf(lkl_path, 64, "%s", mnt.mount_point);
+	} else if (rc == -LKL_EBUSY) {
+		/* Blocked by another mount, not a property of this
+		 * filesystem: retryable once that one is gone. */
+		p->state = ANYFS_PART_NEW;
 	} else {
 		char rbuf[64];
 		snprintf(rbuf, sizeof(rbuf), "mount failed (rc=%d)", rc);
@@ -555,6 +648,21 @@ int anyfs_session_enter(AnyfsSession* d, unsigned int part, uint32_t flags,
 		if (dev == 0)
 			return -4;
 
+		pthread_mutex_lock(&d->lock);
+		while (d->whole_state == ANYFS_PART_MOUNTING)
+			pthread_cond_wait(&d->whole_cv, &d->lock);
+		if (d->whole_state == ANYFS_PART_MOUNTED) {
+			snprintf(lkl_path, ANYFS_LKL_PATH_MAX,
+				 "/lklmnt/anyfs_d%d_whole", d->disk_id);
+			pthread_mutex_unlock(&d->lock);
+			return 0;
+		}
+		d->whole_state = ANYFS_PART_MOUNTING;
+		pthread_mutex_unlock(&d->lock);
+
+		if (flags & ANYFS_MOUNT_REPLACE)
+			release_conflicts(d, 0);
+
 		lkl_sys_access("/dev", 0) < 0 && lkl_sys_mkdir("/dev", 0700);
 		char devpath[80];
 		snprintf(devpath, sizeof(devpath), "/dev/anyfs_d%d_whole",
@@ -575,12 +683,22 @@ int anyfs_session_enter(AnyfsSession* d, unsigned int part, uint32_t flags,
 		 * block writes fail on the non-writable backend (-EIO),
 		 * aborting the mount. The RDONLY flag adds noload/norecovery so
 		 * the mount skips recovery and succeeds. */
-		uint32_t mflags = flags;
+		uint32_t mflags = flags & ANYFS_MOUNT_RDONLY;
 		if (d->open_flags & ANYFS_SESSION_READONLY)
 			mflags |= ANYFS_MOUNT_RDONLY;
 
 		AnyfsMount mnt = {0};
-		int rc = anyfs_mount_blkdev(devpath, hint, name, mflags, &mnt);
+		int rc;
+		int waited = 0;
+		do {
+			rc = anyfs_mount_blkdev(devpath, hint, name, mflags,
+						&mnt);
+		} while (rc == -LKL_EBUSY && busy_is_transient(d, 0, &waited));
+
+		pthread_mutex_lock(&d->lock);
+		d->whole_state = rc == 0 ? ANYFS_PART_MOUNTED : ANYFS_PART_NEW;
+		pthread_cond_broadcast(&d->whole_cv);
+		pthread_mutex_unlock(&d->lock);
 		if (rc < 0) {
 			lkl_sys_unlink(devpath);
 			return rc;
@@ -709,10 +827,15 @@ int anyfs_session_leave(AnyfsSession* d, unsigned int part)
 		char name[64];
 		snprintf(name, sizeof(name), "anyfs_d%d_whole", d->disk_id);
 		int rc = anyfs_umount(name);
-		char devpath[80];
-		snprintf(devpath, sizeof(devpath), "/dev/anyfs_d%d_whole",
-			 d->disk_id);
-		(void)lkl_sys_unlink(devpath);
+		if (rc == 0) {
+			char devpath[80];
+			snprintf(devpath, sizeof(devpath),
+				 "/dev/anyfs_d%d_whole", d->disk_id);
+			(void)lkl_sys_unlink(devpath);
+			pthread_mutex_lock(&d->lock);
+			d->whole_state = ANYFS_PART_NEW;
+			pthread_mutex_unlock(&d->lock);
+		}
 		return rc;
 	}
 

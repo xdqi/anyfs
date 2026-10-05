@@ -35,6 +35,13 @@ extern "C" {
  *                            (QEMU backend: BDRV_O_SNAPSHOT)
  *   ANYFS_MOUNT_RDONLY   — mount filesystem read-only (used by
  *                           anyfs_session_enter / anyfs_session_enter_path)
+ *   ANYFS_MOUNT_REPLACE  — anyfs_session_enter only: if this session's
+ *                           whole-disk mount and a top-level partition
+ *                           mount would conflict (the kernel cannot mount
+ *                           a disk and its partition at once: EBUSY),
+ *                           unmount the other one first. For one-mount-
+ *                           at-a-time callers such as the UI; servers
+ *                           sharing several mounts must not set it.
  */
 #define ANYFS_SESSION_READONLY (1u << 0)
 #define ANYFS_BACKEND_RAW (1u << 1)
@@ -42,6 +49,7 @@ extern "C" {
 #define ANYFS_BACKEND_QEMU (1u << 3)
 #define ANYFS_SESSION_SNAPSHOT (1u << 4)
 #define ANYFS_MOUNT_RDONLY (1u << 0)
+#define ANYFS_MOUNT_REPLACE (1u << 1)
 
 /* ── Internal types ────────────────────────────────────── */
 

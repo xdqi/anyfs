@@ -406,6 +406,15 @@ if host_machine.system() != 'windows'
     )
     test('session_reopen', test_session_reopen, suite: 'unit', timeout: 120)
 
+    test_session_whole_part = executable('test_session_whole_part',
+        'tests/test_session_whole_part.c',
+        include_directories: [anyfs_inc],
+        dependencies: [anyfs_dep],
+        c_args: gio_args + qemu_args,
+        install: false,
+    )
+    test('session_whole_part', test_session_whole_part, suite: 'unit', timeout: 120)
+
     # Build-script helper: CC launcher for mingw LKL builds through sccache.
     test('lkl_mingw_cc', find_program('tests/test_lkl_mingw_cc.sh'), suite: 'unit')
 

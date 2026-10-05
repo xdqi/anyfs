@@ -945,3 +945,57 @@ image, 5 rounds of open → list → enter → readdir → read files (about 7 M
 round) → close, then halt and quit. The old addon
 failed it: it hung after the first file read, and in switch-only mode it hit F17 on the 3rd disk
 and then this exit hang.
+
+---
+
+## F20 — hybrid ISO: entering the whole disk after its partition (or the reverse) failed with EBUSY (✅ FIXED 2026-10-05, was High)
+
+**Observed (user, real Windows, native):** open the trusty server ISO, enter the FAT EFI
+partition, go back to the partition list and enter the whole disk:
+`Error invoking remote method 'anyfs-native:diskEnter': Error: sessionEnter failed: rc=-16`. The
+reverse order failed the same way, and the UI blamed an unsupported filesystem. Reproduced on Linux
+with the addon. Entering the whole disk twice also failed. The session layer is shared, so every
+backend had it. Rarer, on Windows only and not reproduced on Linux: after one failure, every
+other image failed too.
+
+**Root cause:**
+- The kernel cannot mount a disk and one of its partitions at the same time: both claim the block
+  device exclusively, and the second mount gets EBUSY. The UI never leaves a mount when it goes back
+  to the partition list, so the first mount was still there.
+- Whole-disk enter (`part 0`) had no state. It was not idempotent, `anyfs_session_close` never
+  unmounted it, and the disk was then removed under a live mount (a plausible cause of the rare
+  everything-fails case).
+- An EBUSY mount marked the partition `FAILED` for good.
+- Even after a successful leave, an immediate mount could still get EBUSY. LKL's host tasks are
+  kernel threads, so umount's final `fput` goes through `delayed_fput`, a jiffy later. A 50 ms
+  sleep after the leave made it pass natively.
+- **On wasm the device was never released at all: `jiffies` never advanced.** The LKL linker
+  script's `jiffies = jiffies_64;` sits outside `SECTIONS{}`, so the incremental wasm kernel link
+  never resolved it and left `jiffies` at offset 0 of the first data segment, a stale init-data
+  word. `jiffies_64` did tick, and `/proc/timer_list` read `jiffies: 1` forever. Every
+  timer-wheel timer and every `schedule_delayed_work()` therefore waited forever, including
+  `delayed_fput`, so the unmounted disk stayed claimed and every later mount got EBUSY. All wasm
+  bundles had this, back to the first one.
+
+**Fix (`src/core/anyfs_session.c`):**
+- Track the whole-disk mount (`whole_state`): enter 0 is idempotent and waits for a concurrent
+  enter, leave 0 resets it, and close unmounts it.
+- EBUSY leaves a partition retryable instead of `FAILED`.
+- When no mount of the session really conflicts, an EBUSY mount is retried for up to 500 ms in
+  10 ms steps. That covers the `delayed_fput` window.
+- New `ANYFS_MOUNT_REPLACE`: unmount the session's conflicting whole-disk or partition mount
+  first. `anyfs_ts_session_enter`, the glue the UI uses on every backend, sets it; ksmbd/nfsd do not,
+  so their several-shares-per-disk semantics are unchanged (a conflict there still returns EBUSY).
+- `DiskView` explains EBUSY (another mount is still in use) instead of the unsupported-filesystem
+  hint.
+- `scripts/lkl-wasm-tools/wasm_fix_absolute_brackets.py` now also rebinds plain linker-script
+  aliases: `jiffies` gets `jiffies_64`'s segment and offset (it is the low word on little-endian
+  wasm32). After the fix, jiffies advance at HZ on wasm (+201 in 2 s), and a whole-disk/partition
+  switch takes 11–34 ms instead of failing after 580 ms of retries.
+
+**Tests:** `tests/test_session_whole_part.c` (unit) builds a hybrid FAT12-with-MBR image and covers
+EBUSY under default semantics, retry after leave, idempotent whole-disk enter, REPLACE in both
+directions, and cleanup on close. It fails on the old code. `flows/hybrid-iso.spec.ts` alternates
+EFI partition and whole disk twice on the real ISO. The proper LKL-side fix for the asynchronous
+release (host tasks without `PF_KTHREAD`, so `fput` runs as task work at syscall exit) is left for
+the LKL tree.

@@ -60,6 +60,8 @@ struct AnyfsSession {
 	char sysfs_name[64];	    /* "vda" */
 	char whole_fstype_hint[32]; /* cached superblock probe result */
 	uint32_t whole_dev;	    /* cached dev_t for whole-disk /dev node */
+	AnyfsPartState whole_state; /* the part 0 mount: NEW/MOUNTING/MOUNTED */
+	pthread_cond_t whole_cv;
 	pthread_mutex_t lock;
 	PartSlot* parts; /* size = parts_cap */
 	size_t n_parts;

@@ -188,7 +188,11 @@ int anyfs_ts_session_enter(int h, unsigned int part, uint32_t flags,
 	if (mount_cap < 64)
 		return -2;
 	char lkl_path[64];
-	int rc = anyfs_session_enter(d, part, flags, lkl_path);
+	/* The UI shows one mount at a time and has no "leave": entering the
+	 * whole disk after one of its partitions (or the reverse) must
+	 * replace that mount rather than fail with EBUSY. */
+	int rc = anyfs_session_enter(d, part, flags | ANYFS_MOUNT_REPLACE,
+				     lkl_path);
 	if (rc != 0)
 		return rc < 0 ? rc : -3;
 	snprintf(mount_out, mount_cap, "%s", lkl_path);

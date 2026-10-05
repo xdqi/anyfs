@@ -217,9 +217,19 @@ export function DiskView({
                         {mountError}
                     </div>
                     <div className="text-xs text-zinc-500 max-w-lg">
-                        The filesystem on this partition isn&rsquo;t recognised by the bundled
-                        kernel, or its on-disk format isn&rsquo;t supported. Pick a different
-                        partition from the list above.
+                        {/rc=-16\b/.test(mountError) ? (
+                            <>
+                                Another mount of this disk (the whole disk or another partition) is
+                                still in use, for example by a running download. Let it finish, then
+                                try again.
+                            </>
+                        ) : (
+                            <>
+                                The filesystem on this partition isn&rsquo;t recognised by the
+                                bundled kernel, or its on-disk format isn&rsquo;t supported. Pick a
+                                different partition from the list above.
+                            </>
+                        )}
                     </div>
                     <button
                         className="mt-2 text-sm px-3 py-1.5 rounded bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600"

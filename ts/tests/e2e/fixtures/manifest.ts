@@ -118,6 +118,11 @@ export const FIXTURES: Record<string, Fixture> = {
         url: 'https://releases.ubuntu.com/trusty/ubuntu-14.04.6-server-amd64.iso',
         expectedSize: 662700032,
         sha256: 'b17d7c1e9d0321ad5810ba77b69aef43f0f29a5422b08120e6ee0576c4527c0e',
-        parts: [{ index: 0, fs: 'iso9660', tree: [{ path: 'README.diskdefines' }] }],
+        // A hybrid ISO: iso9660 on the whole disk plus an MBR whose
+        // partition 2 is the FAT EFI image.
+        parts: [
+            { index: 0, fs: 'iso9660', tree: [{ path: 'README.diskdefines' }] },
+            { index: 2, fs: 'vfat', tree: [{ path: 'efi', dir: true }] },
+        ],
     },
 };
