@@ -1,8 +1,8 @@
 # QEMU dedicated-thread embedding design
 
 **Date:** 2026-10-05
-**Status:** implemented (phases 1–3, 2026-10-05; wine verified); real-Windows verification and
-phase 4 pending — see "Implementation notes" at the end
+**Status:** implemented (phases 1–4, 2026-10-05; wine verified). Real-Windows verification and
+the wasm small-op performance gap are open; see "Implementation notes" at the end.
 **Scope:** `src/core/qemu_backend.c` (rewrite), `src/core/qemu_thread.{c,h}` (new),
 `patches/qemu/` (two new patches), `ts/native/anyfs_ts.c` + `ts/packages/core/src/worker.ts`
 (wasm API thread), `ts/packages/anyfs-native/src/binding.cc` (native addon)
@@ -371,8 +371,23 @@ Phases 1–3 landed as designed, with these differences:
     and the old design avoided it by issuing ops back to back. The pre-refactor bundle shows
     the same slow numbers in some runs, which fits this explanation.
   Being investigated separately. Native is not affected.
+- **Phase 4 (Asyncify narrowing): kept.** Only the QEMU thread's stack ever unwinds, when a
+  QEMU coroutine switches emscripten fibers. `build_anyfs_wasm.sh` therefore passes every
+  function defined in `liblkl.a` (about 37.6k) to `ASYNCIFY_REMOVE`, except names that another
+  input also defines. Two link details matter here:
+  - The list goes in as `-sASYNCIFY_REMOVE=["@file"]`. With `@file`, emcc expands the names
+    onto wasm-opt's command line, which exceeds Linux's 128 KiB per-argument limit.
+  - Binaryen's `.`/`#`/`?` substitutions also apply to the list's path, so the path must not
+    contain those characters. The script checks this.
+  Results on the Node workload, three alternating rounds:
+  - the wasm shrinks from 68.2 MB to 32.5 MB;
+  - boot + open + list partitions: 3565 → 3116 ms;
+  - enter: 93 → 65 ms;
+  - walk + read: 4999 → 4420 ms.
+  Restricting QEMU and glib as well (`ASYNCIFY_ONLY`) was not attempted. Leaving out one
+  function on the unwind path would break at runtime, and the LKL list already captures most
+  of the gain.
 - **Not yet done:**
   - Real-Windows F9 verification.
   - wasm performance (above).
-  - Phase 4 (narrowing Asyncify instrumentation) is untouched.
 

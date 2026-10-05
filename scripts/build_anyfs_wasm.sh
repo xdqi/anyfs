@@ -273,6 +273,34 @@ LDFLAGS=(
     "${FS_FLAG[@]}"
 )
 
+# Asyncify instruments every function that might be on the stack when a
+# stack unwinds. Only one stack ever does: the QEMU thread's, when a QEMU
+# coroutine switches emscripten fibers (util/coroutine-wasm.c). LKL — kernel
+# and host library — never runs on that thread, yet its indirect calls make
+# Asyncify instrument nearly all of it, which bloats the module and slows
+# every kernel call. Remove every LKL function except names another input
+# also defines (a listed name applies to every function carrying it).
+ASYNCIFY_REMOVE_LIST="$BLD/asyncify-remove-${TARGET}"
+defined_funcs() {
+    emnm --defined-only "$@" 2>/dev/null | awk '$2 ~ /^[Tt]$/ {print $3}' | sort -u
+}
+comm -23 <(defined_funcs "$LIBLKL") \
+    <(defined_funcs "$GLUE_OBJ" "${EXTRA_OBJS[@]}" libanyfs_core.a \
+        "$QBLD/libblock.a" "${EXTRA_ARCHIVES[@]}") \
+    > "$ASYNCIFY_REMOVE_LIST"
+echo "  ASYNCIFY_REMOVE: $(wc -l < "$ASYNCIFY_REMOVE_LIST") LKL functions"
+# Not `-sASYNCIFY_REMOVE=@file`: emcc would expand the file and hand all
+# ~37k names to wasm-opt as one argument, past Linux's 128 KiB per-argument
+# limit (E2BIG). A list whose single item is "@file" reaches wasm-opt as
+# `asyncify-removelist@@file`, and binaryen reads the names from the file.
+# Binaryen applies its list substitutions (. # ? become space & ,) to the
+# path as well, so the path must not contain those characters.
+if [[ "$ASYNCIFY_REMOVE_LIST" == *[.#?]* ]]; then
+    echo "ERROR: $ASYNCIFY_REMOVE_LIST: binaryen cannot open a list path containing . # or ?" >&2
+    exit 1
+fi
+LDFLAGS+=("-sASYNCIFY_REMOVE=[\"@$ASYNCIFY_REMOVE_LIST\"]")
+
 echo "  LINK $OUT_JS  (target=$TARGET, qemu=always)"
 emcc "${LDFLAGS[@]}" \
     "$GLUE_OBJ" "${EXTRA_OBJS[@]}" libanyfs_core.a \
