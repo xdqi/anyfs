@@ -191,7 +191,7 @@ jobs:
       - name: Fetch OOT FS sources
         if: steps.cache-oot.outputs.cache-hit != 'true'
         run: |
-          ./scripts/oot_fs.sh fetch
+          ./scripts/oot_fs.sh fetch --update
           ls -la "$HOME/oot-fs" || true
 
       # ── Build pipeline ──────────────────────────────────────────────────────

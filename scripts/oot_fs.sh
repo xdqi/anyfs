@@ -4,7 +4,9 @@
 # pristine.
 #
 # Subcommands:
-#   fetch [--update]                  clone or refresh ~/oot-fs/{zfs,apfs,ntfsplus}
+#   fetch [--update]                  clone ~/oot-fs/{zfs,apfs,ntfsplus} at the
+#                                     pinned revs; --update also moves existing
+#                                     checkouts to the pins (discarding edits).
 #   stage [--wasm] [--targets=LIST]   apply OOT symlinks + Kconfig/Makefile
 #                                     hooks. With --wasm, also apply
 #                                     patches/linux/wasm/series against $LINUX_DIR.
@@ -39,6 +41,14 @@ ZFS_REPO="https://github.com/openzfs/zfs"
 APFS_REPO="https://github.com/linux-apfs/linux-apfs-rw"
 NTFSPLUS_REPO="https://github.com/namjaejeon/linux-ntfs"
 
+# Pinned upstream revisions. The stage_* carve-outs below (sed/awk on exact
+# source lines) are written against these trees, so a pin bump is a
+# deliberate, tested edit. CI's oot-fs cache key hashes this file, so moving
+# a pin also invalidates the cached checkouts.
+ZFS_REV="8f6f4bcb544ca650fd3796f059dd209dbe0bafa2"
+APFS_REV="628b6810e46bcdd423189d2c66295258e10090dc"
+NTFSPLUS_REV="5893a4b30e4a821348ab158f594f2c3c9409694e"
+
 die()  { echo "oot_fs: $*" >&2; exit 1; }
 log()  { echo "oot_fs: $*"; }
 
@@ -46,6 +56,20 @@ log()  { echo "oot_fs: $*"; }
 
 ensure_linux() {
     [[ -d "$LINUX_DIR/fs" ]] || die "no fs/ under LINUX_DIR=$LINUX_DIR"
+    # Callers pass relative paths (CI: --linux=deps/linux), but stage_zfs
+    # runs ZFS configure from inside $OOT_DIR/zfs.
+    LINUX_DIR="$(cd "$LINUX_DIR" && pwd)"
+}
+
+# Run "$@" with its output appended to $1 (label $2); on failure show the
+# tail of that log, so CI shows why a quiet one-time step failed.
+run_logged() {
+    local logf="$1" what="$2"
+    shift 2
+    "$@" >>"$logf" 2>&1 || {
+        tail -n 30 "$logf" >&2
+        die "$what failed (full log: $logf)"
+    }
 }
 
 # Strip our marker block (if present) from a file.
@@ -141,21 +165,31 @@ cmd_fetch() {
     done
     mkdir -p "$OOT_DIR"
     fetch_one() {
-        local name="$1" url="$2"
+        local name="$1" url="$2" rev="$3"
         local dir="$OOT_DIR/$name"
         if [[ ! -d "$dir/.git" ]]; then
-            log "cloning $name from $url"
-            git clone --depth=1 "$url" "$dir"
+            log "cloning $name @ ${rev:0:12} from $url"
+            git -c init.defaultBranch=main init -q "$dir"
+            git -C "$dir" remote add origin "$url"
+            git -C "$dir" fetch -q --depth=1 origin "$rev"
+            git -C "$dir" checkout -q --detach FETCH_HEAD
+        elif [[ "$(git -C "$dir" rev-parse HEAD)" == "$rev" ]]; then
+            log "$name present at pinned ${rev:0:12}"
         elif [[ $update -eq 1 ]]; then
-            log "pulling $name"
-            (cd "$dir" && git pull --ff-only)
+            # stage patches these trees in place and ZFS configure output is
+            # tied to the old sources, so move to the pin from a clean tree.
+            log "moving $name to pinned ${rev:0:12}"
+            git -C "$dir" fetch -q --depth=1 origin "$rev"
+            git -C "$dir" checkout -q --force --detach FETCH_HEAD
+            git -C "$dir" clean -q -fdx
         else
-            log "$name present at $dir (use --update to refresh)"
+            log "WARN: $name is at $(git -C "$dir" rev-parse --short=12 HEAD), pinned ${rev:0:12};" \
+                "run 'fetch --update' to move it (discards local edits in $dir)"
         fi
     }
-    fetch_one ntfsplus "$NTFSPLUS_REPO"
-    fetch_one apfs     "$APFS_REPO"
-    fetch_one zfs      "$ZFS_REPO"
+    fetch_one ntfsplus "$NTFSPLUS_REPO" "$NTFSPLUS_REV"
+    fetch_one apfs     "$APFS_REPO"     "$APFS_REV"
+    fetch_one zfs      "$ZFS_REPO"      "$ZFS_REV"
 }
 
 # Stage out-of-tree FS drivers. Phase-aware — for the initial wasm/XFS
@@ -325,31 +359,39 @@ stage_zfs() {
     #    `make modules` against a conftest object, which LKL build dirs can't
     #    satisfy because they're ARCH=lkl). So we prepare a dedicated x86_64
     #    build dir under $OOT_DIR/.zfs-configure-build purely for this probe.
+    local logf="$OOT_DIR/.zfs-configure.log"
     if [[ ! -f "$src/zfs_config.h" ]]; then
         local cfg_build="$OOT_DIR/.zfs-configure-build"
-        if [[ ! -f "$cfg_build/include/generated/utsrelease.h" ]]; then
+        : > "$logf"
+        # Stamp, not a generated header: prepare writes utsrelease.h before
+        # it builds objtool, so a half-failed prepare would look complete.
+        if [[ ! -f "$cfg_build/.anyfs-prepared" ]]; then
             log "preparing $cfg_build (one-time, ~30s) for ZFS configure"
             mkdir -p "$cfg_build"
-            make -C "$LINUX_DIR" O="$cfg_build" defconfig >/dev/null 2>&1
+            run_logged "$logf" "x86_64 defconfig" \
+                make -C "$LINUX_DIR" O="$cfg_build" defconfig
             "$LINUX_DIR/scripts/config" --file "$cfg_build/.config" -e MODULES
-            make -C "$LINUX_DIR" O="$cfg_build" olddefconfig >/dev/null 2>&1
-            make -C "$LINUX_DIR" O="$cfg_build" prepare >/dev/null 2>&1
+            run_logged "$logf" "x86_64 olddefconfig" \
+                make -C "$LINUX_DIR" O="$cfg_build" olddefconfig
+            # x86_64 prepare builds objtool, so the host needs libelf-dev.
+            run_logged "$logf" "x86_64 prepare" \
+                make -C "$LINUX_DIR" O="$cfg_build" prepare
+            touch "$cfg_build/.anyfs-prepared"
         fi
         if [[ ! -f "$src/configure" ]]; then
             log "ZFS autogen.sh (one-time)"
-            (cd "$src" && bash autogen.sh) >/dev/null 2>&1 || die "ZFS autogen failed"
+            (cd "$src" && run_logged "$logf" "ZFS autogen" bash autogen.sh)
         fi
         log "ZFS configure (one-time, several minutes)"
-        (cd "$src" && ./configure \
+        (cd "$src" && run_logged "$logf" "ZFS configure" ./configure \
             --with-linux="$LINUX_DIR" \
             --with-linux-obj="$cfg_build" \
             --enable-linux-builtin \
-            --with-config=kernel) >/dev/null 2>&1 \
-            || die "ZFS configure failed (see $src/config.log)"
+            --with-config=kernel)
     fi
     if [[ ! -f "$src/include/zfs_gitrev.h" ]]; then
         log "ZFS make gitrev"
-        (cd "$src" && make gitrev) >/dev/null 2>&1 || die "ZFS make gitrev failed"
+        (cd "$src" && run_logged "$logf" "ZFS make gitrev" make gitrev)
     fi
 
     # 2. ZFS Kbuild includes $(zfs_include)/zfs_config.h, where zfs_include
