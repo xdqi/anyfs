@@ -20,8 +20,9 @@
 #
 # Per target the script produces a libanyfs-qemublk.{so,dll} that exposes the
 # QEMU block-driver entry points used by anyfs-reader's qemu_backend.c.
-# The host pkg-config (linux-amd64) and msys2-cross's per-target wrappers
-# (mingw32/mingw64, supplied by msys-cross-pkgconfig) provide glib/zstd/zlib.
+# linux-amd64 builds with scripts/lib/zig-cc (glibc floor, baseline x86-64)
+# against the static sysroot from scripts/build_linux_sysroot.sh; mingw uses
+# msys2-cross's per-target pkg-config wrappers (msys-cross-pkgconfig).
 #
 # Prereqs:
 #   - QEMU source tree at $QEMU_SRC (qemu_src in build.config.toml).
@@ -116,11 +117,24 @@ configure_for() {
     local target="$1"
     case "$target" in
         linux-amd64)
-            # -fPIC only; -fno-pie at compile time breaks configure's link
-            # tests (e.g. memfd_create) because the default crt expects PIE.
-            # b_pie=false (set below) handles the final link.
+            # zig at the glibc floor against the static sysroot. -I/-L: bzip2
+            # has no .pc and QEMU's io_uring link probe passes no dependency,
+            # so the sysroot must be on the default search path. --enable-*
+            # makes a missing library fail configure instead of silently
+            # dropping a driver. vhost-user calls memfd_create (glibc 2.27).
+            # --disable-pie/--disable-werror replace a later `meson configure`,
+            # which would make ninja re-run meson outside our environment.
+            # -fPIC (not -fno-pie) keeps configure's link tests working.
             printf '%s\n' \
-                '--extra-cflags=-fPIC'
+                "--cc=$SCRIPT_DIR/lib/zig-cc" \
+                "--cxx=$SCRIPT_DIR/lib/zig-c++" \
+                '--disable-pixman' '--disable-png' '--disable-vhost-user' \
+                '--enable-bzip2' '--enable-zstd' \
+                '--enable-linux-aio' '--enable-linux-io-uring' \
+                '--disable-pie' '--disable-werror' \
+                '--extra-cflags=-fPIC' \
+                "--extra-cflags=-I$ANYFS_PATHS_LINUX_SYSROOT/include" \
+                "--extra-ldflags=-L$ANYFS_PATHS_LINUX_SYSROOT/lib"
             ;;
         mingw32)
             printf '%s\n' \
@@ -145,18 +159,24 @@ configure_for() {
 # Compiler used to link the shared object.
 linker_cc_for() {
     case "$1" in
-        linux-amd64) echo "gcc" ;;
+        linux-amd64) echo "$SCRIPT_DIR/lib/zig-cc" ;;
         mingw32)     echo "i686-w64-mingw32-gcc" ;;
         mingw64)     echo "x86_64-w64-mingw32-gcc" ;;
     esac
 }
 
-# pkg-config command used to resolve glib/zstd/zlib for the shared link.
-pkgconfig_for() {
-    case "$1" in
-        linux-amd64) echo "pkg-config" ;;
-        mingw32)     echo "i686-w64-mingw32-pkg-config" ;;
-        mingw64)     echo "x86_64-w64-mingw32-pkg-config" ;;
+# Link flags for the pkg-config modules ($2...) of target $1. linux-amd64
+# resolves against the static sysroot (--static: Libs.private pulls OpenSSL
+# into libcurl's line, etc.).
+pkg_libs_for() {
+    local target="$1"
+    shift
+    case "$target" in
+        linux-amd64)
+            PKG_CONFIG_LIBDIR="$ANYFS_PATHS_LINUX_SYSROOT/lib/pkgconfig" \
+                pkg-config --static --libs "$@" ;;
+        mingw32) i686-w64-mingw32-pkg-config --libs "$@" ;;
+        mingw64) x86_64-w64-mingw32-pkg-config --libs "$@" ;;
     esac
 }
 
@@ -172,9 +192,12 @@ shared_artifact_for() {
 extra_libs_for() {
     case "$1" in
         linux-amd64)
-            # libaio for native AIO, libbz2 for dmg driver, libm because
-            # qcow2/parallels reference floating-point helpers.
-            printf '%s\n' "-laio" "-lbz2" "-lm"
+            # Static from the sysroot: libaio (no .pc) for native AIO, libbz2
+            # (no .pc) for the dmg driver; libm because qcow2/parallels use
+            # floating-point helpers. -z defs: an unresolved symbol — e.g. a
+            # glibc function above the floor — fails the link instead of
+            # failing at load time.
+            printf '%s\n' "-L$ANYFS_PATHS_LINUX_SYSROOT/lib" "-laio" "-lbz2" "-lm" "-Wl,-z,defs"
             ;;
         mingw32|mingw64)
             # No native libaio on Windows; QEMU uses its win32 AIO emulation.
@@ -195,13 +218,14 @@ extra_libs_for() {
 # Pkg-config modules to resolve for the shared link. `libcurl` is included
 # so QEMU's `block/curl.c` (built because --enable-curl is in COMMON_CONFIGURE)
 # can resolve curl_* symbols at shared-link time. Adds ~700 KB libcurl-4.dll
-# next to the deliverable on mingw64; on Linux distro libcurl is normally
-# already on the loader path.
+# next to the deliverable on mingw64; on Linux it is linked statically from
+# the sysroot.
 pkg_modules_for() {
     case "$1" in
         linux-amd64)
-            # pixman is enabled on Linux, so include it.
-            printf '%s\n' "glib-2.0" "gthread-2.0" "zlib" "pixman-1" "libzstd" "libcurl"
+            # pixman is disabled on every target. liburing is static in the
+            # sysroot, so the .so carries it instead of leaving it to consumers.
+            printf '%s\n' "glib-2.0" "gthread-2.0" "zlib" "libzstd" "libcurl" "liburing"
             ;;
         mingw32|mingw64)
             # pixman is disabled at configure time for both mingw targets.
@@ -233,22 +257,45 @@ build_one() {
     local cc_cfg=()
     [[ -n "$CC_OVERRIDE" && "$target" == "linux-amd64" ]] && cc_cfg=("--cc=$CC_OVERRIDE")
 
+    # linux-amd64: pkg-config sees only the sysroot. configure writes
+    # $PKG_CONFIG into config-meson.cross, the native file meson re-reads on
+    # every regen, so a later ninja-triggered regen can't find host .pc files.
+    local pkgcfg_env=()
+    if [[ "$target" == linux-amd64 ]]; then
+        pkgcfg_env=(PKG_CONFIG="env PKG_CONFIG_LIBDIR=$ANYFS_PATHS_LINUX_SYSROOT/lib/pkgconfig pkg-config")
+        if [[ ! -f "$ANYFS_PATHS_LINUX_SYSROOT/lib/pkgconfig/glib-2.0.pc" ]]; then
+            echo "ERROR: no linux sysroot at $ANYFS_PATHS_LINUX_SYSROOT — run scripts/build_linux_sysroot.sh" >&2
+            return 1
+        fi
+        # A tree configured with another compiler can't switch in place.
+        if [[ -f "$builddir/build.ninja" && -z "$CC_OVERRIDE" ]] \
+           && ! grep -qF "$SCRIPT_DIR/lib/zig-cc" "$builddir/config-meson.cross" 2>/dev/null; then
+            echo "  $builddir was not configured with zig-cc — recreating"
+            rm -rf "$builddir"
+        fi
+    fi
+
     if [[ ! -f "$builddir/build.ninja" ]]; then
         rm -rf "$builddir"
         mkdir -p "$builddir"
-        ( cd "$builddir" && "$QEMU_SRC/configure" \
+        ( cd "$builddir" && env "${pkgcfg_env[@]}" "$QEMU_SRC/configure" \
               "${COMMON_CONFIGURE[@]}" "${target_cfg[@]}" "${cc_cfg[@]}" ) \
             || return 1
-        # b_pie=false matches the -fno-pie/-fPIC flags; needed for the shared
-        # link on Linux (with PIE objects it fails with "failed to set dynamic
-        # section sizes: bad value") and harmless on mingw. werror=false keeps
-        # the build from tripping over glibc-vs-QEMU prototype drift (e.g.
-        # `redundant redeclaration of memfd_create`).
-        # Use the meson configure just ran (QEMU's pyvenv): when the system
-        # meson is too old (Ubuntu 24.04 apt: 1.3.2), configure installs a
-        # newer one there, and the system meson cannot read its build.dat.
-        "$builddir/pyvenv/bin/meson" configure "$builddir" \
-            -Db_pie=false -Dwerror=false || return 1
+        # b_pie=false matches the -fPIC flags; needed for the shared link
+        # (with PIE objects it fails with "failed to set dynamic section
+        # sizes: bad value"). werror=false keeps the build from tripping over
+        # libc-vs-QEMU prototype drift. linux-amd64 passes both to configure
+        # (--disable-pie/--disable-werror): a `meson configure` here would
+        # make the next ninja re-run meson outside our environment, where it
+        # found host libraries. mingw sets them afterwards (its per-target
+        # pkg-config wrappers can't see host .pc files), with the meson
+        # configure just ran (QEMU's pyvenv): when the system meson is too old
+        # (Ubuntu 24.04 apt: 1.3.2), configure installs a newer one there, and
+        # the system meson cannot read its build.dat.
+        if [[ "$target" != linux-amd64 ]]; then
+            "$builddir/pyvenv/bin/meson" configure "$builddir" \
+                -Db_pie=false -Dwerror=false || return 1
+        fi
     fi
 
     # Build the static libs ---------------------------------------------------
@@ -263,9 +310,8 @@ build_one() {
     done
 
     # Link the shared object -------------------------------------------------
-    local cc pkgcc out
+    local cc out
     cc="$(linker_cc_for "$target")"
-    pkgcc="$(pkgconfig_for "$target")"
     out="$builddir/$(shared_artifact_for "$target")"
 
     mapfile -t pkg_mods   < <(pkg_modules_for "$target")
@@ -274,7 +320,7 @@ build_one() {
     # pkg-config --libs may return zero entries if a module is missing — fail
     # loudly rather than producing an under-linked DLL.
     local pkg_libs
-    pkg_libs="$("$pkgcc" --libs "${pkg_mods[@]}")" || return 1
+    pkg_libs="$(pkg_libs_for "$target" "${pkg_mods[@]}")" || return 1
 
     echo "  linker: $cc"
     echo "  pkg modules: ${pkg_mods[*]}"
@@ -311,6 +357,10 @@ build_one() {
         "${libgcc_trailing[@]}" \
         $pkg_libs \
         "${extra_libs[@]}" || return 1
+
+    if [[ "$target" == linux-amd64 ]]; then
+        "$SCRIPT_DIR/check_linux_abi.sh" 2.11 "$out" || return 1
+    fi
 
     echo "Built: $(ls -lh "$out" | awk '{print $5, $NF}')"
 }
