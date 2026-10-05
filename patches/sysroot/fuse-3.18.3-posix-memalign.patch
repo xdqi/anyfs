@@ -1,0 +1,19 @@
+libfuse: allocate the page-aligned buffer with posix_memalign
+
+aligned_alloc() is glibc 2.16; the linux-amd64 build targets glibc 2.11.
+The call allocates a page-multiple size at page alignment, which
+posix_memalign does identically (already used twice in this file), and the
+buffer is released with free() either way.
+
+--- a/lib/fuse_lowlevel.c
++++ b/lib/fuse_lowlevel.c
+@@ -3899,7 +3899,8 @@
+ 					 sizeof(struct fuse_write_in);
+ 		size_t new_size = ROUND_UP(size + write_header_sz, pagesize);
+ 
+-		char *buf = aligned_alloc(pagesize, new_size);
++		void *raw = NULL;
++		char *buf = posix_memalign(&raw, pagesize, new_size) ? NULL : raw;
+ 		if (buf == NULL)
+ 			return NULL;
+ 

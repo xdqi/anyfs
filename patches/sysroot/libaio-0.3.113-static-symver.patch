@@ -1,0 +1,24 @@
+libaio: drop symbol versions for a static, -fPIC archive
+
+src/syscall.h tags io_getevents, io_cancel and io_queue_wait with .symver
+(@@LIBAIO_0.4 plus @LIBAIO_0.1 compat aliases). In a static archive linked
+into a shared object (libanyfs-qemublk.so) those tags fail the link with
+"symbol io_getevents@@LIBAIO_0.4 has undefined version LIBAIO_0.4" (lld and
+GNU ld alike). Make the default version a plain alias and drop the compat
+symbols; versions mean nothing inside an archive.
+
+--- a/src/syscall.h
++++ b/src/syscall.h
+@@ -6,10 +6,10 @@
+ #define SYMSTR(str)	_SYMSTR(str)
+ 
+ #define SYMVER(compat_sym, orig_sym, ver_sym)	\
+-	__asm__(".symver " SYMSTR(compat_sym) "," SYMSTR(orig_sym) "@LIBAIO_" SYMSTR(ver_sym));
++	/* static archive: no versioned compat symbols */
+ 
+ #define DEFSYMVER(compat_sym, orig_sym, ver_sym)	\
+-	__asm__(".symver " SYMSTR(compat_sym) "," SYMSTR(orig_sym) "@@LIBAIO_" SYMSTR(ver_sym));
++	extern __typeof(compat_sym) orig_sym __attribute__((alias(SYMSTR(compat_sym))));
+ 
+ #if defined(__i386__)
+ #include "syscall-i386.h"

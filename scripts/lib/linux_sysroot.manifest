@@ -1,0 +1,26 @@
+# scripts/lib/linux_sysroot.manifest — static libs scripts/build_linux_sysroot.sh
+# installs under <linux_sysroot>/lib. The script's parity check diffs the
+# built set against this list; CI's sysroot cache key includes this file.
+libaio.a
+libblkid.a
+libbz2.a
+libcrypto.a
+libcurl.a
+libffi.a
+libfuse3.a
+libgio-2.0.a
+libgirepository-2.0.a
+libglib-2.0.a
+libgmodule-2.0.a
+libgobject-2.0.a
+libgthread-2.0.a
+libpcre2-16.a
+libpcre2-32.a
+libpcre2-8.a
+libpcre2-posix.a
+libssl.a
+liburing.a
+liburing-ffi.a
+libuuid.a
+libz.a
+libzstd.a
