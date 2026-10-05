@@ -1,8 +1,8 @@
 # QEMU dedicated-thread embedding design
 
 **Date:** 2026-10-05
-**Status:** implemented (phases 1–4, 2026-10-05; wine verified). Real-Windows verification and
-the wasm small-op performance gap are open; see "Implementation notes" at the end.
+**Status:** implemented (phases 1–4, 2026-10-05), verified on real Windows. The wasm small-op
+performance gap and the wasm atomics issue are open; see "Implementation notes" at the end.
 **Scope:** `src/core/qemu_backend.c` (rewrite), `src/core/qemu_thread.{c,h}` (new),
 `patches/qemu/` (two new patches), `ts/native/anyfs_ts.c` + `ts/packages/core/src/worker.ts`
 (wasm API thread), `ts/packages/anyfs-native/src/binding.cc` (native addon)
@@ -359,18 +359,43 @@ Phases 1–3 landed as designed, with these differences:
   (176 MiB) are done. The baseline is the last pre-refactor bundle (CI run of 3db770f), driven
   with that version's worker.ts call sequence. Its own NodeWasmSession aborted on qcow2
   ("anyfs_ts_session_open is running asynchronously"). Open and enter are as fast or faster
-  than before. Walk + read averaged 3042 ms before and 4492 ms now, about 48% slower. Two
-  causes, measured with timers around `api_run` on the API thread:
-  - The API-thread hop costs about 40 µs per op (an op that does nothing,
-    `LAST_ERROR`, takes 1.6 µs inside `api_run` and about 40 µs in total). Before, a cached op
-    ran directly on the module-owning thread.
-  - LKL syscalls got slower on the API thread, but only some of them. lstat is unchanged at
-    29 µs. A cached 4 KiB pread takes 57 µs (0.5–1.4 µs before), open 105 µs, close 46 µs. The
-    leading suspect is LKL's CPU hand-off: in the idle gap between ops the CPU passes to
-    `idle_host_task` to run pending work. Each hand-off is a cross-Worker semaphore round trip,
-    and the old design avoided it by issuing ops back to back. The pre-refactor bundle shows
-    the same slow numbers in some runs, which fits this explanation.
-  Being investigated separately. Native is not affected.
+  than before. Walk + read averaged 3042 ms before and 4492 ms now, about 48% slower.
+
+  *Correction:* an earlier version of this note blamed LKL syscalls for being slower on the API
+  thread (a cached pread at 57 µs, open at 105 µs). Those figures came from a broken
+  microbenchmark: it decoded an empty mount path, so every open failed with ENOENT. With correct
+  paths, a cached 4 KiB pread takes 1.5–2.6 µs inside `api_run`, open 40 µs, close 18 µs, lstat
+  29 µs.
+
+  A follow-up investigation instrumented the 16k-op walk (about 4.6 s) and found these costs:
+  - **API-thread hop, about 50 µs per op (~0.8 s).** That is the dequeue wake, the completion
+    through `MAIN_THREAD_ASYNC_EM_ASM`, and the JS continuation. Before, a cached op ran directly
+    on the module-owning thread.
+  - **Return-address captures (~1.15 s, paid by the old design too, ~1.2 s).** LKL's slab passes
+    `_RET_IP_` on every kmalloc and kfree. Emscripten implements `__builtin_return_address` by
+    building and parsing a JS stack trace, 10–30 µs per call. Most of open, close and lstat is
+    this.
+  - **QEMU's syscalls proxied to the module-owning thread (~0.88 s).** Image preads take 62 µs
+    each, EventNotifier pipe writes and reads ~51 µs each. In the old design these were direct
+    calls on the same thread.
+  - **An LKL scheduler hand-off loop, bimodal.** EEVDF's DELAY_DEQUEUE (Linux 6.18) keeps sleeping
+    tasks in `rq->nr_running`, so `lkl_cpu_put` sees `!single_task_running()` and cycles host
+    thread → idle → `idle_host_task` → host thread, 1–4.5 times per open+close. Turning
+    DELAY_DEQUEUE off at runtime removed it.
+
+  Prototype fixes were measured together on the same workload, five alternating rounds. They
+  are: DELAY_DEQUEUE off; `emscripten_return_address` stubbed to 0; a bounded synchronous wait
+  on the owner thread that keeps serving proxied calls; and short spins on the API and QEMU
+  threads. Medians: walk + read 1990 ms, against 2800 ms for the old bundle and 5084 ms for the
+  current one. None of these is merged yet. The prototype diff is in the investigation's
+  worktree.
+- **wasm LKL is compiled without wasm atomics (correctness, open).** The kernel and
+  `tools/lkl/lib` objects lack `-matomics`. `__sync_fetch_and_add` on `cpu.shutdown_gate` in
+  `lkl_cpu_get`, and `__sync_fetch_and_or` in `set_irq_pending`, compile to plain
+  load/modify/store, although several host threads run them. A lost update can drive the gate
+  negative, after which every syscall returns -2. That matches intermittent `pread failed: -2`
+  runs seen in every bundle, old and new. Whether it also explains the occasional hangs is not
+  proven.
 - **Phase 4 (Asyncify narrowing): kept.** Only the QEMU thread's stack ever unwinds, when a
   QEMU coroutine switches emscripten fibers. `build_anyfs_wasm.sh` therefore passes every
   function defined in `liblkl.a` (about 37.6k) to `ASYNCIFY_REMOVE`, except names that another
@@ -387,7 +412,11 @@ Phases 1–3 landed as designed, with these differences:
   Restricting QEMU and glib as well (`ASYNCIFY_ONLY`) was not attempted. Leaving out one
   function on the unwind path would break at runtime, and the LKL list already captures most
   of the gain.
+- **Real Windows (user, 2026-10-05):** the packaged Electron app in native mode no longer hangs
+  when switching images or quitting, so F9 is verified fixed. The same session surfaced F20 (hybrid
+  ISO, whole disk vs partition), now fixed. Under wine, the pre-refactor addon hung in the same
+  probe, and quitting with a disk open hung in both versions (F19, fixed).
 - **Not yet done:**
-  - Real-Windows F9 verification.
-  - wasm performance (above).
+  - wasm performance (above): merge the measured fixes.
+  - wasm atomics (above).
 
