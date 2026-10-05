@@ -11,8 +11,7 @@
 #                         linux-amd64,linux-arm64,mingw32,mingw64
 #                       (default: linux-amd64,mingw32,mingw64)
 #   --clean             Run `make clean` in each target before building
-#   --cc=CMD            C compiler override passed to make as CC= (e.g. "sccache gcc";
-#                       "sccache <compiler>" goes through lib/sccache-cc.sh)
+#   --cc=CMD            C compiler override passed to make as CC= (e.g. "sccache gcc")
 #   -j N                Parallelism (default: nproc)
 #
 # Expects each lkl-<target>/ to already contain a .config and (for mingw
@@ -91,12 +90,6 @@ build_one() {
 
     local cc_arg=()
     [[ -n "$CC_OVERRIDE" ]] && cc_arg=(CC="$CC_OVERRIDE")
-    # "sccache <compiler>": route through sccache-cc.sh, which keeps Kconfig's
-    # `-o /dev/null` assembler probe out of sccache (a cache hit on it fails;
-    # see the script).
-    if [[ "$CC_OVERRIDE" =~ ^sccache\ +([^\ ]+)$ ]]; then
-        cc_arg=(CC="$SCRIPT_DIR/lib/sccache-cc.sh ${BASH_REMATCH[1]}")
-    fi
 
     # OUTPUT must go through the environment, not as a make CLI arg — the
     # tools/lkl Makefile rewrites OUTPUT to "$OUTPUT/tools/lkl/", and a CLI
