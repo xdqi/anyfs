@@ -4,8 +4,9 @@
 > objects and rebuilt the linker script's guarantees by hand. The macOS port now
 > converts the standard ELF kernel instead: see
 > `docs/superpowers/specs/2026-10-05-lkl-macos-elf2dylib-design.md`. The shims,
-> kernel patches 01–07, order file and harness described below are archived in the
-> local tag `exp/macho-object-port` (`git show --stat exp/macho-object-port`).
+> kernel patches 01–07, the order file, the two Mach-O-only `oot_fs.sh` ZFS gates (the
+> `setjmp_aarch64.S` rewrite and the `ldo.c` asm labels) and the harness described below
+> are archived in the local tag `exp/macho-object-port` (`git show --stat exp/macho-object-port`).
 > The traps recorded here still apply to any code compiled for Darwin.
 
 Status: **mechanism verified, work bounded.** Everything below was executed on the Linux

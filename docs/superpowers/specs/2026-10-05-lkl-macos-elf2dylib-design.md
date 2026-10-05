@@ -127,7 +127,7 @@ symbols undefined: `fletcher_4_aarch64_neon_ops`, `vdev_raidz_aarch64_neon{,x2}_
 `zfs_blake3_{compress_in_place,compress_xof,hash_many}_sse{2,41}`,
 `zfs_sha{256,512}_block_armv7`. This is the known gap in ZFS's arm64 support, not a
 Mach-O issue. New gates remove the references on `CONFIG_LKL`, using
-`zfs_rewrite_line` like gates 4a-2 and 4b-3.
+`zfs_rewrite_line` like gates 4a-2 and 4b-2.
 
 **ELF glue (`scripts/macho/lkl_elf_glue.c`).** Freestanding C, compiled with the
 kernel's flags plus `-fPIC`:
