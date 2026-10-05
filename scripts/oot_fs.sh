@@ -8,7 +8,7 @@
 #                                     pinned revs; --update also moves existing
 #                                     checkouts to the pins (discarding edits).
 #   stage [--wasm] [--macho]          apply OOT symlinks + Kconfig/Makefile
-#         [--targets=LIST]            hooks. With --wasm / --macho, also apply
+#                                     hooks. With --wasm / --macho, also apply
 #                                     patches/linux/<flavor>/series against
 #                                     $LINUX_DIR. The macho patches touch only
 #                                     the LKL host library (macOS port), under
@@ -20,7 +20,7 @@
 # Layout assumptions:
 #   $LINUX_DIR              kernel tree (default ~/linux)
 #   $OOT_DIR                ~/oot-fs/ — OOT FS git checkouts
-#   $REPO_DIR/patches/linux/wasm/series — quilt-style series file
+#   $REPO_DIR/patches/linux/<flavor>/series — quilt-style series file (wasm, macho)
 #   $REPO_DIR/scripts/oot_fs/      — per-driver helper data (apfs.Kconfig.in, etc.)
 #
 # Anything we add to ~/linux is wrapped in marker blocks so unstage can
@@ -30,7 +30,7 @@
 #   ... added lines ...
 #   # === END anyfs-reader OOT ===
 #
-# Patch application is tracked in $OOT_DIR/.applied.<target> so re-staging
+# Patch application is tracked in $OOT_DIR/.applied.<flavor> so re-staging
 # is idempotent and unstage knows exactly what to roll back.
 set -e
 
@@ -506,16 +506,17 @@ config ZFS
 	  See https://github.com/openzfs/zfs
 EOF
 
-    # 4. LKL-on-x86 carry: ZFS's os/linux/kernel/linux/simd.h dispatches on
+    # 4a. LKL-on-x86 carry: ZFS's os/linux/kernel/linux/simd.h dispatches on
     #    `__x86` (set by isa_defs.h from __x86_64__) and pulls in
     #    simd_x86.h, which #include's <asm/cpufeature.h> and <asm/fpu/api.h>.
     #    LKL has no arch/lkl/include/asm/cpufeature.h — building against
     #    LKL on an x86_64 host therefore fails. Gate the x86 branch behind
     #    !CONFIG_LKL so LKL falls through to the SIMD-disabled stub.
-    #    Idempotent: only patch if CONFIG_LKL isn't already mentioned.
+    #    Idempotent, and dies if the anchor line is gone (zfs_rewrite_line).
     local simdh="$src/include/os/linux/kernel/linux/simd.h"
-    if [[ -f "$simdh" ]] && ! grep -q 'CONFIG_LKL' "$simdh"; then
-        sed -i 's|^#if defined(__x86)$|#if defined(__x86) \&\& !defined(CONFIG_LKL)|' "$simdh"
+    if [[ -f "$simdh" ]] && zfs_rewrite_line "$simdh" \
+            '#if defined(__x86)' \
+            '#if defined(__x86) && !defined(CONFIG_LKL)'; then
         log "patched ZFS simd.h to skip x86 SIMD on CONFIG_LKL builds"
     fi
 
@@ -535,36 +536,28 @@ EOF
     #     simd_x86.h directly from an `#if defined(__x86_64__) || defined(__i386__)`
     #     block. Now that simd_x86.h is excluded on LKL, those references
     #     become implicit-decl errors. Gate the x86 block behind !CONFIG_LKL
-    #     too — same shape as the simd.h patch above. Idempotent.
+    #     too — same shape as the simd.h patch above. Idempotent, and dies if
+    #     the anchor line is gone (zfs_rewrite_line).
     local simdstat="$src/module/zcommon/simd_stat.c"
-    if [[ -f "$simdstat" ]] && ! grep -q 'CONFIG_LKL' "$simdstat"; then
-        sed -i 's@^#if defined(__x86_64__) || defined(__i386__)$@#if (defined(__x86_64__) || defined(__i386__)) \&\& !defined(CONFIG_LKL)@' "$simdstat"
+    if [[ -f "$simdstat" ]] && zfs_rewrite_line "$simdstat" \
+            '#if defined(__x86_64__) || defined(__i386__)' \
+            '#if (defined(__x86_64__) || defined(__i386__)) && !defined(CONFIG_LKL)'; then
         log "patched ZFS simd_stat.c to skip x86 SIMD-stat on CONFIG_LKL builds"
     fi
 
-    # 4b-2. Same for the ARM/aarch64 SIMD-stat block, and for the two sha2 ICP
-    #       implementations. All three call zfs_neon_available() /
-    #       zfs_sha{256,512}_available(), which only simd_aarch64.h declares --
-    #       and 4a-2 just excluded that header on LKL. Gate each arch block
-    #       behind !CONFIG_LKL so it disappears together with the declarations.
-    #       Idempotent, and dies if an anchor line is gone (zfs_rewrite_line).
+    # 4b-2. Same for the ARM/aarch64 SIMD-stat block in simd_stat.c. It calls
+    #       zfs_neon_available() and friends, which only simd_aarch64.h
+    #       declares -- and 4a-2 just excluded that header on LKL. Gate the
+    #       block behind !CONFIG_LKL so it disappears together with the
+    #       declarations. The two sha2 ICP files are handled by 4b-3.
+    #       Idempotent, and dies if the anchor line is gone (zfs_rewrite_line).
     if [[ -f "$simdstat" ]] && zfs_rewrite_line "$simdstat" \
             '#if defined(__arm__) || defined(__aarch64__)' \
             '#if (defined(__arm__) || defined(__aarch64__)) && !defined(CONFIG_LKL)'; then
         log "patched ZFS simd_stat.c to skip arm SIMD-stat on CONFIG_LKL builds"
     fi
     local sha256impl="$src/module/icp/algs/sha2/sha256_impl.c"
-    if [[ -f "$sha256impl" ]] && zfs_rewrite_line "$sha256impl" \
-            '#if __ARM_ARCH > 6' \
-            '#if __ARM_ARCH > 6 && !defined(CONFIG_LKL)'; then
-        log "patched ZFS sha256_impl.c to skip ARM SIMD paths on CONFIG_LKL builds"
-    fi
     local sha512impl="$src/module/icp/algs/sha2/sha512_impl.c"
-    if [[ -f "$sha512impl" ]] && zfs_rewrite_line "$sha512impl" \
-            '#if defined(__aarch64__)' \
-            '#if defined(__aarch64__) && !defined(CONFIG_LKL)'; then
-        log "patched ZFS sha512_impl.c to skip aarch64 SIMD paths on CONFIG_LKL builds"
-    fi
 
     # 4b-3. The rest of ZFS's arm64 SIMD: fletcher-4, RAID-Z, BLAKE3 and the
     #       sha2 armv7/NEON/armv8 code list aarch64 implementations whose
