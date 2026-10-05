@@ -18,6 +18,7 @@
 #include <stdlib.h>
 
 #include "block/block-global-state.h"
+#include "block/thread-pool.h"
 #include "qapi/error.h"
 #include "qemu/aio.h"
 #include "qemu/atomic.h"
@@ -94,6 +95,13 @@ static void* qemu_thread_fn(void* arg)
 
 	t_on_qemu_thread = true;
 	rcu_register_thread();
+
+	/* LKL has one CPU, so at most one block request is in flight. Handing
+	 * file I/O and qcow2 (de)compression to QEMU's worker pool would add
+	 * two more cross-thread wake-ups per request for no parallelism, and
+	 * under emscripten a worker's reply inside an Asyncify rewind aborts
+	 * the runtime. Run that work inline on this thread (patch 0011). */
+	thread_pool_set_inline(true);
 
 	/* Keep every QEMU GSource off the global default GMainContext, which a
 	 * host GUI loop (Electron/Chromium on Linux) may be iterating. */

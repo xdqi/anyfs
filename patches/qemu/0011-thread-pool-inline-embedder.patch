@@ -1,0 +1,50 @@
+diff --git a/include/block/thread-pool.h b/include/block/thread-pool.h
+index e9ddb2b6d3..d0b4b43c7a 100644
+--- a/include/block/thread-pool.h
++++ b/include/block/thread-pool.h
+@@ -39,6 +39,20 @@ BlockAIOCB *thread_pool_submit_aio(ThreadPoolFunc *func, void *arg,
+ int coroutine_fn thread_pool_submit_co(ThreadPoolFunc *func, void *arg);
+ void thread_pool_update_params(ThreadPoolAio *pool, struct AioContext *ctx);
+ 
++/**
++ * thread_pool_set_inline: Run thread_pool_submit_co() work inline.
++ *
++ * When enabled, thread_pool_submit_co() calls @func directly in the calling
++ * coroutine instead of handing it to a worker thread.  This is meant for a
++ * program that embeds the block layer on one dedicated thread and has at
++ * most one request in flight: a worker then adds no parallelism, only two
++ * cross-thread wake-ups per request.  Under Emscripten it is also required,
++ * because receiving a worker's reply inside an Asyncify rewind aborts the
++ * runtime.  thread_pool_submit_aio() is not affected.  Call this before the
++ * first request.
++ */
++void thread_pool_set_inline(bool enable);
++
+ /* ------------------------------------------- */
+ /* Generic thread pool types and methods below */
+ typedef struct ThreadPool ThreadPool;
+diff --git a/util/thread-pool.c b/util/thread-pool.c
+index 8f8cb38d5c..b3aa69cc0f 100644
+--- a/util/thread-pool.c
++++ b/util/thread-pool.c
+@@ -283,10 +283,20 @@ static void thread_pool_co_cb(void *opaque, int ret)
+     aio_co_wake(co->co);
+ }
+ 
++static bool thread_pool_inline;
++
++void thread_pool_set_inline(bool enable)
++{
++    qatomic_set(&thread_pool_inline, enable);
++}
++
+ int coroutine_fn thread_pool_submit_co(ThreadPoolFunc *func, void *arg)
+ {
+     ThreadPoolCo tpc = { .co = qemu_coroutine_self(), .ret = -EINPROGRESS };
+     assert(qemu_in_coroutine());
++    if (qatomic_read(&thread_pool_inline)) {
++        return func(arg);
++    }
+     thread_pool_submit_aio(func, arg, thread_pool_co_cb, &tpc);
+     qemu_coroutine_yield();
+     return tpc.ret;
