@@ -8,7 +8,8 @@
 #   --allow-undefined=ERE
 #                unversioned undefined symbols matching ERE are expected, e.g.
 #                an addon's napi_* imports, which the host process provides.
-#   Directories are searched recursively; files that aren't ELF are skipped.
+#   Directories are searched recursively (following symlinks); files that
+#   aren't ELF are skipped.
 #
 # Why the third check: a function the floor's glibc lacks fails an executable
 # link, but a -shared link silently leaves it undefined with no version. The
@@ -85,7 +86,7 @@ check_file() {
 for arg in "$@"; do
     while IFS= read -r -d '' f; do
         if is_elf "$f"; then check_file "$f"; fi
-    done < <(find "$arg" -type f -print0)
+    done < <(find -L "$arg" -type f -print0)
 done
 
 if [[ $checked -eq 0 ]]; then

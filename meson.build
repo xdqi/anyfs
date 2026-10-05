@@ -190,14 +190,14 @@ if enable_qemu
                 dependencies: [anyfs_qemu_lib, glib_sys_dep, thread_dep, curl_dep],
             )
         else
-            pixman_dep = dependency('pixman-1', required: true)
-            # libanyfs-qemublk.so leaves libaio / liburing symbols
-            # undefined (no DT_NEEDED), so consumers must link them.
+            # A host-gcc libanyfs-qemublk.so leaves libaio / liburing
+            # undefined (no DT_NEEDED), so consumers link them; the zig
+            # build's .so carries both, and listing them is harmless.
             aio_lib = cc.find_library('aio', required: true)
             uring_dep = dependency('liburing', required: false)
             qemu_dep = declare_dependency(
                 include_directories: [qemu_inc, qemu_sys_inc],
-                dependencies: [anyfs_qemu_lib, glib_sys_dep, pixman_dep,
+                dependencies: [anyfs_qemu_lib, glib_sys_dep,
                                thread_dep, rt_dep, aio_lib, curl_dep]
                               + (uring_dep.found() ? [uring_dep] : []),
             )
@@ -225,14 +225,13 @@ if enable_qemu
         zstd_dep = dependency('libzstd', required: true)
         uring_dep = dependency('liburing', required: false)
         aio_lib = cc.find_library('aio', required: true)
-        pixman_dep = dependency('pixman-1', required: true)
         glib_sys_dep = dependency('glib-2.0', required: true)
         gthread_dep = dependency('gthread-2.0', required: true)
         z_dep = dependency('zlib', required: true)
 
         qemu_dep = declare_dependency(
             include_directories: [qemu_inc, qemu_sys_inc],
-            dependencies: qemu_libs + [zstd_dep, aio_lib, pixman_dep,
+            dependencies: qemu_libs + [zstd_dep, aio_lib,
                                         glib_sys_dep, gthread_dep, z_dep,
                                         thread_dep, rt_dep, curl_dep] +
                           (uring_dep.found() ? [uring_dep] : []),

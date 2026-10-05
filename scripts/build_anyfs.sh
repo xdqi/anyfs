@@ -150,18 +150,52 @@ cross_file_for() {
     esac
 }
 
-# Pre-built libblkid archive layout produced by build_libblkid_mingw.sh.
-# Returns the directory containing lib/libblkid.a + include/blkid/blkid.h
-# when one exists for the target, else empty (meson will fall back to its
-# pkg-config probe — which works on linux-amd64 but not on mingw).
+# linux-amd64 builds with zig against the static sysroot. Everything goes in a
+# meson native file, not the environment: meson re-reads the file when ninja
+# regenerates the build, while a PKG_CONFIG_LIBDIR from our environment would
+# be gone and host .pc files would leak in. Prints the file's path.
+native_file_for() {
+    [[ "$1" == linux-amd64 ]] || return 0
+    local sys="$ANYFS_PATHS_LINUX_SYSROOT"
+    local f="$SCRIPT_DIR/../.toolchain/meson-native-linux-amd64.ini"
+    if [[ ! -f "$sys/lib/pkgconfig/glib-2.0.pc" ]]; then
+        echo "ERROR: no linux sysroot at $sys — run scripts/build_linux_sysroot.sh" >&2
+        return 1
+    fi
+    mkdir -p "$(dirname "$f")"
+    f="$(cd "$(dirname "$f")" && pwd)/$(basename "$f")"
+    cat > "$f" <<EOF
+[binaries]
+c = '$SCRIPT_DIR/lib/zig-cc'
+cpp = '$SCRIPT_DIR/lib/zig-c++'
+cmake = 'false'
+
+[built-in options]
+c_args = ['-I$sys/include']
+c_link_args = ['-L$sys/lib']
+
+[properties]
+pkg_config_libdir = ['$sys/lib/pkgconfig']
+EOF
+    echo "$f"
+}
+
+# Pre-built libblkid archive: build_libblkid_mingw.sh's layout for mingw, the
+# static sysroot for linux-amd64 (its blkid.pc says -I…/include/blkid, but
+# anyfs includes <blkid/blkid.h>). Returns the directory containing
+# lib/libblkid.a + include/blkid/blkid.h when one exists, else empty (meson
+# then falls back to its pkg-config probe).
 blkid_root_for() {
     case "$1" in
         mingw32|mingw64)
             local d="$SRC_DIR/build-blkid-$1"
             [[ -f "$d/lib/libblkid.a" ]] && echo "$d"
             ;;
-        linux-amd64|*) echo "" ;;
+        linux-amd64)
+            [[ -f "$ANYFS_PATHS_LINUX_SYSROOT/lib/libblkid.a" ]] && echo "$ANYFS_PATHS_LINUX_SYSROOT"
+            ;;
     esac
+    return 0
 }
 
 # Logical component → meson target *names* (as they appear in
@@ -188,8 +222,9 @@ component_target_names() {
 build_one() {
     local target="$1"
     local builddir="$SRC_DIR/$OUT_PFX-$target"
-    local cross_file
+    local cross_file native_file
     cross_file="$(cross_file_for "$target")"
+    native_file="$(native_file_for "$target")" || return 1
 
     echo
     echo "=============================================================="
@@ -197,6 +232,7 @@ build_one() {
     echo "  src:      $SRC_DIR"
     echo "  builddir: $builddir"
     [[ -n "$cross_file" ]] && echo "  cross:    $cross_file"
+    [[ -n "$native_file" ]] && echo "  native:   $native_file"
     echo "=============================================================="
 
     # Sanity-check LKL is built. mingw targets link against the DLL
@@ -256,10 +292,9 @@ build_one() {
         fi
     fi
 
-    # ── core: hand-built libblkid (mingw cross-builds only) ──────
-    # On linux-amd64 we rely on the system pkg-config (meson.build will
-    # auto-detect via dependency('blkid')). On mingw we ship our own static
-    # archive built from util-linux via scripts/build_libblkid_mingw.sh.
+    # ── core: hand-built libblkid ─────────────────────────────────
+    # mingw: our own static archive from scripts/build_libblkid_mingw.sh;
+    # linux-amd64: the sysroot's (see blkid_root_for).
     local blkid_root
     blkid_root="$(blkid_root_for "$target")"
     if has_comp core && [[ -n "$blkid_root" ]]; then
@@ -292,7 +327,8 @@ build_one() {
     if has_comp fuse; then
         case "$target" in
             linux-amd64)
-                if pkg-config --exists fuse3 2>/dev/null; then
+                if PKG_CONFIG_LIBDIR="$ANYFS_PATHS_LINUX_SYSROOT/lib/pkgconfig" \
+                   pkg-config --exists fuse3 2>/dev/null; then
                     meson_opts+=("-Denable_fuse=true")
                 else
                     echo "  WARNING: fuse3 pkg-config not found — fuse target disabled."
@@ -310,9 +346,17 @@ build_one() {
     # Cross-file argument (after options so meson sees it as a separate arg list)
     local setup_extra=()
     [[ -n "$cross_file" ]] && setup_extra+=(--cross-file "$cross_file")
+    [[ -n "$native_file" ]] && setup_extra+=(--native-file "$native_file")
 
     # Configure (fresh or reconfigure)
     if [[ $RECONFIGURE -eq 1 ]]; then
+        rm -rf "$builddir"
+    fi
+    # A build dir configured with another compiler (the old host-gcc layout)
+    # can't switch toolchains in place.
+    if [[ -n "$native_file" && -f "$builddir/meson-private/cmd_line.txt" ]] \
+       && ! grep -qF "$native_file" "$builddir/meson-private/cmd_line.txt"; then
+        echo "  $builddir was configured without $native_file — recreating"
         rm -rf "$builddir"
     fi
     if [[ ! -d "$builddir/meson-info" ]]; then
