@@ -182,6 +182,8 @@ for arch in arm64 x86_64; do
     reject ctor "$arch" "$tmp/ctor.$arch.so" "unsupported dynamic tag 0x19"
     reject noexport "$arch" "$tmp/ok.$arch.so" "no such defined dynamic symbol" --export missing=_missing
     reject dupexport "$arch" "$tmp/ok.$arch.so" "more than once" --export exported_add=_lklk_add2
+    reject dupmacho "$arch" "$tmp/ok.$arch.so" "exported_add is already exported as _lklk_add" \
+        --export other_helper=_lklk_add
 done
 reject archmismatch arm64 "$tmp/ok.x86_64.so" "expected ET_DYN for arm64"
 head -c 4096 "$tmp/ok.x86_64.so" > "$tmp/truncated.so"

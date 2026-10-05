@@ -429,14 +429,17 @@ def main():
             raise Reject(f"-o {a.output} is the input file")
         if os.path.exists(a.output):
             os.unlink(a.output)
-        exports = {}
+        exports, exported_as = {}, {}  # ELF -> Mach-O name, and back
         for e in a.export:
             if "=" not in e:
                 raise Reject(f"--export {e}: expected ELF=MACHO")
             elfname, sym = e.split("=", 1)
             if elfname in exports:
                 raise Reject(f"--export {elfname} is given more than once")
+            if sym in exported_as:
+                raise Reject(f"--export {e}: {exported_as[sym]} is already exported as {sym}")
             exports[elfname] = sym
+            exported_as[sym] = elfname
         objdump = tool("OBJDUMP", "llvm-objdump-19", "llvm-objdump")
         objcopy = tool("OBJCOPY", "llvm-objcopy-19", "llvm-objcopy")
         nm = tool("NM", "llvm-nm-19", "llvm-nm")
