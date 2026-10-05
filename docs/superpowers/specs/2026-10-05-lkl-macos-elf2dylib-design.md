@@ -171,22 +171,27 @@ elf2dylib.py --arch arm64|x86_64 --export ELFNAME=MACHONAME ... \
    `__TEXT,__lkl_const` (R), `__TEXT,__lkl_text,regular,pure_instructions` (RX),
    `__DATA_CONST,__lkl_relro` (RELRO), `__DATA,__lkl_data` (RW file bytes), and
    `.zerofill __DATA,__lkl_bss` (RW zero-fill tail). Segment bytes are `.incbin`ed from
-   files extracted from the ELF. The `.incbin` is split at:
-   - each `RELATIVE` slot, which becomes `.quad L<seg> + (addend - seg_vaddr)`;
-   - each `.symtab` function or object symbol, which becomes a local label
-     `_<name>`. Repeated names get `.<n>` suffixes, and AArch64 mapping symbols
-     (`$x`, `$d`) are dropped;
-   - each `--export`, which becomes `.globl MACHONAME` plus a label.
+   files extracted from the ELF.
+   - The `.incbin` is split only at `RELATIVE` slots, each of which becomes
+     `.quad L<seg> + (addend - seg_vaddr)`.
+   - Symbols are defined with `.set "<name>", L<seg> + offset`, which needs no split.
+     Each `.symtab` function or object symbol becomes a local `_<name>`. A repeated
+     name gets a `~<n>` suffix, because ELF names already use `.<n>` (`__func__.1`).
+     AArch64 mapping symbols (`$x`, `$d`) are dropped.
+   - Each `--export` becomes `.globl MACHONAME` plus its `.set`.
 3. *Link.* `clang -target <arch>-apple-macos<min> -c`, then
    `ld64.lld -arch <arch> -platform_version macos <min> <min> -dylib
-   -install_name <name> -no_fixup_chains <zig>/lib/libc/darwin/libSystem.tbd`.
+   -install_name <name> -no_fixup_chains -adhoc_codesign <zig>/lib/libc/darwin/libSystem.tbd`.
    `ld64.lld` produces the rebase opcodes, export trie, symbol table, `LC_UUID`,
-   `LC_BUILD_VERSION` and, on arm64, the ad-hoc signature. The image imports nothing,
+   `LC_BUILD_VERSION` and the ad-hoc signature. `-adhoc_codesign` signs x86_64 too,
+   which `ld64.lld` otherwise does only for arm64. The image imports nothing,
    but it links libSystem like any ordinary dylib, using the same `libSystem.tbd`
    stub that the host-library build takes from zig.
 4. *Output checks.* Each failure deletes the output and aborts.
    - Each `__lkl_*` section's address and size equal the ELF segment's address + Δ and
-     size.
+     size, and its bytes (dumped with `llvm-objcopy --dump-section`) equal the
+     segment's bytes. The only exception is the `RELATIVE` slots, which must hold
+     `addend + Δ`.
    - The set of rebase locations equals the set of `RELATIVE` slots + Δ.
    - Each exported symbol's address equals its ELF address + Δ.
    - The image's only dependent dylib is `/usr/lib/libSystem.B.dylib`. Its only
