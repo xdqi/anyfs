@@ -249,14 +249,21 @@ static double run_relay_bench(uint16_t lkl_port, uint64_t target_bytes)
 	}
 
 	/* Allocate rings + counters in this process's address space. */
-	void* h2l_buf = aligned_alloc(64, RING_CAP);
-	void* l2h_buf = aligned_alloc(64, RING_CAP);
-	struct ring_meta* h2l = aligned_alloc(64, sizeof(*h2l));
-	struct ring_meta* l2h = aligned_alloc(64, sizeof(*l2h));
-	if (!h2l_buf || !l2h_buf || !h2l || !l2h) {
+	/* posix_memalign, not aligned_alloc: the latter is glibc 2.16, above
+	 * the linux-amd64 floor. */
+	void* h2l_buf = NULL;
+	void* l2h_buf = NULL;
+	void* h2l_mem = NULL;
+	void* l2h_mem = NULL;
+	if (posix_memalign(&h2l_buf, 64, RING_CAP) ||
+	    posix_memalign(&l2h_buf, 64, RING_CAP) ||
+	    posix_memalign(&h2l_mem, 64, sizeof(struct ring_meta)) ||
+	    posix_memalign(&l2h_mem, 64, sizeof(struct ring_meta))) {
 		fprintf(stderr, "[relay] alloc failed\n");
 		return -1.0;
 	}
+	struct ring_meta* h2l = h2l_mem;
+	struct ring_meta* l2h = l2h_mem;
 	atomic_store(&h2l->head, 0);
 	atomic_store(&h2l->tail, 0);
 	atomic_store(&l2h->head, 0);

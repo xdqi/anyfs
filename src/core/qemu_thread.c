@@ -36,6 +36,7 @@
 #ifdef _WIN32
 #undef __MSYS__
 #endif
+#include "anyfs_tls.h"
 #include "qemu_thread.h"
 
 #define QEMU_THREAD_DEFAULT_TIMEOUT_MS 120000
@@ -143,6 +144,10 @@ int qemu_thread_start(char* err, size_t err_cap)
 	assert(!t_on_qemu_thread);
 	g_mutex_lock(&g_start_lock);
 	if (g_state == QT_IDLE) {
+		/* QEMU's curl driver is the only TLS user and runs on the QEMU
+		 * thread. setenv() races getenv() on other threads, so do it
+		 * here, once, before that thread exists. */
+		anyfs_tls_ca_init();
 		qemu_sem_init(&g_ready, 0);
 		qemu_sem_init(&g_stopped, 0);
 		/* Detached: shutdown waits on g_stopped instead of a join.

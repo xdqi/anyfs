@@ -262,6 +262,7 @@ anyfs_core_sources = files(
     'src/core/anyfs_probe.c',
     'src/core/anyfs_path.c',
     'src/core/anyfs_share.c',
+    'src/core/anyfs_tls.c',
 )
 
 # libblkid is REQUIRED — anyfs_probe.c always uses it to identify filesystems
@@ -386,6 +387,14 @@ test_share_helpers = executable('test_share_helpers',
     install: false,
 )
 test('share_helpers', test_share_helpers, suite: 'unit')
+
+test_tls_ca = executable('test_tls_ca',
+    'tests/unit/test_tls_ca.c',
+    'src/core/anyfs_tls.c',
+    include_directories: [include_directories('src/core')],
+    install: false,
+)
+test('tls_ca', test_tls_ca, suite: 'unit')
 
 bench_backends = executable('bench_backends',
     'tests/bench_backends.c',

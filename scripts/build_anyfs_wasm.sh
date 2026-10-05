@@ -123,6 +123,7 @@ CORE_SOURCES=(
     anyfs_probe.c
     anyfs_path.c
     anyfs_share.c
+    anyfs_tls.c
 )
 
 mkdir -p "$BLD"
