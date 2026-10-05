@@ -149,8 +149,27 @@ kernel's flags plus `-fPIC`:
 **Kernel link (`scripts/macho/build_kernel_dylib.sh --arch=arm64|x86_64`).** Compiles the
 glue with the target's ELF compiler, then runs
 `ld.lld -shared -Bsymbolic -z now -z max-page-size=16384 -z separate-loadable-segments
---no-undefined -soname liblkl-kernel.so lkl.o glue.o`, then elf2dylib. `--universal`
-merges both architectures with `llvm-lipo -create`.
+--unique --no-undefined -soname liblkl-kernel.so lkl.o glue.o`, then elf2dylib.
+`--universal` merges both architectures with `llvm-lipo -create`.
+
+The link must keep `lkl.o`'s sections in input order. `vmlinux.lds` defines some markers
+between output sections (`__init_begin`, `__init_end`, `_sdata`, `__end_rodata`, `_edata`,
+`__start_ro_after_init`, `__bss_start`), so in `lkl.o` each one is relative to a
+neighbouring section. All of `lkl.o`'s data sections, including `.rodata` (it holds
+`.data.rel.ro`), are writable and not RELRO to lld. They share one rank, so they keep
+the order in which lld creates their output sections. Without `--unique`, lld folds
+`.data..percpu` and `.data..ro_after_init` into one `.data`. It creates that `.data` at
+`.data..percpu`, ahead of `.rodata`, which gave `_sdata > _edata` and
+`__start_rodata > __end_rodata`. The kernel still booted, but printed garbage rwdata
+and rodata sizes, and `is_kernel_rodata()` was always false.
+`--unique` gives every input section its own output section, and lld's stable sort by
+segment rank then keeps input order within each segment. After the link, the script
+requires start <= end for `_stext`/`_etext`, `_sinittext`/`_einittext`,
+`__init_begin`/`__init_end`, `_sdata`/`_edata`, `__start_rodata`/`__end_rodata`,
+`__bss_start`/`__bss_stop`, `__start_ro_after_init`/`__end_ro_after_init` and
+`__bss_stop`/`_end`, and fails otherwise. One known gap remains: `__init_begin` is the end
+of `.text`, so `[__init_begin, __init_end)` also spans the RELRO segment, about 35 KiB.
+This is harmless because LKL's `free_initmem()` frees nothing.
 
 **elf2dylib (`scripts/macho/elf2dylib.py`).** A generic tool; it knows nothing about
 LKL.

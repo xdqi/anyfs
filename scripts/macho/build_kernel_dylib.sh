@@ -52,6 +52,15 @@ EXPORTS=(
 # Every other defined dynamic symbol of lkl-kernel.so. A new one fails the
 # build until it is either exported (after the audit above) or listed here.
 UNEXPORTED=(lkl_bug lkl_printf lkl_start_kernel)
+# START:END pairs of lkl.o's local image markers that must come out in order.
+# vmlinux.lds defines several of them between output sections, so in lkl.o
+# they are relative to a neighbouring section and land right only if the
+# link keeps lkl.o's sections in input order (see the spec's "Kernel link").
+BOUNDS=(
+    _stext:_etext _sinittext:_einittext __init_begin:__init_end _sdata:_edata
+    __start_rodata:__end_rodata __bss_start:__bss_stop
+    __start_ro_after_init:__end_ro_after_init __bss_stop:_end
+)
 
 die() { echo "build_kernel_dylib: $*" >&2; exit 1; }
 
@@ -146,8 +155,33 @@ LIBSYSTEM="${LIBSYSTEM:-$(zig_libsystem)}"
 
 "$cc" -O2 -Wall -fPIC -ffreestanding -fno-builtin -fno-stack-protector "${cflags[@]}" \
     -c "$HERE/lkl_elf_glue.c" -o "$dir/lkl_elf_glue.o"
+# --unique gives every input section its own output section. Without it, lld
+# folds lkl.o's .data..percpu and .data..ro_after_init into one .data, created
+# at .data..percpu, so ahead of .rodata, and the BOUNDS markers come out
+# inverted. With it, lld's stable sort by segment rank keeps lkl.o's sections
+# in input order within each segment.
 "$LD" -shared -Bsymbolic -z now -z max-page-size=16384 -z separate-loadable-segments \
-    --no-undefined -soname liblkl-kernel.so -o "$dir/lkl-kernel.so" "$lkl_o" "$dir/lkl_elf_glue.o"
+    --unique --no-undefined -soname liblkl-kernel.so -o "$dir/lkl-kernel.so" \
+    "$lkl_o" "$dir/lkl_elf_glue.o"
+
+declare -A addr=()
+while read -r value _ name; do
+    [[ -z ${addr[$name]:-} ]] || die "lkl-kernel.so defines the local symbol $name twice"
+    addr[$name]=$((16#$value))
+done < <("$NM" "$dir/lkl-kernel.so" \
+    | awk -v want=" ${BOUNDS[*]//:/ } " 'NF == 3 && $2 ~ /^[a-z]$/ && index(want, " " $3 " ")')
+misordered=()
+for pair in "${BOUNDS[@]}"; do
+    lo="${pair%:*}" hi="${pair#*:}"
+    [[ -n ${addr[$lo]:-} && -n ${addr[$hi]:-} ]] \
+        || die "lkl-kernel.so lacks the local symbol $lo or $hi"
+    start=${addr[$lo]} end=${addr[$hi]}
+    (( start <= end )) || misordered+=("$(printf '%s %#x > %s %#x' "$lo" "$start" "$hi" "$end")")
+done
+if [[ ${#misordered[@]} -gt 0 ]]; then
+    list="$(printf '%s, ' "${misordered[@]}")"
+    die "lkl-kernel.so has ${list%, }: the link moved lkl.o's sections out of input order"
+fi
 
 defined="$("$NM" -D --defined-only "$dir/lkl-kernel.so" | awk '{ print $NF }' | LC_ALL=C sort)"
 extra="$(LC_ALL=C comm -23 <(echo "$defined") <(printf '%s\n' "${EXPORTS[@]}" | LC_ALL=C sort))"
