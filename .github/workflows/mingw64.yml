@@ -264,18 +264,20 @@ jobs:
 
       - name: Build LKL kernel (mingw64)
         run: |
-          # No CC override, so no sccache: the kernel half of the mingw LKL
-          # build must go through the tools/lkl/bin/x86_64-w64-mingw32-gcc
-          # shim, which sends kernel code to cygwin-gcc (LP64) and only
-          # user-space code to mingw-gcc (LLP64). An absolute CC bypasses the
-          # shim and the kernel fails its struct page/folio offset asserts;
-          # handing the shim to sccache-dist would ship one toolchain for
-          # both halves. Until that is solved the farm below sits idle.
+          # --sccache: kernel compiles go to the farm as
+          # `sccache <abs cygwin-gcc>` (scripts/lib/lkl-mingw-cc.sh); links
+          # and user-space code keep using the tools/lkl/bin shim. A plain
+          # absolute --cc would bypass the shim and compile the kernel LLP64.
+          SCCACHE_ARGS=()
+          if command -v sccache >/dev/null 2>&1; then
+            SCCACHE_ARGS=(--sccache)
+          fi
           ./scripts/build_lkl.sh \
             --linux=deps/linux \
             --out="$GITHUB_WORKSPACE" \
             --targets=mingw64 \
-            -j"$(nproc)"
+            "${SCCACHE_ARGS[@]}" \
+            -j"${SCCACHE_J:-$(nproc)}"
           test -f "$GITHUB_WORKSPACE/lkl-mingw64/tools/lkl/lib/liblkl.dll" \
             || { echo "::error::liblkl.dll missing"; exit 1; }
 

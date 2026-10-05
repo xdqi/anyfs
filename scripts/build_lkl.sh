@@ -12,6 +12,8 @@
 #                       (default: linux-amd64,mingw32,mingw64)
 #   --clean             Run `make clean` in each target before building
 #   --cc=CMD            C compiler override passed to make as CC= (e.g. "sccache gcc")
+#   --sccache           Compile through sccache (and its dist farm), wired the
+#                       way each target needs; see sccache_cc_for. Overrides --cc.
 #   -j N                Parallelism (default: nproc)
 #
 # Expects each lkl-<target>/ to already contain a .config and (for mingw
@@ -30,6 +32,7 @@ TARGETS_REQ=""
 DO_CLEAN=0
 JOBS="$(nproc)"
 CC_OVERRIDE=""
+USE_SCCACHE=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -42,6 +45,7 @@ while [[ $# -gt 0 ]]; do
         --clean)     DO_CLEAN=1; shift ;;
         --cc=*)      CC_OVERRIDE="${1#--cc=}"; shift ;;
         --cc)        CC_OVERRIDE="$2"; shift 2 ;;
+        --sccache)   USE_SCCACHE=1; shift ;;
         -j)          JOBS="$2"; shift 2 ;;
         -j*)         JOBS="${1#-j}"; shift ;;
         -h|--help)
@@ -69,6 +73,24 @@ cross_for() {
     esac
 }
 
+# CC for building target $1 (cross prefix $2) through sccache. The compiler
+# goes to sccache by absolute path, so sccache hashes and ships the real
+# toolchain. mingw64 has two compilers (the tools/lkl/bin shim sends kernel
+# code to cygwin-gcc), so it goes through lib/lkl-mingw-cc.sh; mingw32 has
+# no shim (ILP32 long is pointer-sized) and uses its gcc directly.
+sccache_cc_for() {
+    local name="$1" cross="$2" cc
+    if [[ "$name" == mingw64 ]]; then
+        cc="$(command -v x86_64-pc-cygwin-gcc)" \
+            || { echo "Error: x86_64-pc-cygwin-gcc not on PATH" >&2; return 1; }
+        echo "$SCRIPT_DIR/lib/lkl-mingw-cc.sh $cc ${cross}gcc"
+        return
+    fi
+    cc="$(command -v "${cross}gcc")" \
+        || { echo "Error: ${cross}gcc not on PATH" >&2; return 1; }
+    echo "sccache $cc"
+}
+
 build_one() {
     local NAME="$1"
     local CROSS="$2"
@@ -90,6 +112,12 @@ build_one() {
 
     local cc_arg=()
     [[ -n "$CC_OVERRIDE" ]] && cc_arg=(CC="$CC_OVERRIDE")
+    if [[ $USE_SCCACHE -eq 1 ]]; then
+        local scc
+        scc="$(sccache_cc_for "$NAME" "$CROSS")" || return 1
+        cc_arg=(CC="$scc")
+        echo "  CC: $scc"
+    fi
 
     # OUTPUT must go through the environment, not as a make CLI arg — the
     # tools/lkl Makefile rewrites OUTPUT to "$OUTPUT/tools/lkl/", and a CLI
