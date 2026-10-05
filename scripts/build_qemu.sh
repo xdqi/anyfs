@@ -307,6 +307,12 @@ build_one() {
     echo "Built: $(ls -lh "$out" | awk '{print $5, $NF}')"
 }
 
+# Native patch subset (patches/qemu/series.native) — applied once to the
+# shared source tree before any target builds.
+# shellcheck source=lib/qemu_patches.sh
+source "$SCRIPT_DIR/lib/qemu_patches.sh"
+qemu_apply_series "$QEMU_SRC" "$SCRIPT_DIR/../patches/qemu/series.native" || exit 1
+
 FAILED=()
 for T in "${TARGETS_ARR[@]}"; do
     if ! build_one "$T"; then

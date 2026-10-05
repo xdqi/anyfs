@@ -49,17 +49,10 @@ case "$BLD" in /*) ;; *) BLD="$PWD/$BLD" ;; esac
 source "$EMSDK_DIR/emsdk_env.sh" >/dev/null 2>&1
 
 # ── Apply patches/qemu (idempotent, same mechanism as oot_fs.sh) ──────
+# shellcheck source=lib/qemu_patches.sh
+source "$REPO_ROOT/scripts/lib/qemu_patches.sh"
 for p in "$REPO_ROOT"/patches/qemu/*.patch; do
-    name="$(basename "$p")"
-    if (cd "$QEMU_ROOT" && patch -p1 --dry-run --silent < "$p") >/dev/null 2>&1; then
-        (cd "$QEMU_ROOT" && patch -p1 --silent < "$p")
-        echo "applied qemu patch: $name"
-    elif (cd "$QEMU_ROOT" && patch -p1 -R --dry-run --silent < "$p") >/dev/null 2>&1; then
-        echo "qemu patch already applied: $name"
-    else
-        echo "qemu patch $name neither applies forward nor is already applied" >&2
-        exit 1
-    fi
+    qemu_apply_patch "$QEMU_ROOT" "$p" || exit 1
 done
 
 # ── Configure (skipped when the build dir is already configured) ─────

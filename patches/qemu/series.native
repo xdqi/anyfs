@@ -1,0 +1,4 @@
+# Patches build_qemu.sh applies to native (linux / mingw) QEMU trees.
+# Everything else in this directory is emscripten-only and is applied by
+# build_qemu_wasm.sh, which applies every *.patch here (these included).
+0010-main-loop-embedder-gcontext.patch

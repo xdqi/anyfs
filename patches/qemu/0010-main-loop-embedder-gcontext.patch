@@ -1,0 +1,55 @@
+diff --git a/include/qemu/main-loop.h b/include/qemu/main-loop.h
+index 8c1241a2c1..a27acfd84b 100644
+--- a/include/qemu/main-loop.h
++++ b/include/qemu/main-loop.h
+@@ -54,6 +54,19 @@ typedef struct MainLoop MainLoop;
+  */
+ int qemu_init_main_loop(Error **errp);
+ 
++/**
++ * qemu_main_loop_set_gcontext: Choose the GMainContext for the main loop.
++ *
++ * By default qemu_init_main_loop() attaches the main AioContext and the
++ * iohandler GSources to the global default GMainContext.  A program that
++ * embeds the block layer next to its own GLib main loop (for example
++ * Electron/Chromium, which iterates g_main_context_default()) must keep
++ * QEMU's sources off that loop and run aio_poll() itself.  Call this before
++ * qemu_init_main_loop() to attach the sources to @ctx instead.  Passing NULL
++ * restores the default behaviour.
++ */
++void qemu_main_loop_set_gcontext(GMainContext *ctx);
++
+ /**
+  * main_loop_wait: Run one iteration of the main loop.
+  *
+diff --git a/util/main-loop.c b/util/main-loop.c
+index ad8645c30a..721e52e691 100644
+--- a/util/main-loop.c
++++ b/util/main-loop.c
+@@ -156,6 +156,12 @@ void qemu_notify_event(void)
+ }
+ 
+ static GArray *gpollfds;
++static GMainContext *main_loop_gcontext;
++
++void qemu_main_loop_set_gcontext(GMainContext *ctx)
++{
++    main_loop_gcontext = ctx;
++}
+ 
+ int qemu_init_main_loop(Error **errp)
+ {
+@@ -178,11 +184,11 @@ int qemu_init_main_loop(Error **errp)
+     gpollfds = g_array_new(FALSE, FALSE, sizeof(GPollFD));
+     src = aio_get_g_source(qemu_aio_context);
+     g_source_set_name(src, "aio-context");
+-    g_source_attach(src, NULL);
++    g_source_attach(src, main_loop_gcontext);
+     g_source_unref(src);
+     src = iohandler_get_g_source();
+     g_source_set_name(src, "io-handler");
+-    g_source_attach(src, NULL);
++    g_source_attach(src, main_loop_gcontext);
+     g_source_unref(src);
+     return 0;
+ }
