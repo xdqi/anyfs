@@ -8,9 +8,11 @@
 # names (anyfs_ts_<name>_p), so macro invocations are parsed as well.
 anyfs_wasm_exports() {
     local glue="$1" syms s out
+    # Only the identifier directly before '(' is the function name; a
+    # parameter type like `struct anyfs_ts_req*` must not be picked up.
     syms="$({ grep -hE '^[A-Za-z_][A-Za-z0-9_* ]*[ *]anyfs_ts_[A-Za-z0-9_]+\(' "$glue" \
                 | grep -v '^static' \
-                | grep -oE 'anyfs_ts_[A-Za-z0-9_]+'
+                | grep -oE 'anyfs_ts_[A-Za-z0-9_]+\(' | tr -d '('
               grep -hE '^DEF_P_TRAMP\(' "$glue" \
                 | sed -E 's/^DEF_P_TRAMP\([[:space:]]*([A-Za-z0-9_]+).*/anyfs_ts_\1_p/'
             } | sort -u)"

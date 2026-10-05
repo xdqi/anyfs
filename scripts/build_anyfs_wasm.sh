@@ -17,12 +17,12 @@
 #   ANYFS_TARGET=node:              ts/packages/core/wasm/anyfs.node.{mjs,wasm,...}
 #
 # Notes:
-#   - QEMU's block layer uses coroutines (emscripten_fiber backend), which
-#     forces ASYNCIFY=1. The fiber rewind path discards wasm export return
-#     values, so the C glue exposes `_p` (out-pointer) variants for every
-#     call that may touch the block layer.
-#   - PROXY_TO_PTHREAD=1 so synchronous ccall still works on the main thread;
-#     the asyncify unwinding happens on the dedicated pthread.
+#   - QEMU's block layer runs on its own thread (src/core/qemu_thread.c)
+#     and uses coroutines (emscripten fiber backend), which
+#     forces ASYNCIFY=1; only that thread's stack ever unwinds.
+#   - Every anyfs op runs on the glue's API thread (ts/native/anyfs_ts.c):
+#     the module-owning thread only submits requests, so it is always free
+#     to serve the file-system calls other pthreads proxy to it.
 set -euo pipefail
 
 # shellcheck source=lib/config.sh
@@ -180,20 +180,27 @@ done
 # anyfs_kernel.c is needed; the only QEMU-specific translation units left to
 # compile here are qemu_backend.c (real QEMU block headers) and qemu_stubs.c.
 
+QEMU_CFLAGS=(
+    -pthread -O2 -g
+    -I "$SRC_CORE"
+    -I "$REPO_ROOT/include"
+    -I "$QEMU_ROOT" -I "$QEMU_ROOT/include"
+    -I "$QBLD" -I "$QBLD/qapi"
+    -I "$SYS/include" -I "$SYS/include/glib-2.0"
+    -I "$SYS/lib/glib-2.0/include"
+    -I "$LINUX_DIR/tools/lkl/include"
+    -I "$OUT/tools/lkl/include"
+    -D_GNU_SOURCE
+    -DLKL_HOST_CONFIG_POSIX=1 -DLKL_HOST_CONFIG_WASM=1
+)
+
 QEMU_BLK_OBJ="$BLD/qemu_blk_backend.${TARGET}.o"
 echo "  CC   src/core/qemu_backend.c -> $QEMU_BLK_OBJ"
-emcc -pthread -O2 -g \
-     -I "$SRC_CORE" \
-     -I "$REPO_ROOT/include" \
-     -I "$QEMU_ROOT" -I "$QEMU_ROOT/include" \
-     -I "$QBLD" -I "$QBLD/qapi" \
-     -I "$SYS/include" -I "$SYS/include/glib-2.0" \
-     -I "$SYS/lib/glib-2.0/include" \
-     -I "$LINUX_DIR/tools/lkl/include" \
-     -I "$OUT/tools/lkl/include" \
-     -D_GNU_SOURCE \
-     -DLKL_HOST_CONFIG_POSIX=1 -DLKL_HOST_CONFIG_WASM=1 \
-     -c "$SRC_CORE/qemu_backend.c" -o "$QEMU_BLK_OBJ"
+emcc "${QEMU_CFLAGS[@]}" -c "$SRC_CORE/qemu_backend.c" -o "$QEMU_BLK_OBJ"
+
+QEMU_THREAD_OBJ="$BLD/qemu_thread.${TARGET}.o"
+echo "  CC   src/core/qemu_thread.c -> $QEMU_THREAD_OBJ"
+emcc "${QEMU_CFLAGS[@]}" -c "$SRC_CORE/qemu_thread.c" -o "$QEMU_THREAD_OBJ"
 
 QEMU_STUBS_OBJ="$BLD/qemu_stubs.${TARGET}.o"
 echo "  CC   src/core/qemu_stubs.c -> $QEMU_STUBS_OBJ"
@@ -214,9 +221,9 @@ OUT_JS="$OUT_DIR/${OUT_STEM}.mjs"
 
 EXPORTED_FUNCS="$(anyfs_wasm_exports "$GLUE")"
 
-EXPORTED_RUNTIME="ccall,cwrap,HEAPU8,HEAP32,HEAPU32,FS,${FS_RUNTIME},UTF8ToString,stringToUTF8,getValue,setValue"
+EXPORTED_RUNTIME="ccall,cwrap,HEAPU8,HEAP32,HEAPU32,FS,${FS_RUNTIME},UTF8ToString,stringToUTF8,lengthBytesUTF8,getValue,setValue"
 
-EXTRA_OBJS=("$QEMU_BLK_OBJ" "$QEMU_STUBS_OBJ")
+EXTRA_OBJS=("$QEMU_BLK_OBJ" "$QEMU_THREAD_OBJ" "$QEMU_STUBS_OBJ")
 # libblock.a is linked SEPARATELY under --whole-archive (see the emcc line below):
 # each QEMU block-format driver self-registers via a block_init() constructor and
 # is otherwise unreferenced, so a normal archive link GC's every driver except the
@@ -242,7 +249,8 @@ EXTRA_ARCHIVES=(
 LDFLAGS=(
     -pthread
     -sPROXY_TO_PTHREAD=1
-    -sPTHREAD_POOL_SIZE=32
+    # +2 over the kernel's needs: the glue's API thread and the QEMU thread.
+    -sPTHREAD_POOL_SIZE=34
     -sALLOW_MEMORY_GROWTH=1
     -sINITIAL_MEMORY=64MB
     -sMAXIMUM_MEMORY=512MB

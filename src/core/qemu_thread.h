@@ -36,7 +36,8 @@ int qemu_thread_call(void (*fn)(void* opaque), void* opaque);
  * running. */
 int qemu_thread_co_call(CoroutineEntry* fn, void* opaque);
 
-/* Stop the loop and join the thread. Later calls fail fast. */
+/* Stop the loop and wait until the thread is done with QEMU. Later calls
+ * fail fast. */
 void qemu_thread_stop(void);
 
 /* True when called on the QEMU thread. */

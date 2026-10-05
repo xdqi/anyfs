@@ -1,0 +1,119 @@
+diff --git a/include/qemu/event_notifier.h b/include/qemu/event_notifier.h
+index 8a4ff308e1..bf3920b225 100644
+--- a/include/qemu/event_notifier.h
++++ b/include/qemu/event_notifier.h
+@@ -33,6 +33,16 @@ typedef void EventNotifierHandler(EventNotifier *);
+ int event_notifier_init(EventNotifier *, int active);
+ void event_notifier_cleanup(EventNotifier *);
+ int event_notifier_set(EventNotifier *);
++
++#ifdef __EMSCRIPTEN__
++/*
++ * Bumped (and futex-woken) by every event_notifier_set(). qemu_poll_ns()
++ * waits on it instead of calling poll(): under -pthread emscripten proxies
++ * poll() to the main thread, where with ASYNCIFY it is an async import that
++ * aborts when reached through the proxy.
++ */
++extern uint32_t qemu_wasm_notify_seq;
++#endif
+ int event_notifier_test_and_clear(EventNotifier *);
+ 
+ #ifdef CONFIG_POSIX
+diff --git a/util/event_notifier-posix.c b/util/event_notifier-posix.c
+index 83fdbb96bb..f6c2a95453 100644
+--- a/util/event_notifier-posix.c
++++ b/util/event_notifier-posix.c
+@@ -19,6 +19,11 @@
+ #ifdef CONFIG_EVENTFD
+ #include <sys/eventfd.h>
+ #endif
++#ifdef __EMSCRIPTEN__
++#include <emscripten/threading.h>
++
++uint32_t qemu_wasm_notify_seq;
++#endif
+ 
+ #ifdef CONFIG_EVENTFD
+ /*
+@@ -121,6 +126,10 @@ int event_notifier_set(EventNotifier *e)
+     if (ret < 0 && errno != EAGAIN) {
+         return -errno;
+     }
++#ifdef __EMSCRIPTEN__
++    qatomic_inc(&qemu_wasm_notify_seq);
++    emscripten_futex_wake(&qemu_wasm_notify_seq, INT_MAX);
++#endif
+     return 0;
+ }
+ 
+diff --git a/util/osdep.c b/util/osdep.c
+index 4a8b8b5a90..522c67b110 100644
+--- a/util/osdep.c
++++ b/util/osdep.c
+@@ -613,7 +613,12 @@ writev(int fd, const struct iovec *iov, int iov_cnt)
+  */
+ int qemu_fdatasync(int fd)
+ {
+-#ifdef CONFIG_FDATASYNC
++#if defined(CONFIG_FDATASYNC) || defined(__EMSCRIPTEN__)
++    /*
++     * emscripten: fsync() is an async syscall (fd_sync) that aborts when a
++     * pthread proxies it to the main thread under ASYNCIFY; fdatasync() is
++     * a synchronous no-op there, since its file systems hold no dirty state.
++     */
+     return fdatasync(fd);
+ #else
+     return fsync(fd);
+diff --git a/util/qemu-timer.c b/util/qemu-timer.c
+index d93a020064..3ddb4e6ff2 100644
+--- a/util/qemu-timer.c
++++ b/util/qemu-timer.c
+@@ -23,6 +23,11 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#ifdef __EMSCRIPTEN__
++#include <math.h>
++#include <emscripten/threading.h>
++#include "qemu/event_notifier.h"
++#endif
+ #include "qemu/main-loop.h"
+ #include "qemu/timer.h"
+ #include "qemu/lockable.h"
+@@ -326,7 +331,35 @@ int qemu_timeout_ns_to_ms(int64_t ns)
+  */
+ int qemu_poll_ns(GPollFD *fds, guint nfds, int64_t timeout)
+ {
+-#ifdef CONFIG_PPOLL
++#ifdef __EMSCRIPTEN__
++    /*
++     * No poll() here: under -pthread emscripten proxies it to the main
++     * thread, where with ASYNCIFY it is an async import that aborts when
++     * reached through the proxy. In this build every fd QEMU waits on is an
++     * EventNotifier pipe, so wait for event_notifier_set() to bump
++     * qemu_wasm_notify_seq instead, then report every fd ready: their
++     * handlers drain the pipes with non-blocking reads, which tolerate
++     * EAGAIN. A set that lands before the wait changes the futex value, so
++     * no wake-up is lost.
++     */
++    static __thread uint32_t seen;
++    uint32_t seq = qatomic_load_acquire(&qemu_wasm_notify_seq);
++    guint i;
++
++    if (seq == seen && timeout != 0) {
++        emscripten_futex_wait(&qemu_wasm_notify_seq, seq,
++                              timeout < 0 ? INFINITY : timeout / 1e6);
++        seq = qatomic_load_acquire(&qemu_wasm_notify_seq);
++    }
++    if (seq == seen) {
++        return 0;
++    }
++    seen = seq;
++    for (i = 0; i < nfds; i++) {
++        fds[i].revents = fds[i].events & (G_IO_IN | G_IO_OUT);
++    }
++    return nfds;
++#elif defined(CONFIG_PPOLL)
+     if (timeout < 0) {
+         return ppoll((struct pollfd *)fds, nfds, NULL, NULL);
+     } else {

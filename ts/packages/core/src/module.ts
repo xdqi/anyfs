@@ -1,19 +1,8 @@
+import type { WasmApiModule } from './wasm-api.js';
+
 /** Minimal surface of the emscripten module we rely on. */
-export interface AnyfsModule {
-    HEAPU8: Uint8Array;
-    HEAP32: Int32Array;
+export interface AnyfsModule extends WasmApiModule {
     HEAPU32: Uint32Array;
-    _malloc(n: number): number;
-    _free(p: number): void;
-    ccall(
-        name: string,
-        ret: 'number' | 'string' | null,
-        argTypes: ReadonlyArray<'number' | 'string' | 'bigint'>,
-        args: ReadonlyArray<number | string | bigint>,
-        opts?: { async?: boolean },
-    ): number | string | Promise<number | string>;
-    UTF8ToString(ptr: number, maxBytes?: number): string;
-    stringToUTF8(s: string, ptr: number, maxBytes: number): void;
     FS: {
         mkdir(path: string, mode?: number): void;
         mount(type: unknown, opts: unknown, mountpoint: string): void;

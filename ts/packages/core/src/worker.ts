@@ -5,13 +5,10 @@
  *   - LKL's blocking syscalls (sem_wait → Atomics.wait) work — Chrome only
  *     permits Atomics.wait inside workers, not on the main JS thread.
  *
- * The QEMU-backed bundle uses ASYNCIFY=1 + emscripten's coroutine-wasm fiber
- * backend. Any wasm export that may hit the block layer goes through an
- * asyncify unwind/rewind cycle, and `Fibers.finishContextSwitch` discards the
- * export's return value (only `Asyncify.handleSleep` preserves it). The C
- * glue exposes `_p` variants that write their result to a caller-supplied
- * int32_t* out-pointer; we allocate one scratch out-pointer per mount and
- * read HEAP32 after every async call.
+ * This worker owns the module, so it must never block: every op runs on
+ * the bundle's API thread (see wasm-api.ts) while this thread stays free to
+ * serve the file-system calls other pthreads proxy to it — the QEMU
+ * thread's reads of the WORKERFS / URLFS image among them.
  *
  * Protocol: postMessage({id, op, args}) → postMessage({id, ok, result|error}).
  */
@@ -19,24 +16,13 @@
 
 import { createUrlFs } from './url-fs.js';
 import { setUrlProxyPrefix } from './electron-proxy.js';
+import { ApiOp, wasmApiFor, type WasmApi, type WasmApiModule } from './wasm-api.js';
 
 console.log('[WORKER_V3] anyfs.worker.js loaded at ' + Date.now());
 
 declare const self: DedicatedWorkerGlobalScope;
 
-interface AnyMod {
-    HEAPU8: Uint8Array;
-    HEAP32: Int32Array;
-    _malloc(n: number): number;
-    _free(p: number): void;
-    ccall: (
-        name: string,
-        ret: 'number' | 'string' | null,
-        argTypes: ReadonlyArray<'number' | 'string' | 'bigint'>,
-        args: ReadonlyArray<number | string | bigint>,
-        opts?: { async?: boolean },
-    ) => number | string | Promise<number | string>;
-    UTF8ToString(ptr: number, max?: number): string;
+interface AnyMod extends WasmApiModule {
     FS: {
         mkdir(p: string): void;
         mount(t: unknown, o: unknown, m: string): void;
@@ -47,8 +33,8 @@ interface AnyMod {
 }
 
 let M: AnyMod | null = null;
+let api: WasmApi | null = null;
 let diskHandle = -1;
-let outp = 0; // scratch int32 out-pointer, lifetime = mount session
 let readBuf = 0; // pre-allocated scratch buffer for pread, lifetime = mount session
 let readBufSize = 0;
 
@@ -81,29 +67,21 @@ self.addEventListener('unhandledrejection', (e: PromiseRejectionEvent) => {
     send({ event: 'host-rejection', message: r?.message ?? String(e.reason), stack: r?.stack });
 });
 
-/* Async ccall wrappers — every wasm export under the ASYNCIFY bundle must
- * pass {async:true} or emscripten throws "running asynchronously". */
-async function callA(
-    name: string,
-    ret: 'number' | 'string' | null,
-    argTypes: Array<'number' | 'string' | 'bigint'>,
-    args: Array<number | string | bigint>,
-): Promise<number | string> {
-    if (!M) throw new Error('not mounted');
-    return await (M.ccall(name, ret, argTypes, args, { async: true }) as Promise<number | string>);
+function needApi(): WasmApi {
+    if (!api) throw new Error('not mounted');
+    return api;
 }
 
-/* _p out-pointer variant: signature gains a trailing int32_t* out; JS reads
- * HEAP32[outp>>2] after the await. */
-async function callP(
-    name: string,
-    argTypes: Array<'number' | 'string' | 'bigint'>,
-    args: Array<number | string | bigint>,
-): Promise<number> {
-    if (!M) throw new Error('not mounted');
-    M.HEAP32[outp >> 2] = -0x7fffffff;
-    await M.ccall(name, null, [...argTypes, 'number'], [...args, outp], { async: true });
-    return M.HEAP32[outp >> 2];
+/** Open the image at fsPath read-only (neither WORKERFS nor URLFS can take
+ *  writebacks); a failure carries the backend's message. */
+async function openSession(fsPath: string): Promise<number> {
+    const a = needApi();
+    const h = await a.call(ApiOp.SESSION_OPEN, [fsPath, 1]);
+    if (h < 0) {
+        const why = await a.lastError();
+        throw new Error(`anyfs_ts_session_open failed: ${why || `rc=${h}`}`);
+    }
+    return h;
 }
 
 type BootArgs = {
@@ -140,48 +118,14 @@ const ops: Record<string, (a: any) => unknown> = {
             onAbort: (r: unknown) => send({ event: 'abort', reason: String(r) }),
         });
 
-        outp = M._malloc(4);
-        // Pre-allocate the read scratch buffer outside any asyncify context.
-        // Per-read _malloc/_free risk triggering Memory.grow inside an
-        // asyncify-suspended pread (which under -pthread queues notifications
-        // to peer workers; those fire as checkMailbox callbacks during the
-        // yield and tip asyncify into "import changed the state" abort).
+        api = wasmApiFor(M);
+        // Scratch buffer for pread, allocated once per boot.
         readBufSize = 1 << 20;
         readBuf = M._malloc(readBufSize);
 
         send({ event: 'progress', step: 'booting kernel' });
-        // Prefer async boot when available (worker-only builds without
-        // PROXY_TO_PTHREAD). The async path runs anyfs_ts_init on a
-        // dedicated pthread so the pool-owning thread stays free to
-        // process spawnThread messages during kernel boot.
-        if ((M as any)._anyfs_ts_init_async) {
-            send({ event: 'stderr', message: 'using async boot path' });
-            const asyncRc = M.ccall(
-                'anyfs_ts_init_async',
-                'number',
-                ['number', 'number'],
-                [memMb, loglevel],
-            );
-            send({ event: 'stderr', message: `anyfs_ts_init_async rc=${asyncRc}` });
-            if (asyncRc !== 0) throw new Error(`anyfs_ts_init_async failed: ${asyncRc}`);
-
-            send({ event: 'progress', step: 'waiting for kernel ready' });
-            for (let i = 0; i < 600; i++) {
-                if (M.ccall('anyfs_ts_is_boot_complete', 'number', [], [])) break;
-                await new Promise((r) => setTimeout(r, 100));
-            }
-            const result = M.ccall('anyfs_ts_boot_result', 'number', [], []);
-            send({ event: 'stderr', message: `anyfs_ts_boot_result=${result}` });
-            if (result !== 0) throw new Error(`anyfs_ts_kernel_init failed: ${result}`);
-        } else {
-            const ic = (await callA(
-                'anyfs_ts_kernel_init',
-                'number',
-                ['number', 'number'],
-                [memMb, loglevel],
-            )) as number;
-            if (ic !== 0) throw new Error(`anyfs_ts_kernel_init failed: ${ic}`);
-        }
+        const ic = await api.call(ApiOp.KERNEL_INIT, [memMb, loglevel]);
+        if (ic !== 0) throw new Error(`anyfs_ts_kernel_init failed: ${ic}`);
         send({ event: 'progress', step: 'kernel ready' });
         return { ok: true };
     },
@@ -208,10 +152,7 @@ const ops: Record<string, (a: any) => unknown> = {
             );
 
             send({ event: 'progress', step: 'opening disk' });
-            // Always open the underlying image read-only — WORKERFS-backed disks
-            // can't accept writebacks.
-            diskHandle = await callP('anyfs_ts_session_open_p', ['string', 'number'], [fsPath, 1]);
-            if (diskHandle < 0) throw new Error(`anyfs_ts_session_open failed: ${diskHandle}`);
+            diskHandle = await openSession(fsPath);
             return { diskHandle };
         } catch (e) {
             // Leave the worker reusable: drop the half-built handle + mount so a
@@ -243,10 +184,8 @@ const ops: Record<string, (a: any) => unknown> = {
                 message: '[diag] attachUrl URLFS mounted, calling disk_open...',
             });
             send({ event: 'progress', step: 'opening disk' });
-            // Read-only — the URL backend has no writeback path.
-            diskHandle = await callP('anyfs_ts_session_open_p', ['string', 'number'], [fsPath, 1]);
+            diskHandle = await openSession(fsPath);
             send({ event: 'stderr', message: `[diag] attachUrl disk_open returned ${diskHandle}` });
-            if (diskHandle < 0) throw new Error(`anyfs_ts_session_open failed: ${diskHandle}`);
             send({ event: 'stderr', message: '[diag] attachUrl done, returning diskHandle' });
             return { diskHandle };
         } catch (e) {
@@ -263,57 +202,24 @@ const ops: Record<string, (a: any) => unknown> = {
     },
 
     listParts() {
-        return callJsonOut('anyfs_ts_session_list_json_p', ['number'], [diskHandle]);
+        return needApi().callJsonOut(ApiOp.SESSION_LIST, [diskHandle], 'session_list_json');
     },
 
     meta() {
-        return callJsonOut('anyfs_ts_session_meta_json_p', ['number'], [diskHandle]);
+        return needApi().callJsonOut(ApiOp.SESSION_META, [diskHandle], 'session_meta_json');
     },
 
     async enter({ part, flags }: { part: number; flags?: number }) {
         if (!M) throw new Error('not mounted');
+        const a = needApi();
         const cap = 128;
         const out = M._malloc(cap);
         try {
-            // Prefer the async enter path when available. ext4 (jbd2) and btrfs
-            // mounts spawn a kernel thread; the synchronous enter blocks the
-            // pool-owning thread in sem_wait → Atomics.wait, and the browser
-            // can't create the new pthread's Worker while that thread is
-            // blocked → deadlock (vfat needs no kthread, so it works). Running
-            // the enter on a dedicated pthread keeps this thread's event loop
-            // free to service spawnThread, exactly like the async boot path.
-            if ((M as any)._anyfs_ts_session_enter_async) {
-                const asyncRc = M.ccall(
-                    'anyfs_ts_session_enter_async',
-                    'number',
-                    ['number', 'number', 'number'],
-                    [diskHandle, part, flags ?? 1],
-                );
-                if (asyncRc !== 0)
-                    throw new Error(`anyfs_ts_session_enter_async failed: ${asyncRc}`);
-
-                for (let i = 0; i < 600; i++) {
-                    if (M.ccall('anyfs_ts_session_enter_is_complete', 'number', [], [])) break;
-                    await new Promise((r) => setTimeout(r, 100));
-                }
-                if (!M.ccall('anyfs_ts_session_enter_is_complete', 'number', [], [])) {
-                    throw new Error('session_enter timed out (kernel thread never settled)');
-                }
-                const rc = await callP(
-                    'anyfs_ts_session_enter_result_p',
-                    ['number', 'number'],
-                    [out, cap],
-                );
-                if (rc < 0) throw new Error(`disk_enter rc=${rc}`);
-                return M.UTF8ToString(out);
+            const rc = await a.call(ApiOp.SESSION_ENTER, [diskHandle, part, flags ?? 1, out, cap]);
+            if (rc < 0) {
+                const why = await a.lastError();
+                throw new Error(`disk_enter rc=${rc}${why ? `: ${why}` : ''}`);
             }
-
-            const rc = await callP(
-                'anyfs_ts_session_enter_p',
-                ['number', 'number', 'number', 'number', 'number'],
-                [diskHandle, part, flags ?? 1, out, cap],
-            );
-            if (rc < 0) throw new Error(`disk_enter rc=${rc}`);
             return M.UTF8ToString(out);
         } finally {
             M._free(out);
@@ -321,32 +227,28 @@ const ops: Record<string, (a: any) => unknown> = {
     },
 
     readdir({ path }: { path: string }) {
-        return callJsonOutStr('anyfs_ts_readdir_json_p', path);
+        return needApi().callJsonOut(ApiOp.READDIR, [path], 'readdir_json');
     },
 
     stat({ path }: { path: string }) {
-        return callJsonOutStr('anyfs_ts_lstat_json_p', path);
+        return needApi().callJsonOut(ApiOp.LSTAT, [path], 'lstat_json');
     },
 
     // Follow-symlinks stat, needed so openReadable's Content-Length matches
     // the bytes actually streamable from the file (lstat on a symlink reports
     // the link-target string length, which truncates the download stream).
     statFollow({ path }: { path: string }) {
-        return callJsonOutStr('anyfs_ts_stat_json_p', path);
+        return needApi().callJsonOut(ApiOp.STAT, [path], 'stat_json');
     },
 
     // Read the verbatim target string of a symlink.
     async readlink({ path }: { path: string }) {
         if (!M) throw new Error('not mounted');
-        // PATH_MAX is 4096 on Linux; link targets can't exceed that anyway.
+        // PATH_MAX is 4096 on Linux; longer can't be represented anyway.
         const cap = 4096;
         const buf = M._malloc(cap);
         try {
-            const n = await callP(
-                'anyfs_ts_readlink_p',
-                ['string', 'number', 'number'],
-                [path, buf, cap],
-            );
+            const n = await needApi().call(ApiOp.READLINK, [path, buf, cap]);
             if (n < 0) throw new Error(`readlink rc=${n}`);
             return M.UTF8ToString(buf, n);
         } finally {
@@ -359,16 +261,11 @@ const ops: Record<string, (a: any) => unknown> = {
     // errno verbatim so callers can fall back (e.g. -ENOTDIR on a file).
     async realpath({ path }: { path: string }) {
         if (!M) throw new Error('not mounted');
-        // PATH_MAX is 4096 on Linux; any longer means the kernel can't
-        // represent the path anyway.
+        // PATH_MAX is 4096 on Linux; longer can't be represented anyway.
         const cap = 4096;
         const buf = M._malloc(cap);
         try {
-            const n = await callP(
-                'anyfs_ts_realpath_p',
-                ['string', 'number', 'number'],
-                [path, buf, cap],
-            );
+            const n = await needApi().call(ApiOp.REALPATH, [path, buf, cap]);
             if (n < 0) throw new Error(`realpath rc=${n}`);
             return M.UTF8ToString(buf, n);
         } finally {
@@ -378,51 +275,28 @@ const ops: Record<string, (a: any) => unknown> = {
 
     // Read a small text file from the in-kernel namespace (e.g.
     // /proc/filesystems). One wasm call instead of open+pwrite×N+close.
-    async readKernelFile({ path }: { path: string }) {
-        if (!M) throw new Error('not mounted');
-        let cap = 4096;
-        for (let i = 0; i < 5; i++) {
-            const buf = M._malloc(cap);
-            try {
-                const n = await callP(
-                    'anyfs_ts_read_kernel_file_p',
-                    ['string', 'number', 'number'],
-                    [path, buf, cap],
-                );
-                if (n >= 0) return M.UTF8ToString(buf, n);
-                const need = -n;
-                if (need <= cap) throw new Error(`readKernelFile rc=${n}`);
-                cap = Math.max(need + 256, cap * 2);
-            } finally {
-                M._free(buf);
-            }
-        }
-        throw new Error('readKernelFile: buffer too large');
+    readKernelFile({ path }: { path: string }) {
+        return needApi().callStringOut(ApiOp.READ_KERNEL_FILE, [path], 'readKernelFile', 4096);
     },
 
     open({ path }: { path: string }) {
-        return callP('anyfs_ts_open_p', ['string', 'number'], [path, 0]);
+        return needApi().call(ApiOp.OPEN, [path, 0]);
     },
 
     async read({ fd, offset, length }: { fd: number; offset: number; length: number }) {
         if (!M) throw new Error('not mounted');
-        // Use the pre-allocated scratch buffer; clamp the request so we never
-        // _malloc during a read (see mount() comment).
+        // Reads land in the boot-time scratch buffer; clamp to its size.
         const want = Math.min(length, readBufSize);
         const offBig = BigInt(offset);
-        const lo = Number(offBig & 0xffffffffn) >>> 0;
-        const hi = Number((offBig >> 32n) & 0xffffffffn) >>> 0;
-        const n = await callP(
-            'anyfs_ts_pread_p',
-            ['number', 'number', 'number', 'number', 'number'],
-            [fd, readBuf, want, lo, hi],
-        );
+        const lo = Number(offBig & 0xffffffffn) | 0;
+        const hi = Number((offBig >> 32n) & 0xffffffffn) | 0;
+        const n = await needApi().call(ApiOp.PREAD, [fd, readBuf, want, lo, hi]);
         if (n < 0) throw new Error(`pread rc=${n}`);
         return new Uint8Array(M.HEAPU8.subarray(readBuf, readBuf + n).slice());
     },
 
     close({ fd }: { fd: number }) {
-        return callP('anyfs_ts_close_p', ['number'], [fd]);
+        return needApi().call(ApiOp.CLOSE, [fd]);
     },
 
     /** Release the current disk + /work mount but keep the kernel booted, so
@@ -431,7 +305,7 @@ const ops: Record<string, (a: any) => unknown> = {
         if (!M) return 0;
         if (diskHandle >= 0) {
             try {
-                await callA('anyfs_ts_session_close', 'number', ['number'], [diskHandle]);
+                await needApi().call(ApiOp.SESSION_CLOSE, [diskHandle]);
             } catch {
                 /* best effort */
             }
@@ -445,24 +319,16 @@ const ops: Record<string, (a: any) => unknown> = {
         if (!M) return 0;
         if (diskHandle >= 0) {
             try {
-                await callA('anyfs_ts_session_close', 'number', ['number'], [diskHandle]);
+                await needApi().call(ApiOp.SESSION_CLOSE, [diskHandle]);
             } catch {
                 /* best effort */
             }
             diskHandle = -1;
         }
         try {
-            await callA('anyfs_ts_kernel_halt', 'number', [], []);
+            await needApi().call(ApiOp.KERNEL_HALT);
         } catch {
             /* best effort */
-        }
-        if (outp) {
-            try {
-                M._free(outp);
-            } catch {
-                /* best effort */
-            }
-            outp = 0;
         }
         if (readBuf) {
             try {
@@ -474,40 +340,14 @@ const ops: Record<string, (a: any) => unknown> = {
             readBufSize = 0;
         }
         M = null;
+        api = null;
         return 0;
     },
 };
 
-async function callJsonOut(
-    name: string,
-    argTypes: Array<'number' | 'string'>,
-    args: Array<number | string>,
-): Promise<unknown> {
-    if (!M) throw new Error('not mounted');
-    let cap = 8192;
-    for (let i = 0; i < 6; i++) {
-        const buf = M._malloc(cap);
-        try {
-            const n = await callP(name, [...argTypes, 'number', 'number'], [...args, buf, cap]);
-            if (n >= 0) return JSON.parse(M.UTF8ToString(buf, n));
-            const need = -n;
-            if (need <= cap) throw new Error(`${name} negative rc=${n}`);
-            cap = Math.max(need + 256, cap * 2);
-        } finally {
-            M._free(buf);
-        }
-    }
-    throw new Error(`${name} keeps requesting more buffer`);
-}
-
-function callJsonOutStr(name: string, path: string): Promise<unknown> {
-    return callJsonOut(name, ['string'], [path]);
-}
-
-// Ops are serialized: only one wasm call active at a time. LKL holds a single
-// CPU lock and ASYNCIFY suspends the running export; if two ops were
-// in-flight they would interleave inside the kernel and trip
-// `bad count while changing owner` panics.
+// Ops are serialized: one op in flight at a time, in message order. (The API
+// thread runs queued requests one by one anyway; this also keeps an op's
+// multi-call sequences — e.g. a failed open plus its lastError() — together.)
 let opChain: Promise<void> = Promise.resolve();
 
 self.addEventListener('message', (e: MessageEvent) => {

@@ -31,9 +31,6 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <pthread.h>
-#ifdef __EMSCRIPTEN__
-#include <emscripten.h>
-#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -237,12 +234,6 @@ int anyfs_session_open(const char* image_path, uint32_t flags,
 	}
 	d->n_parts = 0;
 
-	/* Yield to the event loop to flush any stale ASYNCIFY fiber
-	 * state left over from QEMU block I/O during lkl_disk_add.
-	 * Without this checkpoint, subsequent sysfs reads may hang. */
-#if defined(__EMSCRIPTEN__) && defined(ANYFS_HAS_QEMU)
-	emscripten_sleep(0);
-#endif
 	/* Look up the disk's kernel block name ("vda", "vdb", …). It is not
 	 * 'a' + disk_id: LKL never reuses disk ids, but the kernel reuses
 	 * virtio-blk indexes after a close. Reading from the already-mounted

@@ -3,13 +3,8 @@
  *
  * Uses QEMU's block layer (libblock.a) to support qcow2, vmdk, vdi, etc.
  *
- * Two embeddings, selected at compile time:
- *   ANYFS_QEMU_THREAD   — every QEMU call runs on the dedicated QEMU thread
- *                         (qemu_thread.c); LKL threads and API callers hand
- *                         work to it and block until it is done.
- *   (otherwise, legacy) — QEMU is called inline from whichever thread opens
- *                         a disk or issues a block request. Kept only until
- *                         the wasm glue moves to the QEMU thread.
+ * Every QEMU call runs on the dedicated QEMU thread (qemu_thread.c); LKL
+ * threads and API callers hand work to it and block until it is done.
  * See docs/superpowers/specs/2026-10-05-qemu-dedicated-thread-design.md.
  */
 
@@ -29,13 +24,11 @@
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
+#include "qemu_thread.h"
 #include "qobject/qdict.h"
 #include "system/block-backend-global-state.h"
 #include "system/block-backend-io.h"
 #include "system/block-backend.h"
-#ifdef ANYFS_QEMU_THREAD
-#include "qemu_thread.h"
-#endif
 
 /* On Windows, QEMU's osdep.h #defines close/open/read/write as wrappers.
  * Undef them now so our struct member names don't get mangled. */
@@ -61,10 +54,6 @@
 #include "anyfs.h"
 #include "qemu_backend.h"
 
-#ifdef __EMSCRIPTEN__
-#include <emscripten.h>
-#endif
-
 struct qemu_blk_ctx {
 	BlockBackend* blk;
 	int64_t capacity; /* bytes */
@@ -77,8 +66,7 @@ static int qemu_get_capacity(struct lkl_disk disk, unsigned long long* res)
 	return 0;
 }
 
-/* Open image_path as a BlockBackend. Calls into QEMU, so it runs on the QEMU
- * thread (or inline in the legacy embedding). */
+/* Open image_path as a BlockBackend. Runs on the QEMU thread. */
 static BlockBackend* open_image(const char* image_path, uint32_t flags,
 				Error** errp)
 {
@@ -160,10 +148,6 @@ static void prepare_snapshot_dir(uint32_t flags)
 	(void)flags;
 #endif
 }
-
-#ifdef ANYFS_QEMU_THREAD
-
-/* ── Dedicated-thread embedding ──────────────────────────────────── */
 
 struct open_req {
 	const char* path;
@@ -295,128 +279,6 @@ void qemu_backend_shutdown(void)
 {
 	qemu_thread_stop();
 }
-
-#else /* !ANYFS_QEMU_THREAD */
-
-/* ── Legacy inline embedding ─────────────────────────────────────── */
-
-static __thread int qemu_ctx_initialized;
-
-static int qemu_request(struct lkl_disk disk, struct lkl_blk_req* req)
-{
-	struct qemu_blk_ctx* ctx = disk.handle;
-	int64_t offset = (int64_t)req->sector * 512;
-
-	/* Ensure this thread has QEMU's AioContext (LKL may call from any
-	 * thread) */
-	if (!qemu_ctx_initialized) {
-		AioContext* main_ctx = qemu_get_aio_context();
-		if (!qemu_get_current_aio_context()) {
-			qemu_set_current_aio_context(main_ctx);
-		}
-		qemu_ctx_initialized = 1;
-	}
-
-	for (int i = 0; i < req->count; i++) {
-		int ret = 0;
-		switch (req->type) {
-		case LKL_DEV_BLK_TYPE_READ:
-			ret = blk_pread(ctx->blk, offset, req->buf[i].iov_len,
-					req->buf[i].iov_base, 0);
-			break;
-		case LKL_DEV_BLK_TYPE_WRITE:
-			ret = blk_pwrite(ctx->blk, offset, req->buf[i].iov_len,
-					 req->buf[i].iov_base, 0);
-			break;
-		case LKL_DEV_BLK_TYPE_FLUSH:
-			ret = blk_flush(ctx->blk);
-			break;
-		default:
-			return LKL_DEV_BLK_STATUS_IOERR;
-		}
-		if (ret < 0)
-			return LKL_DEV_BLK_STATUS_IOERR;
-		offset += req->buf[i].iov_len;
-	}
-	return LKL_DEV_BLK_STATUS_OK;
-}
-
-static int qemu_initialized = 0;
-
-int qemu_blk_open(const char* image_path, uint32_t flags,
-		  struct lkl_disk* disk_out)
-{
-	Error* errp = NULL;
-
-#ifdef __EMSCRIPTEN__
-	/* Force Asyncify-active state on the calling thread so QEMU's coroutine
-	 * yields and poll() calls see isAsyncContext=true. Without this, the
-	 * first poll(timeout>0) spin-loops because ASYNCIFY isn't engaged on
-	 * a worker-thread synchronous entry. */
-	emscripten_sleep(0);
-#endif
-	prepare_snapshot_dir(flags);
-	fprintf(stderr, "[qemu_blk] open(%s) ro=%d snap=%d\n", image_path,
-		!!(flags & ANYFS_SESSION_READONLY),
-		!!(flags & ANYFS_SESSION_SNAPSHOT));
-	if (!qemu_initialized) {
-		fprintf(stderr, "[qemu_blk] bdrv_init…\n");
-		/* MODULE_INIT_QOM must be called before bdrv_init so that QOM
-		 * types like QIOChannelSocket are registered.  QEMU binaries
-		 * (qemu-img, qemu-nbd) do this explicitly; we must do the same
-		 * when embedding the block layer in a library. */
-		module_call_init(MODULE_INIT_QOM);
-		bdrv_init();
-		if (qemu_init_main_loop(&errp) < 0) {
-			fprintf(stderr, "qemu_init_main_loop failed: %s\n",
-				error_get_pretty(errp));
-			error_free(errp);
-			return -1;
-		}
-		fprintf(stderr, "[qemu_blk] main loop ready\n");
-		qemu_initialized = 1;
-	}
-
-	BlockBackend* blk = open_image(image_path, flags, &errp);
-	if (!blk) {
-		anyfs_set_last_error("%s", error_get_pretty(errp));
-		fprintf(stderr, "blk_new_open(%s) failed: %s\n", image_path,
-			error_get_pretty(errp));
-		error_free(errp);
-		return -1;
-	}
-
-	struct qemu_blk_ctx* ctx = calloc(1, sizeof(*ctx));
-	ctx->blk = blk;
-	ctx->capacity = blk_getlength(blk);
-	fprintf(stderr, "[qemu_blk] capacity=%lld\n", (long long)ctx->capacity);
-	if (ctx->capacity < 0) {
-		fprintf(stderr, "blk_getlength failed\n");
-		blk_unref(blk);
-		free(ctx);
-		return -1;
-	}
-
-	disk_out->handle = ctx;
-	disk_out->ops = &qemu_blk_ops;
-	return 0;
-}
-
-void qemu_blk_close(struct lkl_disk* disk)
-{
-	struct qemu_blk_ctx* ctx = disk->handle;
-	if (ctx) {
-		blk_unref(ctx->blk);
-		free(ctx);
-		disk->handle = NULL;
-	}
-}
-
-void qemu_backend_shutdown(void)
-{
-}
-
-#endif /* ANYFS_QEMU_THREAD */
 
 struct lkl_dev_blk_ops qemu_blk_ops = {
     .get_capacity = qemu_get_capacity,

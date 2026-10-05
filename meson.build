@@ -240,12 +240,6 @@ if enable_qemu
         )
     endif
     qemu_args = ['-DANYFS_HAS_QEMU=1']
-    # Dedicated QEMU thread embedding (src/core/qemu_thread.c). The option
-    # exists only while the legacy inline embedding is still around for the
-    # wasm build; both go away once wasm moves over.
-    if get_option('qemu_thread')
-        qemu_args += ['-DANYFS_QEMU_THREAD=1']
-    endif
 else
     qemu_dep = []
     qemu_args = []
@@ -412,7 +406,7 @@ if host_machine.system() != 'windows'
     )
     test('session_reopen', test_session_reopen, suite: 'unit', timeout: 120)
 
-    if enable_qemu and get_option('qemu_thread')
+    if enable_qemu
         test_qemu_thread = executable('test_qemu_thread',
             'tests/test_qemu_thread.c',
             include_directories: [anyfs_inc, include_directories('src/core')],

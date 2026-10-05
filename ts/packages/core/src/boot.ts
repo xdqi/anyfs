@@ -1,5 +1,6 @@
 import { NodeWasmSession } from './node-wasm-session.js';
 import type { AnyfsModule, AnyfsModuleFactory } from './module.js';
+import { ApiOp, wasmApiFor } from './wasm-api.js';
 
 let g_modulePromise: Promise<AnyfsModule> | null = null;
 let g_kernelInitialised = false;
@@ -14,12 +15,7 @@ export async function bootModule(args: {
     g_modulePromise = (async () => {
         const M = await args.factory({ preRun: args.preRun });
         if (!g_kernelInitialised) {
-            const rc = M.ccall(
-                'anyfs_ts_kernel_init',
-                'number',
-                ['number', 'number'],
-                [args.memMb, args.loglevel],
-            ) as number;
+            const rc = await wasmApiFor(M).call(ApiOp.KERNEL_INIT, [args.memMb, args.loglevel]);
             if (rc !== 0) throw new Error(`anyfs_ts_kernel_init failed: ${rc}`);
             g_kernelInitialised = true;
         }
@@ -40,7 +36,7 @@ export async function openNodeSession(M: AnyfsModule, fsPath: string): Promise<N
 export async function haltKernel(): Promise<void> {
     if (!g_modulePromise) return;
     const M = await g_modulePromise;
-    M.ccall('anyfs_ts_kernel_halt', 'number', [], []);
+    await wasmApiFor(M).call(ApiOp.KERNEL_HALT);
     g_modulePromise = null;
     g_kernelInitialised = false;
 }

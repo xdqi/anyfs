@@ -88,144 +88,6 @@ int anyfs_ts_kernel_init(uint32_t mem_mb, uint32_t loglevel)
 	return anyfs_kernel_init(&opts);
 }
 
-#ifdef __EMSCRIPTEN__
-/*
- * Async boot for wasm/Worker environments: the synchronous anyfs_ts_init
- * blocks the calling thread in sem_down(init_sem) → Atomics.wait. While
- * the caller is blocked, pthread Workers cannot proxy nested thread
- * creation back to the calling thread (which owns the pool), so the
- * kernel deadlocks during boot.
- *
- * The fix: run anyfs_ts_init on a dedicated pthread. The pool-owning
- * thread returns to JavaScript immediately and polls
- * anyfs_ts_is_boot_complete(), with its event loop free to process
- * spawnThread messages while the kernel boots.
- */
-
-static volatile int g_boot_complete = 0;
-static volatile int g_boot_result = 0;
-
-static void* boot_thread_fn(void* arg)
-{
-	uint32_t mem_mb = ((uint32_t*)arg)[0];
-	uint32_t loglevel = ((uint32_t*)arg)[1];
-
-	g_boot_result = anyfs_ts_kernel_init(mem_mb, loglevel);
-	__sync_synchronize();
-	g_boot_complete = 1;
-
-	return NULL;
-}
-
-int anyfs_ts_init_async(uint32_t mem_mb, uint32_t loglevel)
-{
-	static uint32_t args[2];
-	args[0] = mem_mb;
-	args[1] = loglevel;
-
-	pthread_t thread;
-	int rc = pthread_create(&thread, NULL, boot_thread_fn, args);
-	if (rc != 0)
-		return -1;
-	pthread_detach(thread);
-	return 0; /* returns immediately — caller must poll */
-}
-
-int anyfs_ts_is_boot_complete(void)
-{
-	return g_boot_complete;
-}
-
-int anyfs_ts_boot_result(void)
-{
-	return g_boot_result;
-}
-
-/*
- * Async session_enter for wasm/Worker environments — same deadlock, same fix
- * as async boot. An ext4 (jbd2) or btrfs mount spawns a kernel thread; the
- * synchronous anyfs_ts_session_enter blocks the calling thread in
- * sem_down → Atomics.wait while that mount runs. The pool-owning thread can
- * then no longer service spawnThread/new Worker() messages (creating a peer
- * Worker needs its JS event loop to spin), so the mount deadlocks. vfat needs
- * no kthread, which is why it mounts fine.
- *
- * The fix mirrors boot_thread_fn exactly: run anyfs_ts_session_enter on a
- * dedicated detached pthread, return to JavaScript immediately, and poll
- * anyfs_ts_session_enter_is_complete() while the event loop stays free.
- *
- * Only ONE enter may be in flight at a time — the kernel holds a single CPU
- * lock, and worker.ts already serialises ops via its opChain. The completion
- * flag is reset at kick-off and set under the same __sync_synchronize barrier
- * the boot path uses.
- */
-
-/* Defined further down (alongside the other synchronous session ops). */
-int anyfs_ts_session_enter(int h, unsigned int part, uint32_t flags,
-			   char* mount_out, size_t mount_cap);
-
-static volatile int g_enter_complete = 0;
-static volatile int g_enter_result = 0;
-static char g_enter_mount[64];
-
-struct enter_args {
-	int handle;
-	unsigned int part;
-	uint32_t flags;
-};
-
-static void* enter_thread_fn(void* arg)
-{
-	struct enter_args* a = (struct enter_args*)arg;
-
-	g_enter_result = anyfs_ts_session_enter(a->handle, a->part, a->flags,
-						g_enter_mount,
-						sizeof(g_enter_mount));
-	__sync_synchronize();
-	g_enter_complete = 1;
-
-	return NULL;
-}
-
-int anyfs_ts_session_enter_async(int handle, unsigned int part, uint32_t flags)
-{
-	static struct enter_args args;
-
-	args.handle = handle;
-	args.part = part;
-	args.flags = flags;
-
-	g_enter_complete = 0;
-	g_enter_result = 0;
-	g_enter_mount[0] = '\0';
-	__sync_synchronize();
-
-	pthread_t thread;
-	int rc = pthread_create(&thread, NULL, enter_thread_fn, &args);
-	if (rc != 0)
-		return -1;
-	pthread_detach(thread);
-	return 0; /* returns immediately — caller must poll */
-}
-
-int anyfs_ts_session_enter_is_complete(void)
-{
-	return g_enter_complete;
-}
-
-/* Out-pointer result accessor, matching the _p convention: writes the rc
- * (0 on success, negative errno / negative sentinel on failure) through
- * *out and copies the mount path into mount_out. Only valid once
- * anyfs_ts_session_enter_is_complete() returns 1. */
-void anyfs_ts_session_enter_result_p(char* mount_out, size_t mount_cap,
-				     int32_t* out)
-{
-	if (mount_out && mount_cap)
-		snprintf(mount_out, mount_cap, "%s", g_enter_mount);
-	*out = (int32_t)g_enter_result;
-}
-#endif
-
 int anyfs_ts_kernel_halt(void)
 {
 	for (int i = 0; i < MAX_HANDLES; i++) {
@@ -499,68 +361,170 @@ int anyfs_ts_close(int fd)
 	return (int)lkl_sys_close(fd);
 }
 
-/* ── Out-pointer variants for ASYNCIFY+fiber compatibility ─────────────
+#ifdef __EMSCRIPTEN__
+/* ── API thread (wasm) ─────────────────────────────────────────────────
  *
- * When the wasm bundle uses ASYNCIFY=1 and QEMU's coroutine backend
- * (emscripten_fiber), every blk_pread does a fiber_swap which forces an
- * asyncify unwind/rewind cycle. Emscripten's `Fibers.finishContextSwitch`
- * discards the wasm export's return value (it's only preserved on the
- * handleSleep path). Workaround: write the result through an out-pointer,
- * JS reads it via getValue/HEAP32 after the call resolves. */
+ * Every op runs on one long-lived pthread. The thread that owns the module
+ * (the browser Worker, or Node's main thread) must never block: pthreads
+ * proxy their file-system calls to it — including the QEMU thread's reads
+ * of the image through WORKERFS / URLFS / NODEFS — and only it can start
+ * the Workers that new pthreads (kernel threads during boot or an ext4 /
+ * btrfs mount) need. So JS fills a struct anyfs_ts_req in linear memory,
+ * anyfs_ts_api_submit() queues it and returns at once, and the API thread
+ * reports completion on the owning thread through Module.anyfsApiDone(id).
+ *
+ * The op numbers and the struct layout are mirrored in
+ * ts/packages/core/src/wasm-api.ts (and the bundle smoke test).
+ */
+enum {
+	ANYFS_TS_OP_KERNEL_INIT = 1,	   /* mem_mb, loglevel */
+	ANYFS_TS_OP_KERNEL_HALT = 2,	   /* — */
+	ANYFS_TS_OP_SESSION_OPEN = 3,	   /* path, flags */
+	ANYFS_TS_OP_SESSION_CLOSE = 4,	   /* h */
+	ANYFS_TS_OP_SESSION_LIST = 5,	   /* h, buf, cap */
+	ANYFS_TS_OP_SESSION_META = 6,	   /* h, buf, cap */
+	ANYFS_TS_OP_SESSION_ENTER = 7,	   /* h, part, flags, buf, cap */
+	ANYFS_TS_OP_READDIR = 8,	   /* path, buf, cap */
+	ANYFS_TS_OP_LSTAT = 9,		   /* path, buf, cap */
+	ANYFS_TS_OP_STAT = 10,		   /* path, buf, cap */
+	ANYFS_TS_OP_REALPATH = 11,	   /* path, buf, cap */
+	ANYFS_TS_OP_READLINK = 12,	   /* path, buf, cap */
+	ANYFS_TS_OP_READ_KERNEL_FILE = 13, /* path, buf, cap */
+	ANYFS_TS_OP_OPEN = 14,		   /* path, flags */
+	ANYFS_TS_OP_PREAD = 15,		   /* fd, buf, n, off_lo, off_hi */
+	ANYFS_TS_OP_CLOSE = 16,		   /* fd */
+	ANYFS_TS_OP_LAST_ERROR = 17,	   /* buf, cap */
+};
 
-#define DEF_P_TRAMP(name, params, call)                                        \
-	void anyfs_ts_##name##_p params                                        \
-	{                                                                      \
-		*out = (int32_t)anyfs_ts_##name call;                          \
-	}
+struct anyfs_ts_req {
+	int32_t op;  /* ANYFS_TS_OP_* */
+	int32_t id;  /* JS correlation id, echoed to anyfsApiDone */
+	int32_t ret; /* result, valid once anyfsApiDone(id) ran */
+	int32_t arg[6];
+	struct anyfs_ts_req* next; /* queue link, owned by C */
+};
 
-DEF_P_TRAMP(session_open,
-	    (const char* image_path, uint32_t flags, int32_t* out),
-	    (image_path, flags))
-DEF_P_TRAMP(session_list_json, (int h, char* buf, size_t cap, int32_t* out),
-	    (h, buf, cap))
-DEF_P_TRAMP(session_meta_json, (int h, char* buf, size_t cap, int32_t* out),
-	    (h, buf, cap))
-DEF_P_TRAMP(session_enter,
-	    (int h, unsigned int part, uint32_t flags, char* mount_out,
-	     size_t mount_cap, int32_t* out),
-	    (h, part, flags, mount_out, mount_cap))
-DEF_P_TRAMP(readdir_json,
-	    (const char* path, char* buf, size_t cap, int32_t* out),
-	    (path, buf, cap))
-DEF_P_TRAMP(lstat_json, (const char* path, char* buf, size_t cap, int32_t* out),
-	    (path, buf, cap))
-DEF_P_TRAMP(stat_json, (const char* path, char* buf, size_t cap, int32_t* out),
-	    (path, buf, cap))
-DEF_P_TRAMP(realpath, (const char* path, char* buf, size_t cap, int32_t* out),
-	    (path, buf, cap))
-DEF_P_TRAMP(readlink, (const char* path, char* buf, size_t cap, int32_t* out),
-	    (path, buf, cap))
-DEF_P_TRAMP(read_kernel_file,
-	    (const char* path, char* buf, size_t cap, int32_t* out),
-	    (path, buf, cap))
-DEF_P_TRAMP(open, (const char* path, int flags, int32_t* out), (path, flags))
-DEF_P_TRAMP(close, (int fd, int32_t* out), (fd))
+static pthread_mutex_t g_api_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_api_cond = PTHREAD_COND_INITIALIZER;
+static struct anyfs_ts_req *g_api_head, *g_api_tail;
+static int g_api_started;
 
-#undef DEF_P_TRAMP
-
-/* Offset split into low/high 32-bit halves to avoid i64 args (which
- * crash the asyncify rewind path under WASM_BIGINT). */
-void anyfs_ts_pread_p(int fd, void* buf, uint32_t n, uint32_t off_lo,
-		      uint32_t off_hi, int32_t* out)
+/* Copy this thread's last error (the API thread's — it ran the failed op)
+ * into buf. Returns its length, or 0 if there is none. */
+static int api_last_error(char* buf, size_t cap)
 {
-	int64_t off = (int64_t)(((uint64_t)off_hi << 32) | off_lo);
-	int64_t got = anyfs_ts_pread(fd, buf, n, off);
-	if (got > 0x7fffffff)
-		got = 0x7fffffff;
-	*out = (int32_t)got;
+	const char* e = anyfs_get_last_error();
+	if (!cap)
+		return 0;
+	snprintf(buf, cap, "%s", e ? e : "");
+	return (int)strlen(buf);
 }
 
-/* PROXY_TO_PTHREAD requires a main(). It runs on the worker pthread that
- * subsequently hosts the LKL kernel CPU thread.
- * emscripten_exit_with_live_runtime yields the pthread back to the event loop
- * without tearing the runtime down, so JS->C ccalls keep working (they're
- * auto-proxied to this same pthread). */
+static int32_t api_run(const struct anyfs_ts_req* r)
+{
+	const int32_t* a = r->arg;
+#define P(i) ((void*)(intptr_t)a[i])
+#define S(i) ((const char*)(intptr_t)a[i])
+#define Z(i) ((size_t)(uint32_t)a[i])
+	switch (r->op) {
+	case ANYFS_TS_OP_KERNEL_INIT:
+		return anyfs_ts_kernel_init((uint32_t)a[0], (uint32_t)a[1]);
+	case ANYFS_TS_OP_KERNEL_HALT:
+		return anyfs_ts_kernel_halt();
+	case ANYFS_TS_OP_SESSION_OPEN:
+		anyfs_set_last_error("%s", "");
+		return anyfs_ts_session_open(S(0), (uint32_t)a[1]);
+	case ANYFS_TS_OP_SESSION_CLOSE:
+		return anyfs_ts_session_close(a[0]);
+	case ANYFS_TS_OP_SESSION_LIST:
+		return anyfs_ts_session_list_json(a[0], P(1), Z(2));
+	case ANYFS_TS_OP_SESSION_META:
+		return anyfs_ts_session_meta_json(a[0], P(1), Z(2));
+	case ANYFS_TS_OP_SESSION_ENTER:
+		anyfs_set_last_error("%s", "");
+		return anyfs_ts_session_enter(a[0], (unsigned int)a[1],
+					      (uint32_t)a[2], P(3), Z(4));
+	case ANYFS_TS_OP_READDIR:
+		return anyfs_ts_readdir_json(S(0), P(1), Z(2));
+	case ANYFS_TS_OP_LSTAT:
+		return anyfs_ts_lstat_json(S(0), P(1), Z(2));
+	case ANYFS_TS_OP_STAT:
+		return anyfs_ts_stat_json(S(0), P(1), Z(2));
+	case ANYFS_TS_OP_REALPATH:
+		return anyfs_ts_realpath(S(0), P(1), Z(2));
+	case ANYFS_TS_OP_READLINK:
+		return anyfs_ts_readlink(S(0), P(1), Z(2));
+	case ANYFS_TS_OP_READ_KERNEL_FILE:
+		return anyfs_ts_read_kernel_file(S(0), P(1), Z(2));
+	case ANYFS_TS_OP_OPEN:
+		return anyfs_ts_open(S(0), a[1]);
+	case ANYFS_TS_OP_PREAD: {
+		int64_t off = (int64_t)(((uint64_t)(uint32_t)a[4] << 32) |
+					(uint32_t)a[3]);
+		int64_t got = anyfs_ts_pread(a[0], P(1), (uint32_t)a[2], off);
+		return got > INT32_MAX ? INT32_MAX : (int32_t)got;
+	}
+	case ANYFS_TS_OP_CLOSE:
+		return anyfs_ts_close(a[0]);
+	case ANYFS_TS_OP_LAST_ERROR:
+		return api_last_error(P(0), Z(1));
+	}
+#undef P
+#undef S
+#undef Z
+	return -1;
+}
+
+static void* api_thread_fn(void* unused)
+{
+	(void)unused;
+	for (;;) {
+		pthread_mutex_lock(&g_api_lock);
+		while (!g_api_head)
+			pthread_cond_wait(&g_api_cond, &g_api_lock);
+		struct anyfs_ts_req* r = g_api_head;
+		g_api_head = r->next;
+		if (!g_api_head)
+			g_api_tail = NULL;
+		pthread_mutex_unlock(&g_api_lock);
+
+		r->ret = api_run(r);
+		MAIN_THREAD_ASYNC_EM_ASM(
+		    { Module["anyfsApiDone"]($0); }, r->id);
+	}
+	return NULL;
+}
+
+/* Queue `r` for the API thread (started on first use) and return at once.
+ * Called on the module-owning thread. Returns 0, or -1 if the thread could
+ * not be started. */
+int anyfs_ts_api_submit(struct anyfs_ts_req* r)
+{
+	pthread_mutex_lock(&g_api_lock);
+	if (!g_api_started) {
+		pthread_t t;
+		if (pthread_create(&t, NULL, api_thread_fn, NULL) != 0) {
+			pthread_mutex_unlock(&g_api_lock);
+			return -1;
+		}
+		pthread_detach(t);
+		g_api_started = 1;
+	}
+	r->next = NULL;
+	if (g_api_tail)
+		g_api_tail->next = r;
+	else
+		g_api_head = r;
+	g_api_tail = r;
+	pthread_cond_signal(&g_api_cond);
+	pthread_mutex_unlock(&g_api_lock);
+	return 0;
+}
+#endif /* __EMSCRIPTEN__ */
+
+/* PROXY_TO_PTHREAD requires a main(). It has nothing to do: every op runs
+ * on the API thread (anyfs_ts_api_submit). emscripten_exit_with_live_runtime
+ * returns the pthread to its event loop without tearing the runtime down. */
 int main(void)
 {
 #ifdef __EMSCRIPTEN__

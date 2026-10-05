@@ -51,6 +51,7 @@ static int g_state = QT_IDLE;
 static char g_start_err[256];
 static QemuThread g_thread;
 static QemuSemaphore g_ready;
+static QemuSemaphore g_stopped;
 static AioContext* g_ctx;
 static bool g_stop_requested;
 static __thread bool t_on_qemu_thread;
@@ -111,8 +112,8 @@ static void* qemu_thread_fn(void* arg)
 			 err ? error_get_pretty(err) : "unknown error");
 		error_free(err);
 		qatomic_set(&g_state, QT_FAILED);
-		qemu_sem_post(&g_ready);
 		rcu_unregister_thread();
+		qemu_sem_post(&g_ready);
 		return NULL;
 	}
 	g_ctx = qemu_get_aio_context();
@@ -123,6 +124,7 @@ static void* qemu_thread_fn(void* arg)
 		aio_poll(g_ctx, true);
 
 	rcu_unregister_thread();
+	qemu_sem_post(&g_stopped);
 	return NULL;
 }
 
@@ -134,11 +136,14 @@ int qemu_thread_start(char* err, size_t err_cap)
 	g_mutex_lock(&g_start_lock);
 	if (g_state == QT_IDLE) {
 		qemu_sem_init(&g_ready, 0);
+		qemu_sem_init(&g_stopped, 0);
+		/* Detached: shutdown waits on g_stopped instead of a join.
+		 * Under emscripten a pthread whose stack Asyncify has unwound
+		 * for a coroutine switch never reaches the thread-exit path
+		 * that a join waits for. */
 		qemu_thread_create(&g_thread, "anyfs-qemu", qemu_thread_fn,
-				   NULL, QEMU_THREAD_JOINABLE);
+				   NULL, QEMU_THREAD_DETACHED);
 		wait_done(&g_ready, "initialisation");
-		if (qatomic_read(&g_state) == QT_FAILED)
-			qemu_thread_join(&g_thread);
 	}
 	state = qatomic_read(&g_state);
 	g_mutex_unlock(&g_start_lock);
@@ -214,7 +219,7 @@ void qemu_thread_stop(void)
 	if (g_state == QT_RUNNING) {
 		qatomic_set(&g_state, QT_STOPPED);
 		aio_bh_schedule_oneshot(g_ctx, qt_stop_bh, NULL);
-		qemu_thread_join(&g_thread);
+		wait_done(&g_stopped, "shutdown");
 	} else if (g_state == QT_IDLE) {
 		g_state = QT_STOPPED;
 	}
