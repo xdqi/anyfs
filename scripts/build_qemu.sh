@@ -107,6 +107,8 @@ QEMU_LIBS=(
 )
 
 # Per-target configure / link helpers ---------------------------------------
+# build_one runs as `if ! build_one …`, where bash suspends `set -e`; every
+# step that can fail therefore carries an explicit `|| return 1`.
 
 configure_for() {
     # Emits the configure arg list specific to $1, one arg per line so the
@@ -235,7 +237,8 @@ build_one() {
         rm -rf "$builddir"
         mkdir -p "$builddir"
         ( cd "$builddir" && "$QEMU_SRC/configure" \
-              "${COMMON_CONFIGURE[@]}" "${target_cfg[@]}" "${cc_cfg[@]}" )
+              "${COMMON_CONFIGURE[@]}" "${target_cfg[@]}" "${cc_cfg[@]}" ) \
+            || return 1
         # b_pie=false matches the -fno-pie/-fPIC flags; needed for the shared
         # link on Linux and harmless on mingw. werror=false keeps the build
         # from tripping over glibc-vs-QEMU prototype drift (e.g.
@@ -244,7 +247,7 @@ build_one() {
     fi
 
     # Build the static libs ---------------------------------------------------
-    ( cd "$builddir" && ninja -j"$JOBS" "${QEMU_LIBS[@]}" )
+    ( cd "$builddir" && ninja -j"$JOBS" "${QEMU_LIBS[@]}" ) || return 1
 
     # Verify all libs are present before attempting the shared link.
     for lib in "${QEMU_LIBS[@]}"; do
@@ -266,7 +269,7 @@ build_one() {
     # pkg-config --libs may return zero entries if a module is missing — fail
     # loudly rather than producing an under-linked DLL.
     local pkg_libs
-    pkg_libs="$("$pkgcc" --libs "${pkg_mods[@]}")"
+    pkg_libs="$("$pkgcc" --libs "${pkg_mods[@]}")" || return 1
 
     echo "  linker: $cc"
     echo "  pkg modules: ${pkg_mods[*]}"
@@ -302,7 +305,7 @@ build_one() {
         -Wl,--end-group \
         "${libgcc_trailing[@]}" \
         $pkg_libs \
-        "${extra_libs[@]}"
+        "${extra_libs[@]}" || return 1
 
     echo "Built: $(ls -lh "$out" | awk '{print $5, $NF}')"
 }
