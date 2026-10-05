@@ -908,3 +908,40 @@ uncaught exception in the main process, and the renderer received `null` where t
 **Fix:** both workers now `Reject()` with the error, matching the wasm backend. Verified:
 `readdirJson`, `lstatJson` and `readlink` on a missing path reject with `rc=-2`.
 
+
+---
+
+## F19 — Windows native: quitting with a disk still open hung the process forever (✅ FIXED 2026-10-05, was High)
+
+**Observed:** an Electron probe under wine 10 (Electron 42.3.0 win32-x64, offscreen window, the
+win64 `anyfs_native.node` loaded in the main process) opened a qcow2 or a raw image, then called
+`app.quit()` without `sessionClose` / `kernelHalt`. `will-quit` fired, but the process never
+exited (killed by `timeout` after 300–500 s). This happened with both the pre- and the
+post-QEMU-thread addon, and with the raw backend too, so it is not QEMU-related. The same probe
+exited in 2–3 s when it called `kernelHalt` before quitting. The real app never halts the
+kernel on quit (`window-all-closed` → `app.quit()`), so closing its window with a disk open in
+native mode left a process that could not exit. This is very likely part of what F9 looked like
+on real Windows.
+
+**Root cause:** `anyfs_kernel_init` registers `anyfs_atexit_cleanup`, which unmounts, removes
+disks and halts LKL. Inside a DLL (the addon links libanyfs_core statically into
+`anyfs_native.node`), the CRT runs that handler at `DLL_PROCESS_DETACH` during `ExitProcess()`,
+and Windows terminates every other thread, LKL's and the QEMU thread included, *before* that.
+The first `lkl_sys_*` call then waits for a dead thread forever. The debugger could not attach
+(error 5: the process was already exiting). On Linux `atexit` runs while threads still live,
+which is why this never showed up there.
+
+**Fix:**
+- `anyfs_atexit_cleanup` returns early on Windows when `RtlDllShutdownInProgress()` (ntdll) says
+  the process is exiting. The OS reclaims everything; nothing could be cleaned up without the
+  kernel's threads anyway. A CLI calling `exit()` is unaffected, since handlers registered in an
+  exe run before `ExitProcess` (argued from the documented semantics; not exercised under wine).
+- electron-demo `main.ts` halts the native kernel on `will-quit` (bounded by 10 s, skipped
+  after an engine fatal), so filesystems are unmounted cleanly before the process exits.
+
+Verified under wine: with the guard, quitting with a qcow2 or raw disk open exits in 3 s. The
+F9 switch repro passes in 4 s with the current addon: qcow2 / whole-disk btrfs vmdk / raw GPT
+image, 5 rounds of open → list → enter → readdir → read files (about 7 MB from the qcow2 each
+round) → close, then halt and quit. The old addon
+failed it: it hung after the first file read, and in switch-only mode it hit F17 on the 3rd disk
+and then this exit hang.

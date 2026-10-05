@@ -448,6 +448,9 @@ type AnyfsNativeModule = {
 
 let nativeMod: AnyfsNativeModule | null = null;
 let nativeInitDone = false;
+// Set once the engine reported a fatal (a wedged QEMU thread): halting it
+// would never return.
+let nativeFailed = false;
 
 // Per-disk HTTP proxy workers. Each disk gets its own Worker thread running
 // an HTTP server on a random port. The addon calls block the calling thread's
@@ -464,6 +467,7 @@ function loadNativeAddon(): AnyfsNativeModule | null {
         // A wedged engine (QEMU thread past its watchdog) never answers the
         // pending IPC call; tell every renderer so the session can fail.
         m.onFatal((reason) => {
+            nativeFailed = true;
             console.error(`[anyfs-native] fatal: ${reason}`);
             for (const w of BrowserWindow.getAllWindows()) {
                 w.webContents.send('anyfs-native:fatal', reason);
@@ -681,4 +685,26 @@ void app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
+});
+
+// Halt the native kernel before the process exits, so its filesystems are
+// unmounted while LKL's threads still run. The addon's own exit-time
+// cleanup cannot do it on Windows: ExitProcess terminates every other
+// thread before a DLL's atexit handlers run, so there it is skipped.
+const NATIVE_HALT_TIMEOUT_MS = 10_000;
+let nativeHaltStarted = false;
+app.on('will-quit', (event) => {
+    if (!nativeMod || !nativeInitDone || nativeFailed || nativeHaltStarted) return;
+    nativeHaltStarted = true;
+    event.preventDefault();
+    const halt = nativeMod.kernelHalt().catch((e: Error) => {
+        console.error(`[anyfs-native] kernelHalt failed: ${e.message}`);
+    });
+    const timeout = new Promise<void>((resolve) =>
+        setTimeout(() => {
+            console.error('[anyfs-native] kernelHalt timed out; exiting anyway');
+            resolve();
+        }, NATIVE_HALT_TIMEOUT_MS),
+    );
+    void Promise.race([halt, timeout]).then(() => app.quit());
 });

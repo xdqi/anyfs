@@ -18,6 +18,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 /* ── Internal state ────────────────────────────────────────────── */
 
@@ -68,12 +71,37 @@ void anyfs_fatal(const char* fmt, ...)
 
 static int g_kernel_started;
 
+#ifdef _WIN32
+/* True while ExitProcess() tears the process down. By then Windows has
+ * already terminated every other thread, LKL's and the QEMU thread
+ * included, and only then runs a DLL's atexit handlers (when anyfs is
+ * linked into a DLL such as the Electron addon). Any LKL call would wait
+ * for those dead threads forever. ntdll exports the check but the SDK
+ * declares no prototype, hence the lookup. */
+static int process_is_exiting(void)
+{
+	typedef BOOLEAN(NTAPI * fn_t)(void);
+	HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+	fn_t fn = ntdll ? (fn_t)(void (*)(void))GetProcAddress(
+			      ntdll, "RtlDllShutdownInProgress")
+			: NULL;
+	return fn && fn();
+}
+#endif
+
 /* atexit safety net: read /proc/mounts, unmount everything under /lklmnt/,
  * remove all disks, then halt the kernel. */
 static void anyfs_atexit_cleanup(void)
 {
 	if (!g_kernel_started)
 		return;
+#ifdef _WIN32
+	/* Nothing can be cleaned up without the kernel's threads; the OS
+	 * reclaims everything anyway. Embedders that need a clean unmount
+	 * must call anyfs_kernel_halt() before exiting. */
+	if (process_is_exiting())
+		return;
+#endif
 
 	lkl_sys_sync();
 
