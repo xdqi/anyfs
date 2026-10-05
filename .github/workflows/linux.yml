@@ -1,7 +1,14 @@
 name: linux
 
 # Builds the Linux x86_64 distribution tarball (anyfs-ksmbd + anyfs-nfsd +
-# anyfs-fuse + liblkl.so + libanyfs-qemublk.so) and uploads it as an artifact.
+# anyfs-lspart + anyfs-fuse + liblkl.so + libanyfs-qemublk.so) and uploads it
+# as an artifact.
+#
+# Toolchain: zig cc at a pinned glibc floor (x86_64-linux-gnu.2.11, baseline
+# x86-64) for everything but the LKL kernel half, which stays on the runner's
+# gcc with KCFLAGS pinning the ISA. Third-party libraries come from the static
+# sysroot built by scripts/build_linux_sysroot.sh, so the runner's distro
+# doesn't reach the output; check_linux_abi.sh gates the tarball.
 #
 # LKL kernel:  deps/linux  (via peru — xdqi/lkl@lkl-anyfs, unified ref for
 #               linux-amd64 + mingw64 + wasm; see peru.yaml for pinned SHA)
@@ -65,13 +72,12 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
+          # No -dev packages for the libraries the artifacts link: those come
+          # from the static sysroot, and leaving them out makes a host leak
+          # fail loudly. libelf/libssl serve the kernel's host tools.
           sudo apt-get install -y --no-install-recommends \
             build-essential meson ninja-build pkg-config python3 pipx \
-            flex bison bc rsync libelf-dev libssl-dev \
-            libglib2.0-dev liburing-dev libaio-dev \
-            libzstd-dev libbz2-dev zlib1g-dev libpixman-1-dev \
-            libfuse3-dev libnl-3-dev libnl-genl-3-dev \
-            libcurl4-openssl-dev \
+            flex bison bc rsync libelf-dev libssl-dev perl xz-utils \
             patchelf ca-certificates \
             smbclient nfs-common curl \
             shellcheck
@@ -87,16 +93,6 @@ jobs:
           path: deps
           key: deps-${{ hashFiles('peru.yaml') }}
 
-      # ksmbd-tools is compiled (meson) for linux-amd64; cache its build output
-      # separately so a pure-source peru-cache-hit doesn't need to re-compile.
-      # Key matches deps cache so they miss together when ksmbd pin changes.
-      - name: Cache ksmbd-tools build (linux-amd64)
-        id: cache-ksmbd-build
-        uses: actions/cache@v4
-        with:
-          path: build-ksmbd-linux-amd64
-          key: ksmbd-build-linux-amd64-${{ hashFiles('peru.yaml') }}
-
       # Per-target LKL kernel build output (config + object tree). Key includes
       # the script hashes so it rebuilds when gen/build/patch logic changes.
       - name: Cache LKL per-target build (linux-amd64)
@@ -104,9 +100,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: lkl-linux-amd64
-          key: lkl-linux-amd64-${{ hashFiles('peru.yaml', 'scripts/gen_lkl_config.sh', 'scripts/build_lkl.sh', 'scripts/oot_fs.sh', '.github/workflows/linux.yml') }}
+          # -zig-: trees from the host-gcc toolchain must not be restored.
+          key: lkl-linux-amd64-zig-${{ hashFiles('peru.yaml', 'scripts/gen_lkl_config.sh', 'scripts/build_lkl.sh', 'scripts/lib/lkl-linux-cc.sh', 'scripts/lib/zig-cc.sh', 'scripts/oot_fs.sh', '.github/workflows/linux.yml') }}
           restore-keys: |
-            lkl-linux-amd64-
+            lkl-linux-amd64-zig-
 
       - name: Cache OOT FS sources (NTFS PLUS + APFS + OpenZFS)
         id: cache-oot
@@ -122,15 +119,37 @@ jobs:
         uses: actions/cache@v4
         with:
           path: deps/qemu/build-anyfs-linux-amd64
-          key: qemu-linux-amd64-${{ hashFiles('peru.yaml', 'scripts/build_qemu.sh') }}
+          key: qemu-linux-amd64-zig-${{ hashFiles('peru.yaml', 'scripts/build_qemu.sh', 'scripts/lib/zig-cc.sh', 'patches/qemu/series.native', 'scripts/build_linux_sysroot.sh', 'scripts/lib/sysroot_sources.sh') }}
           restore-keys: |
-            qemu-linux-amd64-
+            qemu-linux-amd64-zig-
 
       # ── Fetch pinned dependencies ───────────────────────────────────────────
       - name: Install peru
         run: |
           pipx install peru
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"   # pipx installs here; ensure peru is on PATH for later steps
+
+      # zig builds every linux-amd64 artifact (glibc floor + baseline ISA).
+      # A stable install path keeps cached build trees valid across runs.
+      - name: Cache zig
+        uses: actions/cache@v4
+        with:
+          path: ~/zig-0.16.0
+          key: zig-0.16.0-x86_64-linux
+
+      - name: Install zig
+        run: ./scripts/fetch_zig.sh
+
+      - name: Cache linux sysroot
+        id: cache-sysroot
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/anyfs-linux-sysroot
+          key: linux-sysroot-${{ hashFiles('scripts/build_linux_sysroot.sh', 'scripts/lib/sysroot_sources.sh', 'scripts/lib/linux_sysroot.manifest', 'scripts/lib/zig-cc.sh', 'patches/sysroot/**', 'build.config.toml') }}
+
+      - name: Build linux sysroot
+        if: steps.cache-sysroot.outputs.cache-hit != 'true'
+        run: ./scripts/build_linux_sysroot.sh
 
       - name: Sync pinned dependencies
         if: steps.cache-deps.outputs.cache-hit != 'true'
@@ -177,12 +196,12 @@ jobs:
           # The OAuth client owns tag:ci (not the action default tag:ci-sccache).
           tags: 'tag:ci'
 
-      # ── Build ksmbd-tools (linux-amd64) ────────────────────────────────────
-      - name: Build ksmbd-tools
-        if: steps.cache-ksmbd-build.outputs.cache-hit != 'true'
+      # Route zig compiles through sccache when the farm put it on PATH.
+      - name: Enable sccache for zig
         run: |
-          meson setup build-ksmbd-linux-amd64 deps/ksmbd-tools
-          meson compile -C build-ksmbd-linux-amd64
+          if command -v sccache >/dev/null 2>&1; then
+            echo "ANYFS_ZIG_SCCACHE=1" >> "$GITHUB_ENV"
+          fi
 
       # Out-of-tree FS sources: NTFS PLUS, APFS, OpenZFS. gen_lkl_config.sh
       # internally runs `oot_fs.sh stage`, which silently no-ops if the
@@ -204,32 +223,22 @@ jobs:
 
       - name: Build LKL kernel
         run: |
-          CC_ARGS=()
+          SCCACHE_ARGS=()
           if command -v sccache >/dev/null 2>&1; then
-            CC_ARGS=(--cc="sccache gcc")
+            SCCACHE_ARGS=(--sccache)
           fi
           ./scripts/build_lkl.sh \
             --linux=deps/linux \
             --out="$GITHUB_WORKSPACE" \
             --targets=linux-amd64 \
-            "${CC_ARGS[@]}" \
+            "${SCCACHE_ARGS[@]}" \
             -j"${SCCACHE_J:-$(nproc)}"
-          # package_linux.sh falls back to $HOME/linux/tools/lkl/lib/liblkl.so —
-          # link the per-target build there so packaging finds it.
-          mkdir -p deps/linux/tools/lkl/lib
-          ln -sf "$GITHUB_WORKSPACE/lkl-linux-amd64/tools/lkl/lib/liblkl.so" \
-                 deps/linux/tools/lkl/lib/liblkl.so
 
       - name: Build QEMU block layer
         run: |
-          CC_ARGS=()
-          if command -v sccache >/dev/null 2>&1; then
-            CC_ARGS=(--cc="sccache gcc")
-          fi
           ./scripts/build_qemu.sh \
             --qemu-src=deps/qemu \
             --targets=linux-amd64 \
-            "${CC_ARGS[@]}" \
             -j"${SCCACHE_J:-$(nproc)}"
 
       - name: Build anyfs-reader (core + server + fuse)
@@ -279,15 +288,30 @@ jobs:
             --nfs-mount \
             /tmp/debian-13-genericcloud-amd64.qcow2
 
-      - name: Package distribution tarball
+      # package_linux.sh runs check_linux_abi.sh 2.11 on every ELF it packs.
+      - name: Package distribution tarball (+ glibc 2.11 ABI gate)
         run: |
-          # package_linux.sh searches $HOME/linux and $HOME/qemu for .so files
-          # (historical defaults). Symlink them to the peru-synced deps so the
-          # script finds liblkl.so and libanyfs-qemublk.so without modification.
-          ln -sfn "$GITHUB_WORKSPACE/deps/linux" "$HOME/linux" || true
-          ln -sfn "$GITHUB_WORKSPACE/deps/qemu"  "$HOME/qemu"  || true
           ./scripts/package_linux.sh build-anyfs-linux-amd64
           ls -la /tmp/anyfs-reader-*-linux-amd64.tar.gz
+
+      # glibc 2.11.3 userland: proves the floor at runtime, not only in the
+      # symbol tables. glibc 2.11's time() jumps into the vsyscall page, which
+      # kernels built with LEGACY_VSYSCALL_NONE don't map; anyfs-lspart's path
+      # doesn't call it (verified on such a kernel), and GitHub's Ubuntu
+      # kernels emulate vsyscall anyway.
+      - name: Old-userland smoke (debian/eol:squeeze, glibc 2.11)
+        run: |
+          rm -rf /tmp/pkg && mkdir -p /tmp/pkg
+          tar xzf /tmp/anyfs-reader-*-linux-amd64.tar.gz -C /tmp/pkg
+          pkg="$(ls -d /tmp/pkg/anyfs-reader-*)"
+          out="$(docker run --rm \
+                   -v "$pkg:/anyfs:ro" \
+                   -v /tmp/debian-13-genericcloud-amd64.qcow2:/img.qcow2:ro \
+                   debian/eol:squeeze \
+                   /anyfs/bin/anyfs-lspart /img.qcow2 2>&1)"
+          echo "$out"
+          echo "$out" | grep -qiE 'disk0/p1[[:space:]].*ext4'
+          echo "$out" | grep -qiE 'disk0/p15[[:space:]].*(vfat|fat)'
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
