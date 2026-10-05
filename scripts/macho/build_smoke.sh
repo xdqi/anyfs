@@ -8,7 +8,8 @@
 # lkl-macos-smoke, built for the arch's deployment target in macos_target.sh,
 # liblkl-kernel.dylib (found through @executable_path) and smoke-ext4.img, a
 # copy of --image (default: <repo>/tests/images/ext4.img, made by
-# tests/setup.sh). Copy that directory to a Mac and follow
+# tests/setup.sh). --image must be an unpartitioned ext4 image: the test
+# mounts partition 0, the whole disk. Copy that directory to a Mac and follow
 # scripts/macho/smoke/README.md.
 set -euo pipefail
 
@@ -43,6 +44,7 @@ case "$arch" in
 esac
 zt="$(macos_zig_target "$arch")"
 lkl_out="${lkl_out:-$REPO_DIR/lkl-$target}"
+[[ -d "$lkl_out/tools/lkl/include/lkl" ]] || die "no generated headers in $lkl_out: run build_lkl.sh --targets=$target"
 for f in "$out/$arch/liblkl-kernel.dylib" "$out/$arch/liblkl-host.a" "$image"; do
     [[ -f $f ]] || die "$f not found"
 done

@@ -9,7 +9,8 @@
 #              OUT/<arch>/liblkl-host.a
 #
 # Needs the Darwin host patches in $LINUX_DIR (scripts/oot_fs.sh stage --macho).
-# Compiles for the arch's deployment target in macos_target.sh.
+# Compiles for the arch's deployment target in macos_target.sh. ZIG and NM
+# (llvm-nm) override the tool lookup. A failed run leaves no archive.
 # The kernel is liblkl-kernel.dylib (build_kernel_dylib.sh), reached through
 # lkl_macho_shim.c.
 set -euo pipefail
@@ -21,16 +22,40 @@ source "$REPO_DIR/scripts/lib/config.sh"
 # shellcheck source=macos_target.sh
 source "$HERE/macos_target.sh"
 LINUX_DIR="${LINUX_DIR:-$ANYFS_PATHS_LINUX_SRC}"
-OOT_DIR="${OOT_DIR:-$HOME/oot-fs}"
-ZIG="${ZIG:-$(command -v zig || echo /opt/zig/zig)}"
 
 # The host sources tools/lkl/lib/Build selects for a POSIX host with
 # VIRTIO_NET_FD, minus virtio_net_tap/raw (darwin-netdev-stubs.c), VFIO and
 # macvtap (off in the Darwin profile).
 SOURCES=(config fs iomem jmp_buf net posix-host utils virtio virtio_blk
          virtio_net virtio_net_fd virtio_net_pipe)
+# The Darwin patches those sources need (patches/linux/macho/series).
+PATCHES=(08-posix-host-darwin.patch 09-endian-darwin.patch)
+# What the archive imports from liblkl-kernel.dylib: EXPORTS in
+# build_kernel_dylib.sh, each lkl_X as _lklk_X. Change both together.
+KERNEL_EXPORTS=(
+    lkl_init lkl_cleanup lkl_syscall lkl_sys_halt lkl_is_running
+    lkl_get_free_irq lkl_put_irq lkl_trigger_irq
+    lkl_glue_set_host lkl_start_kernel_str
+)
 
 die() { echo "build_host_lib: $*" >&2; exit 1; }
+
+# tool VAR CANDIDATE...: print the command in $VAR if set, else the first
+# CANDIDATE on PATH; die if there is none. Assign the result to a variable
+# (v="$(tool ...)"), so set -e sees a failure.
+tool() {
+    local var="$1" c
+    shift
+    local names="$*"
+    if [[ -n ${!var:-} ]]; then
+        command -v -- "${!var}" || die "$var=${!var} not found"
+        return 0
+    fi
+    for c in "$@"; do
+        command -v -- "$c" && return 0
+    done
+    die "${names// / or } not found on PATH (or set $var)"
+}
 
 arch="" lkl_out="" out="$REPO_DIR/build/macos"
 while [[ $# -gt 0 ]]; do
@@ -50,17 +75,41 @@ case "$arch" in
     *)      die "--arch=arm64|x86_64 is required" ;;
 esac
 zt="$(macos_zig_target "$arch")"
+
+# Fail closed: from here on, a failed run leaves no archive and no objects.
+lib="$out/$arch/liblkl-host.a"
+dir="$out/$arch/host-obj"
+mkdir -p "$out/$arch"
+rm -rf "$lib" "$lib.tmp" "$dir"
+trap 'rm -f "$lib.tmp"' EXIT
+
 lkl_out="${lkl_out:-$REPO_DIR/lkl-$target}"
 [[ -d "$lkl_out/tools/lkl/include/lkl" ]] || die "no generated headers in $lkl_out: run build_lkl.sh --targets=$target"
-for p in 08-posix-host-darwin.patch 09-endian-darwin.patch; do
-    grep -qxF "$p" "$OOT_DIR/.applied.macho" 2>/dev/null \
+# Read the tree, not oot_fs.sh's log: each patch must reverse cleanly.
+for p in "${PATCHES[@]}"; do
+    patch -p1 -R --dry-run --silent -d "$LINUX_DIR" < "$REPO_DIR/patches/linux/macho/$p" > /dev/null 2>&1 \
         || die "$p is not applied to $LINUX_DIR: run scripts/oot_fs.sh stage --macho"
 done
+# lkl.h and lkl_config.h include "lkl_autoconf.h" with quotes, which finds one
+# next to them before the Darwin profile on the -I path.
+[[ ! -e $LINUX_DIR/tools/lkl/include/lkl_autoconf.h ]] \
+    || die "$LINUX_DIR/tools/lkl/include/lkl_autoconf.h would shadow the Darwin profile $HERE/autoconf/lkl_autoconf.h: remove it"
+# The Darwin profile replaces the generated lkl_autoconf.h, so it must not drop
+# what the kernel was configured with: an MMU kernel needs the host's mmap ops.
+mmu='^#define LKL_HOST_CONFIG_MMU([[:space:]]|$)'
+gen="$lkl_out/tools/lkl/include/lkl_autoconf.h"
+if [[ -f $gen ]] && grep -qE "$mmu" "$gen" && ! grep -qE "$mmu" "$HERE/autoconf/lkl_autoconf.h"; then
+    die "$gen defines LKL_HOST_CONFIG_MMU but the Darwin profile $HERE/autoconf/lkl_autoconf.h does not"
+fi
+ZIG="$(tool ZIG zig /opt/zig/zig)"
+NM="$(tool NM llvm-nm-19 llvm-nm)"
 
-dir="$out/$arch/host-obj"
 mkdir -p "$dir"
-# Fail on calls to APIs newer than the deployment target at compile time.
-cflags=(-target "$zt" -O2 -Wall -Werror=unguarded-availability -D_FILE_OFFSET_BITS=64 -I"$HERE/autoconf"
+# -Werror=unguarded-availability: fail on calls to APIs newer than the
+# deployment target at compile time. -g and -fno-strict-aliasing as in
+# tools/lkl/Makefile.
+cflags=(-target "$zt" -O2 -g -Wall -fno-strict-aliasing -Werror=unguarded-availability
+        -Werror=deprecated-declarations -D_FILE_OFFSET_BITS=64 -I"$HERE/autoconf"
         -I"$LINUX_DIR/tools/lkl/include" -I"$lkl_out/tools/lkl/include")
 objs=()
 for s in "${SOURCES[@]}"; do
@@ -71,6 +120,11 @@ for s in darwin-netdev-stubs lkl_macho_shim; do
     "$ZIG" cc "${cflags[@]}" -c "$HERE/$s.c" -o "$dir/$s.o"
     objs+=("$dir/$s.o")
 done
-rm -f "$out/$arch/liblkl-host.a"
-"$ZIG" ar rcs "$out/$arch/liblkl-host.a" "${objs[@]}"
-echo "build_host_lib: $out/$arch/liblkl-host.a (${#objs[@]} objects)"
+"$ZIG" ar rcs "$lib.tmp" "${objs[@]}"
+
+imports="$("$NM" -u "$lib.tmp" | awk '$NF ~ /^_lklk_/ { print $NF }' | LC_ALL=C sort -u)"
+want="$(printf '_lklk_%s\n' "${KERNEL_EXPORTS[@]#lkl_}" | LC_ALL=C sort)"
+[[ $imports == "$want" ]] || die "liblkl-host.a imports {${imports//$'\n'/ }} from the kernel," \
+    "expected {${want//$'\n'/ }} (EXPORTS in build_kernel_dylib.sh)"
+mv "$lib.tmp" "$lib"
+echo "build_host_lib: $lib (${#objs[@]} objects)"
