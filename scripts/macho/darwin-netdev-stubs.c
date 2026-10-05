@@ -7,8 +7,9 @@
  * needs both -- so on macOS they can only ever fail.
  *
  * build_host_lib.sh compiles this in place of virtio_net_tap.c and
- * virtio_net_raw.c. anyfs builds LKL with CONFIG_NET off, so nothing reaches
- * these.
+ * virtio_net_raw.c. anyfs builds LKL with CONFIG_NET on (ksmbd and nfsd need
+ * it), but these are reached only if a netdev of type tap or raw is
+ * configured, which anyfs does not do.
  */
 #include <lkl_host.h>
 
