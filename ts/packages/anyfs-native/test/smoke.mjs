@@ -8,12 +8,14 @@ const n = require('../index.js');
 const img = resolve(here, '../../../examples/vite-demo/public/disks/multi.img');
 
 console.log('[smoke] kernelInit(64, 0)');
-if (n.kernelInit(64, 0) !== 0) process.exit(3);
+if ((await n.kernelInit(64, 0)) !== 0) process.exit(3);
 
 console.log('[smoke] sessionOpen', img);
-const h = n.sessionOpen(img, 0);
-if (h < 0) {
-    console.error('open rc=', h);
+let h;
+try {
+    h = await n.sessionOpen(img, 0);
+} catch (e) {
+    console.error('open failed:', e.message);
     process.exit(4);
 }
 
@@ -31,7 +33,7 @@ console.log('[smoke] sessionMeta:', meta);
 // Pick the first non-journaled FS so RDONLY mount doesn't need replay.
 const pick = parts.find((p) => p.fstype === 'ext2') ?? parts[0];
 console.log(`[smoke] sessionEnter(part=${pick.index} ${pick.fstype}/${pick.label}, RDONLY)`);
-const mount = n.sessionEnter(h, pick.index, 1); // ANYFS_MOUNT_RDONLY
+const mount = await n.sessionEnter(h, pick.index, 1); // ANYFS_MOUNT_RDONLY
 console.log('  mounted at', mount);
 
 const entries = JSON.parse(await n.readdirJson(mount));
@@ -64,5 +66,6 @@ if (firstFile) {
     console.log('[smoke] no regular files in mount root (skipping pread)');
 }
 
-if (n.sessionClose(h) !== 0) console.warn('sessionClose nonzero');
+if ((await n.sessionClose(h)) !== 0) console.warn('sessionClose nonzero');
+if ((await n.kernelHalt()) !== 0) console.warn('kernelHalt nonzero');
 console.log('[smoke] OK');
