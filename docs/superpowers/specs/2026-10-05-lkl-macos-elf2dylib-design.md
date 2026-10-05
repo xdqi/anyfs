@@ -1,7 +1,8 @@
 # LKL on macOS via ELF-to-dylib conversion
 
 **Date:** 2026-10-05
-**Status:** design approved, not implemented
+**Status:** implemented; verified on Apple Silicon and Intel Macs (smoke rerun after the
+`--unique` fix pending)
 **Scope:** `scripts/macho/` (new tools and build scripts), `scripts/oot_fs.sh` (ZFS arm64
 gates, trimmed `--macho` series), `scripts/build_lkl.sh` (linux-arm64 flags),
 `patches/linux/macho/` (host-side patches only), `docs/macos-macho-feasibility.md`
@@ -40,9 +41,12 @@ removes them.
 | | x86_64 (`lkl-linux-amd64`) | arm64 (`linux-arm64` target) |
 |---|---|---|
 | `PT_LOAD` segments | 4 (R, RX, RELRO, RW), 16 KiB aligned | 4 (R, RX, RELRO, RW), 16 KiB aligned |
-| dynamic relocations | 71857, all `R_X86_64_RELATIVE` | 74925, all `R_AARCH64_RELATIVE` |
+| dynamic relocations | 71857, all `R_X86_64_RELATIVE` | 74900, all `R_AARCH64_RELATIVE` |
 | `TEXTREL` / undefined dynamic symbols | none / none | none / none |
 | instructions using `x18`/`w18` | n/a | 0, built with `-ffixed-x18` |
+
+The relocation counts are those of the final build. An earlier arm64 probe counted
+74925.
 
 `lkl.o` is already built with `-fPIC` (`arch/lkl/Makefile`). Its only external
 references are `lkl_printf` and `lkl_bug`, plus `_GLOBAL_OFFSET_TABLE_`, which the linker
@@ -122,10 +126,11 @@ host (native Mach-O, zig cc on Linux)
 ### Components
 
 **ELF build flags (`scripts/build_lkl.sh`).** The `linux-arm64` target always gets
-`KCFLAGS="-ffixed-x18 -mno-outline-atomics"`. Darwin reserves `x18`, and the OS may zero
-it. GCC's outline atomics call libgcc helpers that detect CPU features with
-`getauxval`, which macOS does not have. Both flags are harmless on Linux arm64, so one
-arm64 kernel serves both systems. `linux-amd64` is unchanged.
+`KCFLAGS="-ffixed-x18 -mno-outline-atomics"`, appended after any exported `KCFLAGS` so
+that they win. Darwin reserves `x18`, and the OS may zero it. GCC's outline atomics call
+libgcc helpers that detect CPU features with `getauxval`, which macOS does not have.
+Both flags are harmless on Linux arm64, so one arm64 kernel serves both systems.
+`linux-amd64` is unchanged.
 
 **ZFS arm64 gates (`scripts/oot_fs.sh`).** The arm64 kernel currently leaves 11 ZFS
 symbols undefined: `fletcher_4_aarch64_neon_ops`, `vdev_raidz_aarch64_neon{,x2}_impl`,
@@ -134,14 +139,18 @@ symbols undefined: `fletcher_4_aarch64_neon_ops`, `vdev_raidz_aarch64_neon{,x2}_
 Mach-O issue. New gates remove the references on `CONFIG_LKL`, using
 `zfs_rewrite_line` like gates 4a-2 and 4b-2.
 
-**ELF glue (`scripts/macho/lkl_elf_glue.c`).** Freestanding C, compiled with the
-kernel's flags plus `-fPIC`:
+**ELF glue (`scripts/macho/lkl_elf_glue.c`).** Freestanding C, compiled with
+`-O2 -fPIC -ffreestanding -fno-builtin -fno-stack-protector`, plus
+`-ffixed-x18 -mno-outline-atomics` on arm64:
 
 - `int lkl_printf(const char *fmt, ...)` and `void lkl_bug(const char *fmt, ...)`. The
-  kernel calls these by name. They format with a built-in minimal formatter (`%s %d %i
-  %u %x %p %%` with `l`/`ll` modifiers): the kernel's own `vsnprintf` is hidden by
-  `objcopy -G`, and all 8 call sites use only `%s`. `lkl_printf` passes the text to the
-  host's `print`. `lkl_bug` passes it to `print` and then calls `panic`.
+  kernel calls these by name. They format with a built-in minimal formatter: the
+  kernel's own `vsnprintf` is hidden by `objcopy -G`, and all 8 call sites use only
+  `%s`. It supports `%s %d %i %u %x %X %p %c %%`, skips flags, width and precision, and
+  accepts the `h hh l ll z t j` modifiers. On any other conversion it prints the rest
+  of the format verbatim and reads no further argument. `lkl_printf` passes the text
+  to the host's `print`. `lkl_bug` passes it to `print` and then calls `panic`, or
+  traps if no panic hook is set.
 - `void lkl_glue_set_host(void (*print)(const char *, int), void (*panic)(void))`.
 - `int lkl_start_kernel_str(const char *cmdline)`, which calls
   `lkl_start_kernel("%s", cmdline)`. The variadic call stays inside ELF code.
@@ -176,23 +185,31 @@ LKL.
 
 ```
 elf2dylib.py --arch arm64|x86_64 --export ELFNAME=MACHONAME ... \
-             --install-name @rpath/liblkl-kernel.dylib --min-os VERSION -o OUT.dylib IN.so
+             --install-name @rpath/liblkl-kernel.dylib --min-os VERSION \
+             --libsystem PATH -o OUT.dylib IN.so
 ```
 
-`--min-os` is required and has no default. `build_kernel_dylib.sh` passes the arch's
-deployment target from `scripts/macho/macos_target.sh`.
+`--min-os` and `--libsystem PATH` are required and have no default.
+`build_kernel_dylib.sh` passes the arch's deployment target from
+`scripts/macho/macos_target.sh` and zig's `libSystem.tbd`.
 
 1. *Input checks.* Each failure aborts with a message naming the offending item.
    - `ET_DYN`, machine `EM_AARCH64` or `EM_X86_64` matching `--arch`.
    - Exactly the segment shape `ld.lld -z separate-loadable-segments -z now` produces:
      R, RX, RW (`PT_GNU_RELRO`), RW. Each starts on a 16 KiB boundary with
-     `p_offset == p_vaddr`.
-   - Dynamic relocations are only `R_AARCH64_RELATIVE` / `R_X86_64_RELATIVE`.
-   - Every relocated slot lies in a writable segment.
+     `p_offset == p_vaddr`, and the first `PT_LOAD` starts at 0. R and RX have no
+     zero-fill tail. `PT_GNU_RELRO` covers exactly the third `PT_LOAD`.
+   - Every dynamic tag is on an allowlist, which rejects init arrays, `DT_RELR` and
+     Android-packed relocations.
+   - Dynamic relocations are only `R_AARCH64_RELATIVE` / `R_X86_64_RELATIVE`, and the
+     `RELA` table lies inside the first `PT_LOAD`.
+   - Every relocated slot lies in the file data, not the bss, of the RELRO or RW
+     segment.
    - Every addend lies inside some segment's address range, including bss and
      one-past-the-end.
    - No undefined dynamic symbols.
-   - Every `--export` name exists as a defined dynamic symbol.
+   - Every `--export` name exists as a defined dynamic symbol, and no ELF or Mach-O
+     name appears twice in `--export`.
    - arm64: `llvm-objdump -d` of the RX segment mentions no `x18`/`w18`.
 2. *Assembly generation.* One section per segment, each `.p2align 14`:
    `__TEXT,__lkl_const` (R), `__TEXT,__lkl_text,regular,pure_instructions` (RX),
@@ -217,10 +234,12 @@ deployment target from `scripts/macho/macos_target.sh`.
    but it links libSystem like any ordinary dylib, using the same `libSystem.tbd`
    stub that the host-library build takes from zig.
 4. *Output checks.* Each failure deletes the output and aborts.
-   - Each `__lkl_*` section's address and size equal the ELF segment's address + Δ and
-     size, and its bytes (dumped with `llvm-objcopy --dump-section`) equal the
-     segment's bytes. The only exception is the `RELATIVE` slots, which must hold
-     `addend + Δ`.
+   - Each `__lkl_*` section's address equals the ELF segment's address + Δ. The sizes
+     of `__lkl_const`, `__lkl_text` and `__lkl_relro` run to the next segment's
+     address + Δ, with the padding checked to be zero; `__lkl_data` equals the RW
+     segment's file size, and `__lkl_bss` matches its zero-fill tail. The bytes
+     (dumped with `llvm-objcopy --dump-section`) equal the segment's bytes. The only
+     exception is the `RELATIVE` slots, which must hold `addend + Δ`.
    - The set of rebase locations equals the set of `RELATIVE` slots + Δ.
    - Each exported symbol's address equals its ELF address + Δ.
    - The image's only dependent dylib is `/usr/lib/libSystem.B.dylib`. Its only
@@ -232,7 +251,9 @@ deployment target from `scripts/macho/macos_target.sh`.
 APIs (`lkl_init`, `lkl_cleanup`, `lkl_syscall`, `lkl_sys_halt`, `lkl_is_running`,
 `lkl_get_free_irq`, `lkl_put_irq`, `lkl_trigger_irq`) and the two glue entry points
 (`lkl_glue_set_host`, `lkl_start_kernel_str`). `lkl_start_kernel`, `lkl_printf` and
-`lkl_bug` are never exported.
+`lkl_bug` are never exported. The list is defined once, as `KERNEL_EXPORTS` in
+`scripts/macho/kernel_exports.sh`, which `build_kernel_dylib.sh` and `build_host_lib.sh`
+source.
 
 **Mach-O shim (`scripts/macho/lkl_macho_shim.c`).** Part of `liblkl-host.a`. It defines
 the public LKL API under its usual names, so the host library and anyfs code are
@@ -247,13 +268,15 @@ unchanged:
 
 **Host library (`scripts/macho/build_host_lib.sh --arch=arm64|x86_64`).** Compiles the
 `tools/lkl/lib` host sources with `zig cc -target aarch64-macos.11.0.0` or
-`x86_64-macos.10.12.0` (from `macos_target.sh`) and `-Werror=unguarded-availability`,
-against the Darwin `lkl_autoconf.h` profile (VFIO, macvtap and FUSE off), together with
-the Mach-O shim and the netdev stubs. The tap and raw netdevs need
-`<linux/if_tun.h>`/`AF_PACKET`. The result is `liblkl-host.a`. The Darwin
-`lkl_autoconf.h` and `darwin-netdev-stubs.c` move from `.tmp/macho-exp/host/` to
-`scripts/macho/`. Patches 08 (`posix-host.c`) and 09 (`endian.h`) stay and are still
-applied by `oot_fs.sh stage --macho`.
+`x86_64-macos.10.12.0` (from `macos_target.sh`) and `-g -fno-strict-aliasing
+-Werror=deprecated-declarations -Werror=unguarded-availability`, against the Darwin
+`lkl_autoconf.h` profile (`scripts/macho/autoconf/lkl_autoconf.h`: VFIO, macvtap and FUSE
+off), together with the Mach-O shim and the netdev stubs
+(`scripts/macho/darwin-netdev-stubs.c`). The tap and raw netdevs need
+`<linux/if_tun.h>`/`AF_PACKET`. The result is `liblkl-host.a`. Patches 08 (`posix-host.c`)
+and 09 (`endian.h`) stay and are still applied by `oot_fs.sh stage --macho`. `zig cc`
+links zig's own `libSystem.tbd`; `build_kernel_dylib.sh` finds the same file for
+elf2dylib through the lib dir that `zig env` reports.
 
 `preadv`/`pwritev` need macOS 11.0. When `__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__`
 is below 110000, patch 08 replaces them with a `pread`/`pwrite` loop over the iovecs
@@ -278,9 +301,21 @@ timer, TLS destructor, `jmp_buf_set`), and the 3 variadic functions. The audit o
   fp, lr) and the kernel never touches `x18`.
 - `char` signedness differs (unsigned on Linux arm64, signed on Darwin) but only crosses
   the boundary behind pointers.
+- `pci_ops` points to a `struct lkl_dev_pci_ops` table. It stays NULL on Darwin because
+  VFIO is off; enabling VFIO would bring that table into the boundary.
 
 Any future change to `lkl_host_operations` or the API must keep these properties. They
-are recorded in a comment next to the export map in `build_kernel_dylib.sh`.
+are recorded in a comment next to the export list in `scripts/macho/kernel_exports.sh`.
+
+### Known issues
+
+- Shared with the other hosts and deliberately not fixed here:
+  - The pthread timer emulation in `posix-host.c` (wasm and Darwin) drops a pending
+    timer on a spurious condvar wakeup.
+  - `lkl_mmap()`'s failure path unmaps `addr` rather than `ret`. It is dormant here
+    because MMU and KASAN are off.
+- The init range in `lkl-kernel.so` also covers the RELRO gap, about 35 KiB (see Kernel
+  link). This is harmless because `free_initmem()` is a no-op.
 
 ## Error handling
 
@@ -292,6 +327,8 @@ are recorded in a comment next to the export map in `build_kernel_dylib.sh`.
     on exit.
   - `build_host_lib.sh` deletes the archive and its objects first and writes the
     archive through a temporary file.
+  - `build_smoke.sh` deletes the bundle first, builds it in `smoke.tmp` and renames that
+    to `smoke` only when it is complete.
   - A missing tool is named in the error, rather than ending the script silently under
     `set -e`. Each tool is looked up only by the step that needs it, so only
     `--universal` needs `llvm-lipo`. `libSystem.tbd` is found through the lib dir that
@@ -318,30 +355,45 @@ are recorded in a comment next to the export map in `build_kernel_dylib.sh`.
    - A synthetic shared library per architecture, containing function-pointer tables
      into code, rodata and data, bss, exported functions, and two `static` functions
      with the same name. It must convert and pass the output checks.
-   - Each of these inputs must be rejected: an undefined import; a non-PIC object
-     (text relocation); a 4 KiB page-size link; arm64 inline assembly that uses `x18`.
-2. **Real kernels** (Linux). Both architectures convert. The rebase counts equal the
-   `RELATIVE` counts, and 10 symbols are exported.
-3. **arm64 ELF kernel on Linux arm64.** LKL's own `tools/lkl/tests` boot test and the
-   anyfs Linux tests run under `qemu-aarch64` user mode (the `qemu-user` package, not
-   installed on the dev box today) or on a GitHub `ubuntu-24.04-arm` runner. This proves
-   the new arm64 flags and ZFS gates, so the Mac only has to test the conversion and the
-   ABI boundary.
+   - Each of these inputs must be rejected, among others: an undefined import; an
+     undefined dynamic symbol that nothing relocates; a non-PIC object (text
+     relocation); a 4 KiB page-size link; RELR, Android-packed relocations and init
+     arrays; arm64 inline assembly that uses `x18`; a tool named in the environment
+     that does not exist.
+2. **Real kernels** (Linux).
+   - Both architectures convert. The rebase counts equal the `RELATIVE` counts (74900
+     on arm64, 71857 on x86_64), and 10 symbols are exported.
+   - `scripts/macho/test_kernel_so.sh` (CI-friendly) boots the exact `lkl-kernel.so`
+     that is converted, x86_64 natively and arm64 under `qemu-aarch64-static`, and runs
+     the smoke program (item 4) against it through `lkl_macho_shim.c` and the stock
+     Linux host library, on a scratch copy of the ext4 image. It requires
+     `PASS (21 checks)` and a `Memory:` boot line with rwdata, rodata and init each
+     below 1 GiB, which a link without `--unique` fails. The Darwin host paths of patch
+     08 run only on a Mac.
+3. **arm64 ELF kernel on Linux arm64.** LKL's own `tools/lkl/tests` ran under
+   `qemu-aarch64` user mode on 2026-10-05: boot 35/35 and disk 10/10. The anyfs Linux
+   tests have not been run on arm64. This proves the new arm64 flags and ZFS gates, so
+   the Mac only has to test the conversion and the ABI boundary.
 4. **macOS smoke test** (`scripts/macho/smoke/`, run by hand on an Apple Silicon Mac and
    an Intel Mac).
-   - `lkl-macos-smoke` is cross-built on Linux and shipped with a small ext4 image made
-     by `mkfs.ext4 -d`.
-   - It boots the kernel, adds the disk, mounts it, lists a directory, reads a file and
-     compares its contents, sleeps 100 ms in the kernel and checks the elapsed time,
-     unmounts, halts and cleans up.
-   - `codesign -v liblkl-kernel.dylib` must pass.
+   - `build_smoke.sh` cross-builds `lkl-macos-smoke` on Linux and bundles it with
+     `liblkl-kernel.dylib` and `smoke-ext4.img`, a copy of `tests/images/ext4.img`.
+   - It boots the kernel, adds the disk, mounts it read-write, creates, writes, fsyncs
+     and reads back a file, unmounts and remounts (dropping the page cache) and reads
+     the file again from the block device, lists the directory, sleeps 100 ms in the
+     kernel and checks the elapsed time, unmounts and halts. That is 21 checks, ending
+     in `PASS (21 checks)`. A 120 s watchdog turns a hang into a failure.
+   - `codesign -v` must pass on both binaries on arm64, and on the dylib on x86_64.
    - The run commands are documented next to the test.
+   - Passed 21/21 on Apple Silicon (macOS 27.0.1, 26A434; 103 ms sleep) and Intel (macOS
+     15.0, 24A335; 102 ms sleep), with the build from before the `--unique` fix. A rerun
+     is pending.
 5. **No regressions elsewhere.**
    - Patches 08/09 are `__APPLE__`-guarded. The glibc preprocessed output of
      `posix-host.c` is unchanged apart from `__LINE__` (verified 2026-10-05, and again
-     after the `preadv`/`pwritev` fallback was added).
+     after the `preadv`/`pwritev` fallback and the `mmap` comment fix).
    - After adding the ZFS arm64 gates, a `linux-amd64` rebuild must produce the same
-     `lkl.o`.
+     `lkl.o` (verified by hash in f5e0f51).
 
 ## Phasing
 
@@ -357,7 +409,7 @@ are recorded in a comment next to the export map in `build_kernel_dylib.sh`.
      - `scripts/macho/shim/`;
      - patches 01–07;
      - `sched_class.order` and `check_sched_class.sh`;
-     - the Mach-O-only ZFS gates 4b-2 (setjmp assembly rewrite) and 4b-4 (`ldo.c` asm
+     - the two Mach-O-only ZFS gates (the `setjmp_aarch64.S` rewrite and the `ldo.c` asm
        labels), restoring those two files in `~/oot-fs/zfs` with `git checkout`.
    - Mark `docs/macos-macho-feasibility.md` as superseded, pointing to this spec.
 1. **elf2dylib** with its unit tests.
@@ -379,9 +431,11 @@ are recorded in a comment next to the export map in `build_kernel_dylib.sh`.
 
 - `build_kernel_dylib.sh --universal` produces a signed, universal
   `liblkl-kernel.dylib` from the standard ELF kernels, with every elf2dylib check
-  passing.
-- `test_elf2dylib.sh` passes, including every rejection case.
-- The arm64 ELF kernel passes the LKL boot test on Linux arm64.
-- `lkl-macos-smoke` passes on an Apple Silicon Mac and an Intel Mac.
+  passing. **Met.**
+- `test_elf2dylib.sh` passes, including every rejection case. **Met.**
+- The arm64 ELF kernel passes the LKL boot test on Linux arm64. **Met** (under
+  `qemu-aarch64`).
+- `lkl-macos-smoke` passes on an Apple Silicon Mac and an Intel Mac. **Met** with the
+  build from before the `--unique` fix; rerun pending.
 - The tag `exp/macho-object-port` exists locally. `scripts/macho/shim/` and patches 01–07
-  are gone from the working tree. The `linux-amd64` `lkl.o` is unchanged.
+  are gone from the working tree. The `linux-amd64` `lkl.o` is unchanged. **Met.**
