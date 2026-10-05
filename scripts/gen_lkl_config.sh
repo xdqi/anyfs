@@ -463,8 +463,19 @@ EOF
         # truncates kernel.config to 0 bytes — and we're about to populate
         # kernel.config below as our config overlay. Do the wipe here, once,
         # then refill afterwards.
+        #
+        # Probe with the compiler that will build tools/lkl. For linux-amd64
+        # that is zig (through lib/lkl-linux-cc.sh, as build_lkl.sh uses it):
+        # the host gcc would find e.g. /usr/include/fuse3 and enable lklfuse,
+        # which zig then can't build.
+        local probe_cc=()
+        if [[ "$NAME" == linux-amd64 ]]; then
+            local lib
+            lib="$(cd "$(dirname "$0")" && pwd)/lib"
+            probe_cc=(CC="$lib/lkl-linux-cc.sh $(command -v gcc) $lib/zig-cc")
+        fi
         rm -f "$CONF" "$LKL_OUT/include/lkl_autoconf.h"
-        OUTPUT="$OUT" make -C "$LINUX_DIR/tools/lkl" ARCH=lkl \
+        OUTPUT="$OUT" make -C "$LINUX_DIR/tools/lkl" ARCH=lkl "${probe_cc[@]}" \
              "$LKL_OUT/Makefile.conf" >/dev/null 2>&1 || true
     fi
 

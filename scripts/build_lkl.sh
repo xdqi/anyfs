@@ -11,9 +11,13 @@
 #                         linux-amd64,linux-arm64,mingw32,mingw64
 #                       (default: linux-amd64,mingw32,mingw64)
 #   --clean             Run `make clean` in each target before building
-#   --cc=CMD            C compiler override passed to make as CC= (e.g. "sccache gcc")
+#   --cc=CMD            C compiler override passed to make as CC= (wins over
+#                       the per-target default, including linux-amd64's
+#                       gcc/zig dispatcher)
 #   --sccache           Compile through sccache (and its dist farm), wired the
-#                       way each target needs; see sccache_cc_for. Overrides --cc.
+#                       way each target needs; see cc_for. For linux-amd64
+#                       both halves: kernel gcc via lib/lkl-linux-cc.sh, zig
+#                       via ANYFS_ZIG_SCCACHE.
 #   -j N                Parallelism (default: nproc)
 #
 # Expects each lkl-<target>/ to already contain a .config and (for mingw
@@ -73,13 +77,23 @@ cross_for() {
     esac
 }
 
-# CC for building target $1 (cross prefix $2) through sccache. The compiler
-# goes to sccache by absolute path, so sccache hashes and ships the real
-# toolchain. mingw64 has two compilers (the tools/lkl/bin shim sends kernel
-# code to cygwin-gcc), so it goes through lib/lkl-mingw-cc.sh; mingw32 has
-# no shim (ILP32 long is pointer-sized) and uses its gcc directly.
-sccache_cc_for() {
-    local name="$1" cross="$2" cc
+# CC for target $1 (cross prefix $2). linux-amd64 always goes through
+# lib/lkl-linux-cc.sh: the kernel half on the host gcc, tools/lkl on zig at
+# the glibc floor. With --sccache the compilers go to sccache by absolute
+# path, so sccache hashes and ships the real toolchain. mingw64 has two
+# compilers (the tools/lkl/bin shim sends kernel code to cygwin-gcc), so it
+# goes through lib/lkl-mingw-cc.sh; mingw32 has no shim (ILP32 long is
+# pointer-sized) and uses its gcc directly. Prints nothing when the target
+# keeps make's default CC.
+cc_for() {
+    local name="$1" cross="$2" cc scc=""
+    if [[ "$name" == linux-amd64 ]]; then
+        cc="$(command -v gcc)" || { echo "Error: gcc not on PATH" >&2; return 1; }
+        [[ $USE_SCCACHE -eq 1 ]] && scc=" --sccache"
+        echo "$SCRIPT_DIR/lib/lkl-linux-cc.sh$scc $cc $SCRIPT_DIR/lib/zig-cc"
+        return
+    fi
+    [[ $USE_SCCACHE -eq 1 ]] || return 0
     if [[ "$name" == mingw64 ]]; then
         cc="$(command -v x86_64-pc-cygwin-gcc)" \
             || { echo "Error: x86_64-pc-cygwin-gcc not on PATH" >&2; return 1; }
@@ -110,14 +124,11 @@ build_one() {
     local cross_arg=()
     [[ -n "$CROSS" ]] && cross_arg=(CROSS_COMPILE="$CROSS")
 
-    local cc_arg=()
+    local cc_arg=() scc
+    scc="$(cc_for "$NAME" "$CROSS")" || return 1
+    [[ -n "$scc" ]] && cc_arg=(CC="$scc")
     [[ -n "$CC_OVERRIDE" ]] && cc_arg=(CC="$CC_OVERRIDE")
-    if [[ $USE_SCCACHE -eq 1 ]]; then
-        local scc
-        scc="$(sccache_cc_for "$NAME" "$CROSS")" || return 1
-        cc_arg=(CC="$scc")
-        echo "  CC: $scc"
-    fi
+    [[ ${#cc_arg[@]} -gt 0 ]] && echo "  ${cc_arg[0]}"
 
     # linux-arm64 is also the kernel for macOS on Apple Silicon, converted by
     # scripts/macho/build_kernel_dylib.sh. Darwin reserves x18 and may clear
@@ -126,6 +137,17 @@ build_one() {
     # the required flags come last, so they win.
     local kcflags_arg=()
     [[ "$NAME" == linux-arm64 ]] && kcflags_arg=(KCFLAGS="${KCFLAGS:+$KCFLAGS }-ffixed-x18 -mno-outline-atomics")
+    # linux-amd64: pin the kernel half to the x86-64 baseline. GitHub's
+    # ubuntu-26.04 images build gcc for amd64v3, which predefines __AVX2__;
+    # LKL's zstd then includes <immintrin.h> under -nostdinc and fails, and
+    # the rest would silently need AVX2. KCFLAGS comes last in kbuild, so it
+    # wins over the compiler default. (The zig half pins its CPU by -target.)
+    [[ "$NAME" == linux-amd64 ]] && kcflags_arg=(KCFLAGS="${KCFLAGS:+$KCFLAGS }-march=x86-64 -mtune=generic")
+
+    # lkl-linux-cc.sh routes on sub_make_done; a value inherited from an
+    # outer kernel build would send tools/lkl to gcc.
+    unset sub_make_done
+    [[ $USE_SCCACHE -eq 1 ]] && export ANYFS_ZIG_SCCACHE=1
 
     # OUTPUT must go through the environment, not as a make CLI arg — the
     # tools/lkl Makefile rewrites OUTPUT to "$OUTPUT/tools/lkl/", and a CLI
