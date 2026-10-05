@@ -316,7 +316,13 @@ def main():
     print(f"  sample: {sample_kept}")
 
     if renamed == 0:
+        # Already prefixed (an incremental rebuild that did not relink
+        # lkl.o). Still produce out_path: the build script moves it over
+        # the input unconditionally.
         print("nothing to do")
+        if out_path != in_path:
+            with open(out_path, 'wb') as f:
+                f.write(buf)
         return
 
     # Rebuild WASM_SYMBOL_TABLE subsection payload

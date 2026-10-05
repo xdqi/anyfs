@@ -297,6 +297,34 @@ def find_segment_for_value(segs, value):
     return None, None
 
 
+# Plain symbol assignments outside SECTIONS{} in arch/lkl/kernel/vmlinux.lds.S
+# get no address in the incremental kernel link (see the FIXME there): wasm-ld
+# leaves `jiffies` at offset 0 of the first data segment, so every jiffies read
+# returned a stale init-data word, timer_list timers never expired, and work
+# deferred with schedule_delayed_work() never ran. Point each alias at its
+# target. On little-endian wasm32 the 32-bit `jiffies` is the low word of the
+# 64-bit `jiffies_64`, which sits at the same address.
+ALIASES = {'jiffies': ('jiffies_64', 4)}
+
+
+def alias_fixes(sym_table):
+    """Return [(alias_sym, target_sym, size)] for aliases that need fixing."""
+    by_name = {s['name']: s for s in sym_table['symbols']
+               if s['type'] == WASM_SYMBOL_TYPE_DATA and 'name' in s}
+    fixes = []
+    for alias, (target, size) in ALIASES.items():
+        a, t = by_name.get(alias), by_name.get(target)
+        if a is None or t is None:
+            continue
+        if (a['flags'] | t['flags']) & WASM_SYM_UNDEFINED:
+            continue
+        if (not (a['flags'] & WASM_SYM_ABSOLUTE) and a['segment'] == t['segment']
+                and a['offset'] == t['offset'] and a['size'] == size):
+            continue  # already fixed
+        fixes.append((a, t, size))
+    return fixes
+
+
 def main():
     if len(sys.argv) < 2:
         print("usage: wasm_fix_absolute_brackets.py <in.o> [out.o]", file=sys.stderr)
@@ -415,16 +443,35 @@ def main():
     for sym, seg_idx, new_off in conversions:
         print(f"  {sym['name']:40s} 0x{sym['offset']:x} -> seg#{seg_idx} ({seg_names[seg_idx]}) @ 0x{new_off:x}")
 
-    if not conversions:
-        print("nothing to do")
-        return
-
     # Apply conversions in-memory
     for sym, seg_idx, new_off in conversions:
         sym['flags'] &= ~WASM_SYM_ABSOLUTE
         sym['segment'] = seg_idx
         sym['offset'] = new_off
         # size: keep as-is
+
+    # Aliases last, so a target converted above is already segment-relative.
+    aliases = alias_fixes(sym_table)
+    for a, t, size in aliases:
+        if t['flags'] & WASM_SYM_ABSOLUTE:
+            print(f"  SKIP alias {a['name']} -> {t['name']} (target still absolute)")
+            continue
+        print(f"  alias {a['name']:34s} seg#{a['segment']} @ 0x{a['offset']:x} -> "
+              f"{t['name']} seg#{t['segment']} ({seg_names[t['segment']]}) @ 0x{t['offset']:x}")
+        a['flags'] &= ~WASM_SYM_ABSOLUTE
+        a['segment'] = t['segment']
+        a['offset'] = t['offset']
+        a['size'] = size
+
+    if not conversions and not aliases:
+        # An already-fixed object (an incremental rebuild that did not
+        # relink lkl.o). Still produce out_path: the build script moves it
+        # over the input unconditionally.
+        print("nothing to do")
+        if out_path != in_path:
+            with open(out_path, 'wb') as f:
+                f.write(buf)
+        return
 
     # Rebuild the symbol table subsection
     new_st = bytearray()
