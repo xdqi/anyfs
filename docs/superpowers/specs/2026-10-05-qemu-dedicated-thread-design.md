@@ -1,7 +1,8 @@
 # QEMU dedicated-thread embedding design
 
 **Date:** 2026-10-05
-**Status:** approved (architecture, components, data flow, error handling, testing, phasing)
+**Status:** implemented (phases 1–3, 2026-10-05); real-Windows / wine verification and phase 4
+pending — see "Implementation notes" at the end
 **Scope:** `src/core/qemu_backend.c` (rewrite), `src/core/qemu_thread.{c,h}` (new),
 `patches/qemu/` (two new patches), `ts/native/anyfs_ts.c` + `ts/packages/core/src/worker.ts`
 (wasm API thread), `ts/packages/anyfs-native/src/binding.cc` (native addon)
@@ -309,3 +310,37 @@ Each phase lands on `main` on its own; `main` stays green throughout.
 6. A stalled image source produces a fatal error (wasm/Electron) or a clean exit (CLI)
    within the watchdog timeout, never a silent hang.
 7. The legacy inline embedding and the `ANYFS_QEMU_THREAD` switch are removed.
+
+## Implementation notes (2026-10-05)
+
+Phases 1–3 landed as designed, with these differences:
+
+- **P2 is required for correctness, not just latency.** emscripten 5.0.7 marks `poll()` and `fsync()`
+  as async imports. When a pthread proxies either one to the main thread, the main thread runs it
+  through Asyncify and aborts ("… was not in ASYNCIFY_IMPORTS, but changed the state"). Once QEMU
+  left the main thread, every `poll()` call hit this, even with a zero timeout. Patch
+  `0004-emscripten-avoid-async-syscalls.patch` replaces the old sleep loop:
+  - `qemu_poll_ns` waits on a futex that `event_notifier_set` bumps, then reports every fd ready.
+    This is safe because, in this build, the only fds are EventNotifier pipes, drained with
+    non-blocking reads.
+  - `qemu_fdatasync` calls the synchronous `fdatasync()`.
+- **No join on shutdown.** A pthread whose stack Asyncify has unwound for a coroutine switch never
+  reaches the thread-exit path that `pthread_join` waits for. The QEMU thread is therefore detached:
+  `qemu_thread_stop()` waits, under the watchdog, on a semaphore the thread posts after leaving its
+  loop.
+- **The API thread serves Node too.** NodeWasmSession and `bootModule` run the bundle on Node's main
+  thread, which serves NODEFS calls exactly as the browser Worker serves WORKERFS calls. All callers,
+  including the bundle smoke test, use the shared `wasm-api.ts` protocol.
+- **Bugs surfaced and fixed along the way:**
+  - FINDINGS F17: reopening a disk in one kernel listed no partitions.
+  - FINDINGS F18: addon errors threw from inside the AsyncWorker callback instead of rejecting.
+  - `build_qemu.sh` reported success when a target failed.
+  - The wasm export generator exported a struct type name.
+- **Native performance:** about 28 µs of extra hand-off per block request on a Hyper-V guest. On a
+  workload of small requests (88k requests averaging 11.6 KB) that costs about 5–10% throughput.
+  Per the user's decision, optimisation is deferred until the architecture is settled.
+- **Not yet done:**
+  - Windows. The mingw build and wine run are blocked locally because the msys2-cross mingw64
+    sysroot is missing glib2/zstd/bzip2/curl. Real-Windows F9 verification is still open.
+  - Phase 4 (narrowing Asyncify instrumentation) is untouched.
+

@@ -167,8 +167,9 @@ NativeSession (core)            'anyfs-native:<op>'           ipcMain.handle    
      which forwards Range requests to the upstream URL on `127.0.0.1:<random port>` (Node fetch, follows redirects + TLS).
   2. Returns `proxyUrl = http://127.0.0.1:<port>/`.
   3. `bridge.diskOpen(proxyUrl, 1)` → QEMU's curl driver connects to this loopback proxy.
-  > Why a separate thread: addon calls **synchronously block** the calling thread's event loop, so the HTTP
-  > server must have its own libuv loop.
+  > Why a separate thread: the proxy predates the 2026-10-05 change that made every addon op an
+  > AsyncWorker (lifecycle calls used to block the main thread); it still keeps the HTTP server on its
+  > own libuv loop, independent of addon traffic.
 - **file**: `attachFile` throws immediately (native does not support Blobs).
 
 ### 5.3 native kernel lifecycle
@@ -190,25 +191,30 @@ and all sessions share one kernel. That's why `NativeSession._dispose` **deliber
 ([worker.ts:418-440](../ts/packages/core/src/worker.ts#L418-L440)).
 Plus one-way events: `host-ready` / `progress` / `stdout` / `stderr` / `abort` / `host-error` / `host-rejection`
 ([wasm-session.ts:57-102](../ts/packages/core/src/wasm-session.ts#L57-L102)).
-**All ops are serialized** (`opChain`, [worker.ts:416-440](../ts/packages/core/src/worker.ts#L416-L440)) —
-LKL holds a single CPU lock and ASYNCIFY suspends the running export; two concurrent ops would trip a
-`bad count while changing owner` panic.
+**All ops are serialized** (`opChain` in worker.ts), in message order. The bundle's API thread runs
+requests one by one anyway; the chain also keeps an op's multi-call sequences (e.g. a failed open plus
+its `lastError()`) together.
 
-### 6.3 op table → C entry points (the `_p` out-pointer variants)
-Under ASYNCIFY the fiber switch discards the return value, so calls go through `_p` variants: the result is
-written to a caller-supplied `int32_t*` out-pointer, and JS reads `HEAP32` after the await
-([worker.ts:72-83](../ts/packages/core/src/worker.ts#L72-L83)).
+### 6.3 op table → API-thread ops
+The worker owns the module, so it must never block: pthreads proxy their file-system calls to it — the
+QEMU thread's reads of the WORKERFS/URLFS image included. Every op therefore runs on the glue's **API
+thread** ([anyfs_ts.c](../ts/native/anyfs_ts.c), "API thread"): the worker writes a request into linear
+memory, `anyfs_ts_api_submit` queues it and returns at once, and the API thread reports completion through
+`Module.anyfsApiDone(id)`. [wasm-api.ts](../ts/packages/core/src/wasm-api.ts) implements the caller side
+(`ApiOp` mirrors `ANYFS_TS_OP_*`; `tests/test_wasm_exports.sh` checks they agree). QEMU itself runs on its own
+thread ([qemu_thread.c](../src/core/qemu_thread.c)); see
+[the design spec](superpowers/specs/2026-10-05-qemu-dedicated-thread-design.md).
 
-| op (worker) | C entry (`anyfs_ts_*`) | notes |
+| op (worker) | `ApiOp` → C function (`anyfs_ts_*`) | notes |
 |---|---|---|
-| `boot` | `anyfs_ts_init_async` preferred, else `anyfs_ts_kernel_init` | dynamic-import the wasm shim → factory → init |
-| `attach` (file) | `anyfs_ts_session_open_p` | WORKERFS mounts the Blob at `/work`, opened read-only |
-| `attachUrl` | `anyfs_ts_session_open_p` | URLFS mounted at `/work` (see 6.4) |
-| `listParts` / `meta` | `anyfs_ts_session_list_json_p` / `..._meta_json_p` | JSON out-buffer, doubles and retries if too small |
-| `enter` | `anyfs_ts_session_enter_p` | writes the mount path into a buffer, returns `UTF8ToString` |
-| `readdir`/`stat`/`statFollow` | `anyfs_ts_readdir_json_p` / `lstat_json_p` / `stat_json_p` | |
-| `open`/`read`/`close` | `anyfs_ts_open_p` / `pread_p` / `close_p` | read uses a pre-allocated scratch buffer |
-| `dispose` | `anyfs_ts_session_close` + `anyfs_ts_kernel_halt` | the wasm kernel is not shared, so dispose really halts |
+| `boot` | `KERNEL_INIT` → `kernel_init` | dynamic-import the wasm shim → factory → init |
+| `attach` (file) | `SESSION_OPEN` → `session_open` | WORKERFS mounts the Blob at `/work`, opened read-only; a failure fetches `LAST_ERROR` |
+| `attachUrl` | `SESSION_OPEN` → `session_open` | URLFS mounted at `/work` (see 6.4) |
+| `listParts` / `meta` | `SESSION_LIST` / `SESSION_META` | JSON out-buffer, doubles and retries if too small |
+| `enter` | `SESSION_ENTER` → `session_enter` | writes the mount path into a buffer, returns `UTF8ToString` |
+| `readdir`/`stat`/`statFollow` | `READDIR` / `LSTAT` / `STAT` | |
+| `open`/`read`/`close` | `OPEN` / `PREAD` / `CLOSE` | read uses a pre-allocated scratch buffer |
+| `dispose` | `SESSION_CLOSE` + `KERNEL_HALT` | the wasm kernel is not shared, so dispose really halts |
 
 > Unlike native: the wasm kernel is **per-worker**, so dispose calls `kernel_halt`.
 
