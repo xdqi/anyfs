@@ -162,6 +162,7 @@ static void open_fn(void* opaque)
 	struct open_req* r = opaque;
 	Error* errp = NULL;
 
+	assert(qemu_thread_is_current());
 	r->blk = open_image(r->path, r->flags, &errp);
 	if (!r->blk) {
 		snprintf(r->err, sizeof(r->err), "%s", error_get_pretty(errp));
@@ -179,6 +180,7 @@ static void open_fn(void* opaque)
 
 static void close_fn(void* opaque)
 {
+	assert(qemu_thread_is_current());
 	blk_unref(opaque);
 }
 
@@ -194,6 +196,7 @@ static void coroutine_fn io_co(void* opaque)
 	struct lkl_blk_req* req = r->req;
 	int64_t offset = (int64_t)req->sector * 512;
 
+	assert(qemu_thread_is_current());
 	r->status = LKL_DEV_BLK_STATUS_IOERR;
 	for (int i = 0; i < req->count; i++) {
 		int ret;
