@@ -34,6 +34,20 @@ void anyfs_set_last_error(const char* fmt, ...)
     __attribute__((format(printf, 1, 2)));
 const char* anyfs_get_last_error(void);
 
+/* ── Fatal errors ─────────────────────────────────────────────── */
+
+/* A fatal error means the engine is wedged (e.g. the QEMU thread missed its
+ * watchdog deadline) and the process must not be trusted any further. The
+ * reporting thread does not return to its caller afterwards; it may block
+ * forever. Each embedder installs a hook that tears the engine down from the
+ * outside: the wasm glue tells the page to terminate the worker, the native
+ * addon tells JS. Without a hook (CLI servers) the reason is printed to
+ * stderr and the process exits with status 1. The hook runs at most once,
+ * on an arbitrary thread. */
+typedef void (*anyfs_fatal_hook_fn)(const char* reason);
+void anyfs_set_fatal_hook(anyfs_fatal_hook_fn fn);
+void anyfs_fatal(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+
 #ifdef __cplusplus
 }
 #endif

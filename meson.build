@@ -240,6 +240,12 @@ if enable_qemu
         )
     endif
     qemu_args = ['-DANYFS_HAS_QEMU=1']
+    # Dedicated QEMU thread embedding (src/core/qemu_thread.c). The option
+    # exists only while the legacy inline embedding is still around for the
+    # wasm build; both go away once wasm moves over.
+    if get_option('qemu_thread')
+        qemu_args += ['-DANYFS_QEMU_THREAD=1']
+    endif
 else
     qemu_dep = []
     qemu_args = []
@@ -296,6 +302,7 @@ endif
 if enable_qemu
     anyfs_core_sources += files(
         'src/core/qemu_backend.c',
+        'src/core/qemu_thread.c',
     )
     if not qemu_shared
         anyfs_core_sources += files(
@@ -392,6 +399,20 @@ bench_backends = executable('bench_backends',
     dependencies: [anyfs_dep],
     c_args: gio_args + qemu_args,
 )
+
+if enable_qemu and get_option('qemu_thread')
+    test_qemu_thread = executable('test_qemu_thread',
+        'tests/test_qemu_thread.c',
+        include_directories: [anyfs_inc, include_directories('src/core')],
+        dependencies: [anyfs_dep],
+        c_args: qemu_args,
+        install: false,
+    )
+    test('qemu_thread_basic', test_qemu_thread, args: ['basic'],
+         suite: 'unit', timeout: 120)
+    test('qemu_thread_watchdog', test_qemu_thread, args: ['watchdog'],
+         suite: 'unit', timeout: 60)
+endif
 
 if enable_qemu
     test_qemu_mount = executable('test_qemu_mount',

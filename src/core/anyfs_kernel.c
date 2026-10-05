@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* ── Internal state ────────────────────────────────────────────── */
 
@@ -34,6 +35,35 @@ void anyfs_set_last_error(const char* fmt, ...)
 const char* anyfs_get_last_error(void)
 {
 	return g_last_error[0] ? g_last_error : NULL;
+}
+
+static anyfs_fatal_hook_fn g_fatal_hook;
+static int g_fatal_reported;
+
+void anyfs_set_fatal_hook(anyfs_fatal_hook_fn fn)
+{
+	__atomic_store_n(&g_fatal_hook, fn, __ATOMIC_RELEASE);
+}
+
+void anyfs_fatal(const char* fmt, ...)
+{
+	char reason[512];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(reason, sizeof(reason), fmt, ap);
+	va_end(ap);
+
+	if (__atomic_exchange_n(&g_fatal_reported, 1, __ATOMIC_ACQ_REL))
+		return;
+	anyfs_fatal_hook_fn fn =
+	    __atomic_load_n(&g_fatal_hook, __ATOMIC_ACQUIRE);
+	if (fn) {
+		fn(reason);
+		return;
+	}
+	fprintf(stderr, "anyfs: fatal: %s\n", reason);
+	fflush(stderr);
+	_exit(1);
 }
 
 static int g_kernel_started;
@@ -92,6 +122,9 @@ static void anyfs_atexit_cleanup(void)
 
 	lkl_sys_halt();
 	lkl_cleanup();
+#ifdef ANYFS_HAS_QEMU
+	qemu_backend_shutdown();
+#endif
 	g_kernel_started = 0;
 }
 
@@ -189,5 +222,8 @@ void anyfs_kernel_halt(void)
 		return;
 	lkl_sys_halt();
 	lkl_cleanup();
+#ifdef ANYFS_HAS_QEMU
+	qemu_backend_shutdown();
+#endif
 	g_kernel_started = 0;
 }

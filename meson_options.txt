@@ -50,6 +50,10 @@ option('qemu_shared', type: 'boolean',
     value: false,
     description: 'Link QEMU block backend dynamically via libanyfs-qemublk.so')
 
+option('qemu_thread', type: 'boolean',
+    value: true,
+    description: 'Run QEMU on a dedicated thread (false = legacy inline embedding)')
+
 option('enable_fuse', type: 'boolean',
     value: false,
     description: 'Enable FUSE frontend (anyfs-fuse)')

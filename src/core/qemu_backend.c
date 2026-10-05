@@ -1,7 +1,16 @@
 /*
- * QEMU Block Backend for anyfs-reader (synchronous)
+ * QEMU Block Backend for anyfs-reader
  *
  * Uses QEMU's block layer (libblock.a) to support qcow2, vmdk, vdi, etc.
+ *
+ * Two embeddings, selected at compile time:
+ *   ANYFS_QEMU_THREAD   — every QEMU call runs on the dedicated QEMU thread
+ *                         (qemu_thread.c); LKL threads and API callers hand
+ *                         work to it and block until it is done.
+ *   (otherwise, legacy) — QEMU is called inline from whichever thread opens
+ *                         a disk or issues a block request. Kept only until
+ *                         the wasm glue moves to the QEMU thread.
+ * See docs/superpowers/specs/2026-10-05-qemu-dedicated-thread-design.md.
  */
 
 /* qemu/osdep.h MUST be the first include in every QEMU-using .c file —
@@ -24,6 +33,9 @@
 #include "system/block-backend-global-state.h"
 #include "system/block-backend-io.h"
 #include "system/block-backend.h"
+#ifdef ANYFS_QEMU_THREAD
+#include "qemu_thread.h"
+#endif
 
 /* On Windows, QEMU's osdep.h #defines close/open/read/write as wrappers.
  * Undef them now so our struct member names don't get mangled. */
@@ -49,6 +61,10 @@
 #include "anyfs.h"
 #include "qemu_backend.h"
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 struct qemu_blk_ctx {
 	BlockBackend* blk;
 	int64_t capacity; /* bytes */
@@ -60,6 +76,229 @@ static int qemu_get_capacity(struct lkl_disk disk, unsigned long long* res)
 	*res = ctx->capacity; /* return in bytes, virtio_blk.c divides by 512 */
 	return 0;
 }
+
+/* Open image_path as a BlockBackend. Calls into QEMU, so it runs on the QEMU
+ * thread (or inline in the legacy embedding). */
+static BlockBackend* open_image(const char* image_path, uint32_t flags,
+				Error** errp)
+{
+	bool readonly = flags & ANYFS_SESSION_READONLY;
+	bool snapshot = flags & ANYFS_SESSION_SNAPSHOT;
+
+	/* Map anyfs flags to QEMU BDRV_O_* flags.
+	 *
+	 * BDRV_O_SNAPSHOT: open the base image read-only, create a temporary
+	 * qcow2 overlay in $TMPDIR (or /var/tmp), and redirect all writes
+	 * there. The base image is never modified.
+	 *
+	 * On WASM, the overlay lives in MEMFS (/var/tmp/vl.XXXXXX) — it
+	 * grows as writes happen and is discarded on page reload.
+	 *
+	 * On Linux, /var/tmp is the default location (persistent).
+	 * On Windows, %TEMP% is used (no /tmp→/var/tmp redirect). */
+	int bdrv_flags;
+	if (snapshot) {
+		bdrv_flags = BDRV_O_SNAPSHOT;
+	} else if (readonly) {
+		bdrv_flags = 0;
+	} else {
+		bdrv_flags = BDRV_O_RDWR;
+	}
+
+	/* QEMU's curl block driver defaults to CURLOPT_TIMEOUT=5s. Bump it for
+	 * URL images (local files use the raw driver, which ignores "timeout").
+	 */
+	QDict* options = NULL;
+	const int is_url = image_path && strstr(image_path, "://") != NULL;
+
+	/* PoC: NBD-over-inherited-fd transport. image_path "nbd-fd:N" means the
+	 * NBD client should adopt already-open socket fd N (passed by the
+	 * parent via inheritance). "nbd-port:P" is the Windows fallback:
+	 * connect to a 127.0.0.1 loopback on port P. In both cases the server
+	 * address comes from the options QDict (server.*), so the filename
+	 * handed to blk_new_open must be NULL. */
+	const char* open_name = image_path;
+	if (image_path && strncmp(image_path, "nbd-fd:", 7) == 0) {
+		options = qdict_new();
+		qdict_put_str(options, "driver", "nbd");
+		qdict_put_str(options, "server.type", "fd");
+		qdict_put_str(options, "server.str", image_path + 7);
+		open_name = NULL;
+	} else if (image_path && strncmp(image_path, "nbd-port:", 9) == 0) {
+		options = qdict_new();
+		qdict_put_str(options, "driver", "nbd");
+		qdict_put_str(options, "server.type", "inet");
+		qdict_put_str(options, "server.host", "127.0.0.1");
+		qdict_put_str(options, "server.port", image_path + 9);
+		open_name = NULL;
+	} else if (is_url) {
+		options = qdict_new();
+		qdict_put_int(options, "file.timeout", 20);
+	}
+
+	fprintf(stderr, "[qemu_blk] blk_new_open name=%s flags=0x%x\n",
+		open_name ? open_name : "(nbd via options)", bdrv_flags);
+	BlockBackend* blk =
+	    blk_new_open(open_name, NULL, options, bdrv_flags, errp);
+	fprintf(stderr, "[qemu_blk] blk_new_open returned %p\n", (void*)blk);
+	return blk;
+}
+
+/* When snapshot is requested, QEMU's create_tmp_file() writes the temporary
+ * qcow2 overlay under /var/tmp (glib g_get_tmp_dir → /tmp → /var/tmp on
+ * non-Windows). On Emscripten MEMFS, /var and /var/tmp don't exist by
+ * default — create them so the overlay lands in the in-memory filesystem
+ * instead of failing with ENOENT. */
+static void prepare_snapshot_dir(uint32_t flags)
+{
+#ifdef __EMSCRIPTEN__
+	if (flags & ANYFS_SESSION_SNAPSHOT) {
+		mkdir("/var", 0777);
+		mkdir("/var/tmp", 0777);
+	}
+#else
+	(void)flags;
+#endif
+}
+
+#ifdef ANYFS_QEMU_THREAD
+
+/* ── Dedicated-thread embedding ──────────────────────────────────── */
+
+struct open_req {
+	const char* path;
+	uint32_t flags;
+	BlockBackend* blk; /* out */
+	int64_t capacity;  /* out */
+	char err[256];	   /* out, on failure */
+};
+
+static void open_fn(void* opaque)
+{
+	struct open_req* r = opaque;
+	Error* errp = NULL;
+
+	r->blk = open_image(r->path, r->flags, &errp);
+	if (!r->blk) {
+		snprintf(r->err, sizeof(r->err), "%s", error_get_pretty(errp));
+		error_free(errp);
+		return;
+	}
+	r->capacity = blk_getlength(r->blk);
+	if (r->capacity < 0) {
+		snprintf(r->err, sizeof(r->err), "blk_getlength failed: %s",
+			 strerror((int)-r->capacity));
+		blk_unref(r->blk);
+		r->blk = NULL;
+	}
+}
+
+static void close_fn(void* opaque)
+{
+	blk_unref(opaque);
+}
+
+struct io_req {
+	BlockBackend* blk;
+	struct lkl_blk_req* req;
+	int status; /* out: LKL_DEV_BLK_STATUS_* */
+};
+
+static void coroutine_fn io_co(void* opaque)
+{
+	struct io_req* r = opaque;
+	struct lkl_blk_req* req = r->req;
+	int64_t offset = (int64_t)req->sector * 512;
+
+	r->status = LKL_DEV_BLK_STATUS_IOERR;
+	for (int i = 0; i < req->count; i++) {
+		int ret;
+		switch (req->type) {
+		case LKL_DEV_BLK_TYPE_READ:
+			ret = blk_co_pread(r->blk, offset, req->buf[i].iov_len,
+					   req->buf[i].iov_base, 0);
+			break;
+		case LKL_DEV_BLK_TYPE_WRITE:
+			ret = blk_co_pwrite(r->blk, offset, req->buf[i].iov_len,
+					    req->buf[i].iov_base, 0);
+			break;
+		case LKL_DEV_BLK_TYPE_FLUSH:
+			ret = blk_co_flush(r->blk);
+			break;
+		default:
+			return;
+		}
+		if (ret < 0)
+			return;
+		offset += req->buf[i].iov_len;
+	}
+	r->status = LKL_DEV_BLK_STATUS_OK;
+}
+
+static int qemu_request(struct lkl_disk disk, struct lkl_blk_req* req)
+{
+	struct qemu_blk_ctx* ctx = disk.handle;
+	struct io_req r = {.blk = ctx->blk, .req = req};
+
+	assert(!qemu_thread_is_current());
+	if (qemu_thread_co_call(io_co, &r) < 0)
+		return LKL_DEV_BLK_STATUS_IOERR;
+	return r.status;
+}
+
+int qemu_blk_open(const char* image_path, uint32_t flags,
+		  struct lkl_disk* disk_out)
+{
+	char err[256];
+	struct open_req r = {.path = image_path, .flags = flags};
+
+	fprintf(stderr, "[qemu_blk] open(%s) ro=%d snap=%d\n", image_path,
+		!!(flags & ANYFS_SESSION_READONLY),
+		!!(flags & ANYFS_SESSION_SNAPSHOT));
+	if (qemu_thread_start(err, sizeof(err)) < 0) {
+		anyfs_set_last_error("%s", err);
+		fprintf(stderr, "[qemu_blk] %s\n", err);
+		return -1;
+	}
+	prepare_snapshot_dir(flags);
+	if (qemu_thread_call(open_fn, &r) < 0) {
+		anyfs_set_last_error("QEMU thread is not running");
+		return -1;
+	}
+	if (!r.blk) {
+		anyfs_set_last_error("%s", r.err);
+		fprintf(stderr, "blk_new_open(%s) failed: %s\n", image_path,
+			r.err);
+		return -1;
+	}
+	fprintf(stderr, "[qemu_blk] capacity=%lld\n", (long long)r.capacity);
+
+	struct qemu_blk_ctx* ctx = calloc(1, sizeof(*ctx));
+	ctx->blk = r.blk;
+	ctx->capacity = r.capacity;
+	disk_out->handle = ctx;
+	disk_out->ops = &qemu_blk_ops;
+	return 0;
+}
+
+void qemu_blk_close(struct lkl_disk* disk)
+{
+	struct qemu_blk_ctx* ctx = disk->handle;
+	if (ctx) {
+		qemu_thread_call(close_fn, ctx->blk);
+		free(ctx);
+		disk->handle = NULL;
+	}
+}
+
+void qemu_backend_shutdown(void)
+{
+	qemu_thread_stop();
+}
+
+#else /* !ANYFS_QEMU_THREAD */
+
+/* ── Legacy inline embedding ─────────────────────────────────────── */
 
 static __thread int qemu_ctx_initialized;
 
@@ -102,40 +341,24 @@ static int qemu_request(struct lkl_disk disk, struct lkl_blk_req* req)
 	return LKL_DEV_BLK_STATUS_OK;
 }
 
-struct lkl_dev_blk_ops qemu_blk_ops = {
-    .get_capacity = qemu_get_capacity,
-    .request = qemu_request,
-};
-
 static int qemu_initialized = 0;
 
 int qemu_blk_open(const char* image_path, uint32_t flags,
 		  struct lkl_disk* disk_out)
 {
 	Error* errp = NULL;
-	bool readonly = flags & ANYFS_SESSION_READONLY;
-	bool snapshot = flags & ANYFS_SESSION_SNAPSHOT;
 
 #ifdef __EMSCRIPTEN__
-#include <emscripten.h>
 	/* Force Asyncify-active state on the calling thread so QEMU's coroutine
 	 * yields and poll() calls see isAsyncContext=true. Without this, the
 	 * first poll(timeout>0) spin-loops because ASYNCIFY isn't engaged on
 	 * a worker-thread synchronous entry. */
 	emscripten_sleep(0);
-
-	/* When snapshot is requested, QEMU's create_tmp_file() writes the
-	 * temporary qcow2 overlay under /var/tmp (glib g_get_tmp_dir → /tmp →
-	 * /var/tmp on non-Windows). On Emscripten MEMFS, /var and /var/tmp
-	 * don't exist by default — create them so the overlay lands in the
-	 * in-memory filesystem instead of failing with ENOENT. */
-	if (snapshot) {
-		mkdir("/var", 0777);
-		mkdir("/var/tmp", 0777);
-	}
 #endif
+	prepare_snapshot_dir(flags);
 	fprintf(stderr, "[qemu_blk] open(%s) ro=%d snap=%d\n", image_path,
-		readonly, snapshot);
+		!!(flags & ANYFS_SESSION_READONLY),
+		!!(flags & ANYFS_SESSION_SNAPSHOT));
 	if (!qemu_initialized) {
 		fprintf(stderr, "[qemu_blk] bdrv_init…\n");
 		/* MODULE_INIT_QOM must be called before bdrv_init so that QOM
@@ -154,62 +377,7 @@ int qemu_blk_open(const char* image_path, uint32_t flags,
 		qemu_initialized = 1;
 	}
 
-	/* Map anyfs flags to QEMU BDRV_O_* flags.
-	 *
-	 * BDRV_O_SNAPSHOT: open the base image read-only, create a temporary
-	 * qcow2 overlay in $TMPDIR (or /var/tmp), and redirect all writes
-	 * there. The base image is never modified.
-	 *
-	 * On WASM, the overlay lives in MEMFS (/var/tmp/vl.XXXXXX) — it
-	 * grows as writes happen and is discarded on page reload.
-	 *
-	 * On Linux, /var/tmp is the default location (persistent).
-	 * On Windows, %TEMP% is used (no /tmp→/var/tmp redirect). */
-	int bdrv_flags;
-	if (snapshot) {
-		bdrv_flags = BDRV_O_SNAPSHOT;
-	} else if (readonly) {
-		bdrv_flags = 0;
-	} else {
-		bdrv_flags = BDRV_O_RDWR;
-	}
-
-	/* QEMU's curl block driver defaults to CURLOPT_TIMEOUT=5s. Bump it for
-	 * URL images (local files use the raw driver, which ignores "timeout").
-	 */
-	QDict* options = NULL;
-	const int is_url = image_path && strstr(image_path, "://") != NULL;
-
-	/* PoC: NBD-over-inherited-fd transport. image_path "nbd-fd:N" means the
-	 * NBD client should adopt already-open socket fd N (passed by the parent
-	 * via inheritance). "nbd-port:P" is the Windows fallback: connect to a
-	 * 127.0.0.1 loopback on port P. In both cases the server address comes
-	 * from the options QDict (server.*), so the filename handed to
-	 * blk_new_open must be NULL. */
-	const char* open_name = image_path;
-	if (image_path && strncmp(image_path, "nbd-fd:", 7) == 0) {
-		options = qdict_new();
-		qdict_put_str(options, "driver", "nbd");
-		qdict_put_str(options, "server.type", "fd");
-		qdict_put_str(options, "server.str", image_path + 7);
-		open_name = NULL;
-	} else if (image_path && strncmp(image_path, "nbd-port:", 9) == 0) {
-		options = qdict_new();
-		qdict_put_str(options, "driver", "nbd");
-		qdict_put_str(options, "server.type", "inet");
-		qdict_put_str(options, "server.host", "127.0.0.1");
-		qdict_put_str(options, "server.port", image_path + 9);
-		open_name = NULL;
-	} else if (is_url) {
-		options = qdict_new();
-		qdict_put_int(options, "file.timeout", 20);
-	}
-
-	fprintf(stderr, "[qemu_blk] blk_new_open name=%s flags=0x%x\n",
-		open_name ? open_name : "(nbd via options)", bdrv_flags);
-	BlockBackend* blk =
-	    blk_new_open(open_name, NULL, options, bdrv_flags, &errp);
-	fprintf(stderr, "[qemu_blk] blk_new_open returned %p\n", (void*)blk);
+	BlockBackend* blk = open_image(image_path, flags, &errp);
 	if (!blk) {
 		anyfs_set_last_error("%s", error_get_pretty(errp));
 		fprintf(stderr, "blk_new_open(%s) failed: %s\n", image_path,
@@ -243,6 +411,17 @@ void qemu_blk_close(struct lkl_disk* disk)
 		disk->handle = NULL;
 	}
 }
+
+void qemu_backend_shutdown(void)
+{
+}
+
+#endif /* ANYFS_QEMU_THREAD */
+
+struct lkl_dev_blk_ops qemu_blk_ops = {
+    .get_capacity = qemu_get_capacity,
+    .request = qemu_request,
+};
 
 const struct anyfs_backend_ops qemu_backend_ops = {
     .name = "qemu",
