@@ -81,13 +81,13 @@ test('a host-reported engine failure still fires onFatal', () => {
     const { bridge } = fakeBridge({
         onFatal: (cb) => {
             push = cb;
-            return () => {};
+            return () => (push = null);
         },
     });
     const s = new NativeSession(bridge);
     const fatals = [];
     s.onFatal((e) => fatals.push([e.name, e.message]));
-    push('QEMU thread did not finish read within 120000 ms');
+    push?.('QEMU thread did not finish read within 120000 ms');
     assert.deepEqual(fatals, [
         [
             'EngineFatalError',
@@ -129,7 +129,7 @@ test('a host fatal during close() releases the wait', { timeout: 3000 }, async (
     let push;
     const { bridge, calls } = fakeBridge({
         diskOpen: async () => 0,
-        onFatal: (cb) => ((push = cb), () => {}),
+        onFatal: (cb) => ((push = cb), () => (push = null)),
     });
     const s = new NativeSession(bridge, { opTimeoutMs: 0 });
     await s.attachPath('/img');
@@ -138,9 +138,41 @@ test('a host fatal during close() releases the wait', { timeout: 3000 }, async (
     await tick();
     const c = s.close();
     await tick();
+    push?.('dead');
+    await c;
+    assert.ok(!calls.includes('diskClose'));
+});
+
+test('a host fatal releases a close() waiting on a pending attach', { timeout: 3000 }, async () => {
+    let push;
+    const { bridge, calls } = fakeBridge({
+        onFatal: (cb) => ((push = cb), () => (push = null)),
+    });
+    const s = new NativeSession(bridge, { opTimeoutMs: 0 });
+    s.attachPath('/img').catch(() => {}); // diskOpen never settles
+    await tick();
+    const c = s.close();
+    await tick();
+    assert.ok(push, 'still subscribed while close() waits');
     push('dead');
     await c;
     assert.ok(!calls.includes('diskClose'));
+});
+
+test('a host fatal during a wedged diskClose releases close()', { timeout: 3000 }, async () => {
+    let push;
+    const { bridge, calls } = fakeBridge({
+        diskOpen: async () => 0,
+        onFatal: (cb) => ((push = cb), () => (push = null)),
+    });
+    const s = new NativeSession(bridge, { opTimeoutMs: 0 }); // watchdog off; diskClose never settles
+    await s.attachPath('/img');
+    const c = s.close();
+    await tick();
+    assert.ok(calls.includes('diskClose'));
+    assert.ok(push, 'still subscribed while diskClose is in flight');
+    push('dead');
+    await c;
 });
 
 test('an attach queued behind a fatal never reaches the engine', { timeout: 3000 }, async () => {
@@ -195,11 +227,11 @@ test(
             startProxy: async () => ({ proxyUrl: 'http://x/', id: 'p1' }),
             diskOpen: async () => 0,
             stopProxy: async () => {},
-            onFatal: (cb) => ((push = cb), () => {}),
+            onFatal: (cb) => ((push = cb), () => (push = null)),
         });
         const s = new NativeSession(bridge);
         await s.attachUrl('http://up/');
-        push('dead');
+        push?.('dead');
         await s.close();
         assert.ok(!calls.includes('diskClose'));
         assert.ok(calls.includes('stopProxy'));

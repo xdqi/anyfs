@@ -214,9 +214,8 @@ export class NativeSession extends AnyfsSessionBase {
         // A wedged engine never settles the in-flight op or a close call: wait
         // for the queue to drain, but stop waiting as soon as the session goes
         // fatal (watchdog or host report). The bridge subscription stays until
-        // then so a host fatal during the wait is seen.
+        // the very end so a host fatal during any wait below is seen.
         if (!this.fatalError) await Promise.race([this.queueIdle, this.fatalSignal]);
-        this.unsubscribeFatal?.();
         // Re-check before every engine call. These go straight to the bridge
         // (not through serialize, which rejects after dispose), but stay
         // bounded by the watchdog.
@@ -244,6 +243,7 @@ export class NativeSession extends AnyfsSessionBase {
             }
             this.proxyId = null;
         }
+        this.unsubscribeFatal?.();
         // Deliberately do NOT call kernelHalt — the addon's kernel is
         // process-global and shared with other mounts.
     }
