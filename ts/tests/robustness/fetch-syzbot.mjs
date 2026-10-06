@@ -10,7 +10,15 @@
  * sha256 of entries that have none.
  */
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import {
+    chmodSync,
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -19,6 +27,25 @@ import { matcher } from './lib/glob.mjs';
 import { SYZBOT_DIR, SYZBOT_MANIFEST } from './lib/paths.mjs';
 
 export const caseName = (e) => `syz-${e.fs}-${e.extid.slice(0, 8)}`;
+/** GET with a 120 s timeout; 3 retries (5/15/45 s) on 429, 5xx or a network error. */
+async function download(url) {
+    for (let attempt = 0; ; attempt++) {
+        let failure;
+        try {
+            const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+            if (res.ok) return Buffer.from(await res.arrayBuffer());
+            if (res.status !== 429 && res.status < 500)
+                throw new Error(`${url} → HTTP ${res.status}`);
+            failure = `HTTP ${res.status}`;
+        } catch (e) {
+            if (e.message.includes('→ HTTP')) throw e;
+            failure = e.message;
+        }
+        if (attempt === 3) throw new Error(`${url} → ${failure} (after 3 retries)`);
+        await new Promise((r) => setTimeout(r, [5, 15, 45][attempt] * 1000));
+    }
+}
+
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 
 /** Fetch (if needed) the entries `only` selects; return them as cases. */
@@ -35,9 +62,8 @@ export async function fetchSyzbot({ only = null, pin = false } = {}) {
         }
         const img = join(SYZBOT_DIR, `${e.extid}.img`);
         if (!existsSync(img)) {
-            const res = await fetch(e.url);
-            if (!res.ok) throw new Error(`${name}: ${e.url} → HTTP ${res.status}`);
-            const gz = Buffer.from(await res.arrayBuffer());
+            const gz = await download(e.url);
+            // sha256 pins the downloaded .gz, not the unpacked image.
             const got = sha256(gz);
             if (!e.sha256) {
                 e.sha256 = got;
@@ -48,6 +74,7 @@ export async function fetchSyzbot({ only = null, pin = false } = {}) {
                 );
             }
             const tmp = `${img}.tmp`;
+            rmSync(tmp, { force: true }); // a stale read-only .tmp would throw EACCES
             writeFileSync(tmp, gunzipSync(gz));
             chmodSync(tmp, 0o444);
             renameSync(tmp, img);

@@ -17,7 +17,7 @@
         "url": "https://storage.googleapis.com/syzbot-assets/ed47927205db/mount_0.gz",
         "sha256": "8f8b01ff0f47e62274f3b9a4ed005d6ab409dd8afbcca28cc3a3ac5977e24054",
         "repro_mount_opts": "{[{@commit}, {@noblock_validity}, {@user_xattr}]}",
-        "notes": "fixed; UAF in __ext4_check_dir_entry (readdir path); mounted with flags 0x22000011"
+        "notes": "open; UAF in __ext4_check_dir_entry (readdir path); mounted with flags 0x22000011"
     },
     {
         "extid": "085a394c92518a04fd09",
@@ -73,7 +73,7 @@
         "extid": "66941b35e83b90763e23",
         "title": "KCSAN: data-race in dont_mount / lookup_fast",
         "link": "https://syzkaller.appspot.com/bug?extid=66941b35e83b90763e23",
-        "fs": "fat",
+        "fs": "vfat",
         "url": "https://storage.googleapis.com/syzbot-assets/51b0b5fbff7d/mount_19.gz",
         "sha256": "30fae99181470c8b417aa16a13dab4f34116eb2608991d922e19aa5055908b3b",
         "repro_mount_opts": "ANY=[@ANYBLOB=\"756e695f786c6174653d312c6e6f6e756d7461696c3d300000000000000008303030303030303030303034303030303030303030302c73686f72746e616d653d65722c73686f72746e616d653d6d697865642c756e695f786c6174653d312c73686f72746e616d653d6d697865642c696f636861727365743d757466f69e75731725e72216799ebd57484a7e1948a8aa65667265652c757466383d312c6e66733d6e6f7374616c655f726f2c73686f72742e616d653d6d697865642c757466383d306d653d77696e6e742c007aea3388304ddedb3208ceb9b2c23924743277bd2c0d0019d44efede967f3df81cce421f7aafa8aa7c706311ab7a0ce39abf7858b6ba6ef5206da03692650000000000000001d0559b166f8c433d34c03a60999dea3bab649...",
