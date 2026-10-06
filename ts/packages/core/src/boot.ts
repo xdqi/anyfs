@@ -58,7 +58,15 @@ export async function openNodeSession(
 
 export async function haltKernel(): Promise<void> {
     if (!g_modulePromise) return;
-    const M = await g_modulePromise;
+    let M: AnyfsModule;
+    try {
+        M = await g_modulePromise;
+    } catch {
+        // A failed boot has no kernel to halt; just allow a fresh boot.
+        g_modulePromise = null;
+        g_kernelInitialised = false;
+        return;
+    }
     // A dead module can't answer KERNEL_HALT. (A watchdog wedge without an
     // abort makes halt hang too: recovery is a new process.)
     if (!wasmApiFor(M).failed) await wasmApiFor(M).call(ApiOp.KERNEL_HALT);

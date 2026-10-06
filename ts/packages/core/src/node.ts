@@ -19,12 +19,14 @@ export async function bootNodeKernel(
     factory: AnyfsModuleFactory,
     opts: Pick<SessionOpts, 'memMb' | 'loglevel'> = {},
 ): Promise<AnyfsModule> {
-    if (g_hostDir !== null && g_hostDir !== hostDir) {
+    const { default: path } = await import('node:path');
+    const dir = path.resolve(hostDir);
+    if (g_hostDir !== null && g_hostDir !== dir) {
         throw new Error(
             `bootNodeKernel: /work is already ${g_hostDir}; one process mounts one host directory`,
         );
     }
-    g_hostDir = hostDir;
+    g_hostDir = dir;
     return bootModule({
         factory,
         memMb: opts.memMb ?? 64,
@@ -33,7 +35,7 @@ export async function bootNodeKernel(
             (m: AnyfsModule) => {
                 if (!m.NODEFS) throw new Error('NODEFS not exported');
                 m.FS.mkdir('/work');
-                m.FS.mount(m.NODEFS, { root: hostDir }, '/work');
+                m.FS.mount(m.NODEFS, { root: dir }, '/work');
             },
         ],
     });

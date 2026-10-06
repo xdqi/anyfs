@@ -22,7 +22,9 @@ export interface NodeWasmSessionOpts extends SessionBaseOpts {
  * `preRun` hook.
  *
  * The module is process-global. When it aborts (kernel panic, wasm trap)
- * every session on it fires onFatal, and recovery means a new process.
+ * every session on it fires onFatal. After an abort, haltKernel() followed by
+ * a new boot recovers in-process; a watchdog wedge (no abort) still needs a
+ * new process.
  * After onFatal fires for an abort, emscripten still rethrows the pthread's
  * error as an uncaught exception on this thread: embedders need an
  * `uncaughtException` handler, or the process exits after onFatal.
