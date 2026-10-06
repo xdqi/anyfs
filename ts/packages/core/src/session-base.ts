@@ -1,6 +1,22 @@
 import type { DirEntry, LklFd, SessionMeta, SessionPartInfo, Stat } from './types.js';
 import type { AnyfsSession } from './session.js';
 
+/** Default per-op watchdog (ms) — see SessionOpts.opTimeoutMs. */
+export const DEFAULT_OP_TIMEOUT_MS = 60_000;
+
+/** Options every session constructor takes. */
+export interface SessionBaseOpts {
+    /** Per-op watchdog (ms); 0 disables it. Default DEFAULT_OP_TIMEOUT_MS. */
+    opTimeoutMs?: number | undefined;
+}
+
+/** The engine stopped answering (the op watchdog fired) or reported itself
+ *  dead. The session is unusable: only a new worker — or, for the native
+ *  addon, a new process — recovers. */
+export class EngineFatalError extends Error {
+    override name = 'EngineFatalError';
+}
+
 /**
  * Abstract base for all session implementations.
  * Subclasses implement the transport-specific abstract methods.
@@ -9,8 +25,14 @@ import type { AnyfsSession } from './session.js';
 export abstract class AnyfsSessionBase implements AnyfsSession {
     protected disposed = false;
     protected readonly fds = new Set<LklFd>();
+    /** Per-op watchdog (ms); 0 = off. */
+    protected readonly opTimeoutMs: number;
     private readonly fatalCbs = new Set<(e: Error) => void>();
     private fatalErr: Error | null = null;
+
+    constructor(opts: SessionBaseOpts = {}) {
+        this.opTimeoutMs = opts.opTimeoutMs ?? DEFAULT_OP_TIMEOUT_MS;
+    }
 
     // ── Subclass contract ─────────────────────────────
 
@@ -144,12 +166,15 @@ export abstract class AnyfsSessionBase implements AnyfsSession {
     async close(): Promise<void> {
         if (this.disposed) return;
         this.disposed = true;
-        // Best-effort close all tracked fds
-        for (const fd of this.fds) {
-            try {
-                await this._closeFdRaw(fd);
-            } catch {
-                /* best effort */
+        // Best-effort close all tracked fds — but not on a dead engine: it
+        // never answers, so waiting on it would hang close() forever.
+        if (!this.fatalErr) {
+            for (const fd of this.fds) {
+                try {
+                    await this._closeFdRaw(fd);
+                } catch {
+                    /* best effort */
+                }
             }
         }
         this.fds.clear();
@@ -180,6 +205,51 @@ export abstract class AnyfsSessionBase implements AnyfsSession {
             }
         }
         this.fatalCbs.clear();
+    }
+
+    /** @internal — the error the session died with, or null while healthy. */
+    protected get fatalError(): Error | null {
+        return this.fatalErr;
+    }
+
+    /** @internal — run one engine op under the watchdog. A fatal session
+     *  rejects at once instead of queueing work behind a wedged engine. An
+     *  op that outlives opTimeoutMs rejects with an EngineFatalError and the
+     *  session fires onFatal with the same error: a wedged kernel never
+     *  answers again, so the UI must stop waiting for it. */
+    protected guard<T>(op: string, run: () => Promise<T>): Promise<T> {
+        if (this.fatalErr) return Promise.reject(this.fatalErr);
+        const ms = this.opTimeoutMs;
+        if (!(ms > 0)) return run();
+        return new Promise<T>((resolve, reject) => {
+            const timer = setTimeout(() => {
+                const err = new EngineFatalError(
+                    `${op} timed out after ${ms / 1000}s — the engine is wedged`,
+                );
+                // Fatal first, so listeners know the session is dead before
+                // the op's caller sees the rejection.
+                this.fireFatal(err);
+                reject(err);
+            }, ms);
+            let p: Promise<T>;
+            try {
+                p = run();
+            } catch (e) {
+                clearTimeout(timer);
+                reject(e);
+                return;
+            }
+            p.then(
+                (v) => {
+                    clearTimeout(timer);
+                    resolve(v);
+                },
+                (e: unknown) => {
+                    clearTimeout(timer);
+                    reject(e);
+                },
+            );
+        });
     }
 
     // ── Internal ──────────────────────────────────────
