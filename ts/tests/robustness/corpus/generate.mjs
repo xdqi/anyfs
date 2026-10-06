@@ -16,12 +16,14 @@ import {
     mkdirSync,
     openSync,
     readFileSync,
+    readdirSync,
+    renameSync,
     rmSync,
     writeFileSync,
     writeSync,
 } from 'node:fs';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { CASES_JSON, GENERATED_DIR } from '../lib/paths.mjs';
 import { BASES, TOOLS, buildAllBases } from './bases.mjs';
@@ -50,20 +52,45 @@ function writeCase(file, buf) {
     chmodSync(file, 0o444);
 }
 
-function upToDate() {
-    if (!existsSync(CASES_JSON)) return false;
-    const { cases } = JSON.parse(readFileSync(CASES_JSON, 'utf-8'));
-    return cases.every((c) => existsSync(c.file));
+/** sha256 over corpus/*.mjs (by name) and the sorted case names: a changed
+ *  builder or mutation list invalidates a generated corpus. */
+function fingerprint() {
+    const dir = dirname(fileURLToPath(import.meta.url));
+    const h = createHash('sha256');
+    for (const f of readdirSync(dir)
+        .filter((n) => n.endsWith('.mjs'))
+        .sort()) {
+        h.update(`${f}\0`)
+            .update(readFileSync(join(dir, f)))
+            .update('\0');
+    }
+    const names = [
+        ...Object.keys(BASES).map((b) => `${b}-base`),
+        ...mutationCases().map((m) => m.name),
+    ].sort();
+    return h.update(names.join('\n')).digest('hex');
+}
+
+function upToDate(fp) {
+    try {
+        const j = JSON.parse(readFileSync(CASES_JSON, 'utf-8'));
+        return j.fingerprint === fp && j.cases.every((c) => existsSync(c.file));
+    } catch {
+        return false; // missing or unparsable
+    }
 }
 
 function main() {
     const { values } = parseArgs({ options: { force: { type: 'boolean', default: false } } });
-    if (!values.force && upToDate()) {
+    const fp = fingerprint();
+    if (!values.force && upToDate(fp)) {
         console.log(`corpus up to date: ${CASES_JSON}`);
         return;
     }
     requireTools(TOOLS);
     mkdirSync(GENERATED_DIR, { recursive: true });
+    // Stale until the new set is complete: an interrupted run must not look done.
+    rmSync(CASES_JSON, { force: true });
     const scratch = join(GENERATED_DIR, '.scratch');
     rmSync(scratch, { recursive: true, force: true });
     const { bufs, layouts } = buildAllBases(scratch, { log: (n) => console.log(`base  ${n}`) });
@@ -89,11 +116,10 @@ function main() {
         console.log(`case  ${m.name}`);
     }
     rmSync(scratch, { recursive: true, force: true });
-    writeFileSync(
-        CASES_JSON,
-        `${JSON.stringify({ generatedAt: new Date().toISOString(), cases }, null, 4)}\n`,
-    );
+    const doc = { generatedAt: new Date().toISOString(), fingerprint: fp, cases };
+    writeFileSync(`${CASES_JSON}.tmp`, `${JSON.stringify(doc, null, 4)}\n`);
+    renameSync(`${CASES_JSON}.tmp`, CASES_JSON);
     console.log(`${cases.length} cases → ${CASES_JSON}`);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) main();
+main();

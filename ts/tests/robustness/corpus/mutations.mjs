@@ -142,7 +142,8 @@ const ZEROS = {
     ],
     iso9660: [
         ['zero-rootdir', (l) => [[l.rootDirOffset, l.blockSize]]],
-        ['zero-path-table', (l) => [[l.pathTableOffset, l.pathTableBytes]]],
+        // Linux isofs never reads path tables; the docs/ extent is read on lookup.
+        ['zero-docs-dir', (l) => [[l.docsDirOffset, l.blockSize]]],
     ],
 };
 
@@ -158,7 +159,15 @@ const HEADER_EDITS = {
         ['l1-offset', (b) => b.writeBigUInt64BE(0x7ffffffffff00000n, 40)],
         ['refcount-offset', (b) => b.writeBigUInt64BE(0x7ffffffffff00000n, 48)],
         ['cluster-bits', (b) => b.writeUInt32BE(31, 20)],
-        ['l1-size', (b) => b.writeUInt32BE(0x7fffffff, 36)],
+        // Opens fine; the first L1 entry (COPIED + an L2 offset far past EOF)
+        // is only followed when the data path reads cluster 0.
+        [
+            'l1-entry-past-eof',
+            (b) => {
+                const l1 = Number(b.readBigUInt64BE(40));
+                b.writeBigUInt64BE(0x8000000000000000n | 0x7ffff0000n, l1);
+            },
+        ],
     ],
     vmdk: [
         ['capacity', (b) => b.writeBigUInt64LE(1n << 62n, 12)],

@@ -46,7 +46,9 @@ export function probeLayout(probe, file, buf) {
             const fsid = sb.subarray(0x20, 0x30);
             const sectorSize = sb.readUInt32LE(0x90);
             // Tree block headers carry the fsid at 0x20 and the owning tree at
-            // 0x58. DUP metadata means several copies per tree: keep them all.
+            // 0x58. The base is SYSTEM|single and METADATA|single, so the extra
+            // blocks of one owner are stale COW copies. Keep them all: the live
+            // root must go, and old copies must not be found as fallbacks.
             const treeBlocks = {};
             for (let off = 0; off + sectorSize <= buf.length; off += sectorSize) {
                 if (off === 0x10000) continue; // the superblock carries the fsid too
@@ -83,10 +85,33 @@ export function probeLayout(probe, file, buf) {
                 throw new Error('iso9660: no primary volume descriptor at sector 16');
             }
             const blockSize = buf.readUInt16LE(pvd + 128);
+            const rootDirOffset = buf.readUInt32LE(pvd + 158) * blockSize;
+            const rootDirBytes = buf.readUInt32LE(pvd + 166);
+            // Walk the root directory's records for the "DOCS" entry.
+            let docsDirOffset = 0;
+            for (let p = rootDirOffset; p < rootDirOffset + rootDirBytes; ) {
+                const len = buf[p];
+                if (len === 0) {
+                    // Records never span sectors: skip to the next one.
+                    p =
+                        (Math.floor((p - rootDirOffset) / blockSize) + 1) * blockSize +
+                        rootDirOffset;
+                    continue;
+                }
+                const idLen = buf[p + 32];
+                if (buf.toString('latin1', p + 33, p + 33 + idLen).toUpperCase() === 'DOCS') {
+                    docsDirOffset = buf.readUInt32LE(p + 2) * blockSize;
+                    break;
+                }
+                p += len;
+            }
+            if (!docsDirOffset) throw new Error('iso9660: no docs/ record in the root directory');
             return {
                 pvdOffset: pvd,
                 blockSize,
-                rootDirOffset: buf.readUInt32LE(pvd + 158) * blockSize,
+                rootDirOffset,
+                rootDirBytes,
+                docsDirOffset,
                 pathTableOffset: buf.readUInt32LE(pvd + 140) * blockSize,
                 pathTableBytes: buf.readUInt32LE(pvd + 132),
             };

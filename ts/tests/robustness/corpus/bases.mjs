@@ -1,9 +1,14 @@
 /**
  * Base images for the robustness corpus, built rootless from the known
  * tree. Containers and partitioned disks are assembled from the
- * single-filesystem bases listed before them. UUIDs and clocks are pinned
- * where the tool allows it; the rest (btrfs device UUIDs, …) stays random,
- * so cases.json records every image's sha256.
+ * single-filesystem bases listed before them.
+ *
+ * Reproducible (byte-identical across builds): the e2fs-based images (ext4,
+ * ext4panic, ext2, qcow2, and the gpt / mbr / mbrext disks holding them),
+ * vfat, iso9660 and squashfs. Not reproducible: btrfs and xfs (random device
+ * UUIDs) and vmdk (qemu writes a random CID), so cases.json records every
+ * image's sha256. exfat, f2fs and ntfs hold no files; they exist only to
+ * check that the filesystem still mounts.
  */
 import {
     closeSync,
@@ -23,7 +28,7 @@ import { EPOCH, TREE, writeTree } from './tree.mjs';
 
 const MiB = 1 << 20;
 const UUID = '0a0b0c0d-1111-2222-3333-444455556666';
-const E2FS_ENV = { E2FSPROGS_FAKE_TIME: String(EPOCH) };
+const E2FS_ENV = { E2FSPROGS_FAKE_TIME: String(EPOCH), SOURCE_DATE_EPOCH: String(EPOCH) };
 /** mkfs.xfs refuses filesystems under 300 MB unless it believes fstests runs it. */
 const XFS_SMALL_ENV = { TEST_DIR: '1', TEST_DEV: '1', QA_CHECK_FS: '1' };
 
@@ -82,6 +87,7 @@ function mke2fs(file, sizeMiB, type, tree, extra = []) {
             UUID,
             '-E',
             `hash_seed=${UUID}`,
+            ...(type === 'ext2' ? [] : ['-O', 'metadata_csum']),
             ...extra,
             '-d',
             tree,
@@ -174,8 +180,10 @@ export const BASES = {
         probe: 'vfat',
         build: (f, c) => {
             sparse(f, 16 * MiB);
-            run('mkfs.fat', ['-F', '16', '-i', '0a0b0c0d', '--invariant', '-n', 'ANYFS', f]);
-            const top = readdirSync(c.fat).map((n) => join(c.fat, n));
+            run('mkfs.fat', ['-F', '16', '--invariant', '-n', 'ANYFS', f]);
+            const top = readdirSync(c.fat)
+                .sort()
+                .map((n) => join(c.fat, n));
             run('mcopy', ['-s', '-m', '-i', f, ...top, '::/'], { env: { MTOOLS_SKIP_CHECK: '1' } });
         },
     },
@@ -242,18 +250,25 @@ export const BASES = {
         ext: 'img',
         build: (f, c) => {
             rmSync(f, { force: true });
-            run('mksquashfs', [
-                c.posix,
-                f,
-                '-quiet',
-                '-no-progress',
-                '-noappend',
-                '-all-root',
-                '-mkfs-time',
-                String(EPOCH),
-                '-all-time',
-                String(EPOCH),
-            ]);
+            run(
+                'mksquashfs',
+                [
+                    c.posix,
+                    f,
+                    '-quiet',
+                    '-no-progress',
+                    '-noappend',
+                    '-all-root',
+                    '-mkfs-time',
+                    String(EPOCH),
+                    '-all-time',
+                    String(EPOCH),
+                ],
+                {
+                    // An exported SOURCE_DATE_EPOCH conflicts with -mkfs-time/-all-time.
+                    env: { SOURCE_DATE_EPOCH: undefined },
+                },
+            );
         },
     },
     qcow2: {
