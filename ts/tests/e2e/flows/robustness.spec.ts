@@ -6,9 +6,9 @@ import { robustnessCase } from '../fixtures/robustness';
 // Corrupt images from the robustness corpus (ts/tests/robustness). What is
 // tested is the wasm sandbox promise: a hostile image ends in a visible
 // error, never a hang, and the app then opens the next image normally.
-// Web and electron-wasm only: native crashes are findings
-// (ts/tests/robustness/FINDINGS.md), so playwright.config.ts keeps this file
-// off the electron-native project.
+// Both cases end in a clean error on native too, so the file runs on every
+// project. A corpus case that crashes native belongs in
+// ts/tests/robustness/FINDINGS.md, not here.
 //
 // No fatal case: after the errors= hardening no corpus image ends in a fatal.
 // The fatal path (abort or watchdog -> onFatal -> provider error) is covered
