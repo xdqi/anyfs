@@ -9,11 +9,14 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Filesystems whose on-disk state can choose the kernel's reaction to an
- * error, panic included (ext*'s superblock s_errors; the others take the
- * option too). anyfs opens images users did not make, so it always mounts
- * these with errors=continue: the error surfaces as EIO and the kernel
- * lives on. */
+/* Filesystems that take an errors= option. Only ext2/3/4 read their error
+ * policy from the image (superblock s_errors and s_mount_opts, panic
+ * included); ext4 applies the caller's mount options after both, so ours
+ * win. For the others the option is extra caution. anyfs opens images users
+ * did not make, so a read-only mount uses errors=continue (an error surfaces
+ * as an error return, e.g. EUCLEAN/EBADMSG on ext4, and the kernel lives on)
+ * and a read-write mount uses errors=remount-ro (stop writing to a
+ * filesystem just found corrupt; this also clears ERRORS_PANIC). */
 static const char* const errors_continue_fs[] = {
 	"ext2", "ext3", "ext4", "vfat", "msdos", "exfat", "f2fs", "ntfs", NULL,
 };
@@ -39,7 +42,6 @@ static int append(char* buf, size_t cap, size_t* len, const char* opt)
 int anyfs_mount_opts(const char* fstype, int rdonly, char* buf, size_t cap)
 {
 	size_t len = 0;
-	int rc = 0;
 
 	if (!buf || cap == 0)
 		return -1;
@@ -49,22 +51,27 @@ int anyfs_mount_opts(const char* fstype, int rdonly, char* buf, size_t cap)
 
 	if (rdonly) {
 		/* Never replay a journal or log into a read-only image. */
-		if (strcmp(fstype, "xfs") == 0 || strcmp(fstype, "btrfs") == 0)
-			rc |= append(buf, cap, &len, "norecovery");
-		else if (strcmp(fstype, "ext4") == 0 ||
-			 strcmp(fstype, "ext3") == 0)
-			rc |= append(buf, cap, &len, "noload");
+		if (strcmp(fstype, "xfs") == 0 || strcmp(fstype, "btrfs") == 0) {
+			if (append(buf, cap, &len, "norecovery"))
+				goto overflow;
+		} else if (strcmp(fstype, "ext4") == 0 ||
+			   strcmp(fstype, "ext3") == 0) {
+			if (append(buf, cap, &len, "noload"))
+				goto overflow;
+		}
 	}
 	/* The Linux UFS driver defaults to 44bsd UFS1, which matches nothing
 	 * modern; FreeBSD, NetBSD and OpenBSD all ship UFS2. */
-	if (strcmp(fstype, "ufs") == 0)
-		rc |= append(buf, cap, &len, "ufstype=ufs2");
-	if (in_list(fstype, errors_continue_fs))
-		rc |= append(buf, cap, &len, "errors=continue");
-
-	if (rc) {
-		buf[0] = '\0';
-		return -1;
-	}
+	if (strcmp(fstype, "ufs") == 0 &&
+	    append(buf, cap, &len, "ufstype=ufs2"))
+		goto overflow;
+	if (in_list(fstype, errors_continue_fs) &&
+	    append(buf, cap, &len,
+		   rdonly ? "errors=continue" : "errors=remount-ro"))
+		goto overflow;
 	return 0;
+
+overflow:
+	buf[0] = '\0';
+	return -1;
 }

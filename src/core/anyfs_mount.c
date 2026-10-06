@@ -78,7 +78,7 @@ static int mount_via_devpath(const char* dev_str, const char* fstype,
 		mount_flags |= LKL_MS_RDONLY;
 
 	int ret;
-	char opts[64];
+	char opts[ANYFS_MOUNT_OPTS_MAX];
 	if (!auto_detect) {
 		if (anyfs_mount_opts(fstype, flags & ANYFS_MOUNT_RDONLY, opts,
 				     sizeof(opts)) < 0) {
