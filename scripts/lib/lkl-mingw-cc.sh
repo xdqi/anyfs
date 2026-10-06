@@ -15,10 +15,18 @@
 # a CC override: the shim inside the kernel build, the real mingw gcc
 # outside it.
 #
-# Usage: CC="scripts/lib/lkl-mingw-cc.sh <abs cygwin gcc> <mingw gcc name>"
+# Kernel compiles also get -B<as dir>. cygwin-gcc is relocatable and reaches
+# its assembler only through lib/gcc/<target>/<ver>/../../../../<target>/bin.
+# sccache packs that `as` but none of lib/gcc/<target>/<ver>/, so on a dist
+# worker the walk fails and gcc falls back to a PATH `as` that doesn't exist
+# ("cannot execute 'as'"). The -B directory is one the package does contain.
+#
+# Usage: CC="scripts/lib/lkl-mingw-cc.sh <abs cygwin gcc> <abs dir of its as>
+#            <mingw gcc name>"
 cygwin_cc=$1
-mingw_cc=$2
-shift 2
+as_dir=$2
+mingw_cc=$3
+shift 3
 kernel=
 compile=
 for a in "$@"; do
@@ -28,6 +36,6 @@ for a in "$@"; do
     esac
 done
 if [ -n "$kernel" ] && [ -n "$compile" ]; then
-    exec sccache "$cygwin_cc" "$@"
+    exec sccache "$cygwin_cc" -B"$as_dir/" "$@"
 fi
 exec "$mingw_cc" "$@"

@@ -97,7 +97,13 @@ cc_for() {
     if [[ "$name" == mingw64 ]]; then
         cc="$(command -v x86_64-pc-cygwin-gcc)" \
             || { echo "Error: x86_64-pc-cygwin-gcc not on PATH" >&2; return 1; }
-        echo "$SCRIPT_DIR/lib/lkl-mingw-cc.sh $cc ${cross}gcc"
+        # The launcher passes the assembler's directory to cygwin-gcc as -B;
+        # see lib/lkl-mingw-cc.sh for why a dist worker needs it.
+        local as
+        as="$("$cc" -print-prog-name=as)"
+        [[ "$as" == /* && -x "$as" ]] \
+            || { echo "Error: x86_64-pc-cygwin-gcc has no assembler ($as)" >&2; return 1; }
+        echo "$SCRIPT_DIR/lib/lkl-mingw-cc.sh $cc $(realpath "$(dirname "$as")") ${cross}gcc"
         return
     fi
     cc="$(command -v "${cross}gcc")" \
