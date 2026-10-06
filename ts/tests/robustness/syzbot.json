@@ -1,0 +1,222 @@
+[
+    {
+        "extid": "3ee481e21fd75e14c397",
+        "title": "KASAN: slab-out-of-bounds Read in ext4_search_dir",
+        "link": "https://syzkaller.appspot.com/bug?extid=3ee481e21fd75e14c397",
+        "fs": "ext4",
+        "url": "https://storage.googleapis.com/syzbot-assets/921fccc3cfcf/mount_0.gz",
+        "sha256": "85dab80a93c2ad4008f7f48263d6d505a72de0f38587df8f078f69e691684c2f",
+        "repro_mount_opts": "{[{@nombcache}, {@errors_continue}, {@stripe={'stripe', 0x3d, 0x7}}, {@discard}, {@max_dir_size_kb}, {@debug_want_extra_isize={'debug_want_extra_isize', 0x3d, 0x84}}, {@max_batch_time}, {@test_dummy_encryption}]}",
+        "notes": "fixed; OOB read in ext4_search_dir (lookup path on a corrupt dir block)"
+    },
+    {
+        "extid": "5322c5c260eb44d209ed",
+        "title": "KASAN: slab-use-after-free Read in __ext4_check_dir_entry",
+        "link": "https://syzkaller.appspot.com/bug?extid=5322c5c260eb44d209ed",
+        "fs": "ext4",
+        "url": "https://storage.googleapis.com/syzbot-assets/ed47927205db/mount_0.gz",
+        "sha256": "8f8b01ff0f47e62274f3b9a4ed005d6ab409dd8afbcca28cc3a3ac5977e24054",
+        "repro_mount_opts": "{[{@commit}, {@noblock_validity}, {@user_xattr}]}",
+        "notes": "fixed; UAF in __ext4_check_dir_entry (readdir path); mounted with flags 0x22000011"
+    },
+    {
+        "extid": "085a394c92518a04fd09",
+        "title": "KASAN: use-after-free Read in ext4_read_inline_data (2)",
+        "link": "https://syzkaller.appspot.com/bug?extid=085a394c92518a04fd09",
+        "fs": "ext4",
+        "url": "https://storage.googleapis.com/syzbot-assets/2b7927e0529e/mount_0.gz",
+        "sha256": "3515e5ff8143b99c8849b668afcb8a121a97beeeb13f7ffada7632ec4400e8c2",
+        "repro_mount_opts": "",
+        "notes": "open; UAF in ext4_read_inline_data (inline-data read)"
+    },
+    {
+        "extid": "b0e66d3779134f468156",
+        "title": "WARNING in lookup_inline_extent_backref (2)",
+        "link": "https://syzkaller.appspot.com/bug?extid=b0e66d3779134f468156",
+        "fs": "btrfs",
+        "url": "https://storage.googleapis.com/syzbot-assets/de70c869e691/mount_0.gz",
+        "sha256": "1c913925b2bddefda8f23bdb72f2a588b93a867628a1d02b10f3812bc51f91d9",
+        "repro_mount_opts": "",
+        "notes": "open; warning in lookup_inline_extent_backref on a corrupt extent tree; no syz mount repro"
+    },
+    {
+        "extid": "eadd98df8bceb15d7fed",
+        "title": "memory leak in btrfs_read_chunk_tree",
+        "link": "https://syzkaller.appspot.com/bug?extid=eadd98df8bceb15d7fed",
+        "fs": "btrfs",
+        "url": "https://storage.googleapis.com/syzbot-assets/4340667fac60/mount_0.gz",
+        "sha256": "0b22fb6b039c0da4a3f959901dfd6a6f1dedad95cf27c34085d5391b7971c3bf",
+        "repro_mount_opts": "{[{@compress_algo={'compress', 0x3d, 'lzo'}}, {@nodatasum}, {@compress_force}, {@compress_algo={'compress', 0x3d, 'lzo'}}, {@discard_async}, {@rescue={'rescue', 0x3d, 'imetacsums'}}, {@compress_force_algo={'compress-force', 0x3d, 'no'}}, {@nossd}, {}, {@subvol={'subvol', 0x3d, '{\\xed}'}}, {@nossd}]}",
+        "notes": "fixed; leak in btrfs_read_chunk_tree (mount-time chunk tree parse)"
+    },
+    {
+        "extid": "fbf6ff30de890ff32ec5",
+        "title": "KASAN: slab-use-after-free Read in fserror_worker",
+        "link": "https://syzkaller.appspot.com/bug?extid=fbf6ff30de890ff32ec5",
+        "fs": "xfs",
+        "url": "https://storage.googleapis.com/syzbot-assets/e278523ff18b/mount_1.gz",
+        "sha256": "f855bf150a5625557a3d806a40a99c921b74150171fe264415ca5c84c2043b24",
+        "repro_mount_opts": "{[{@largeio}, {@filestreams}, {@filestreams}, {@prjquota}]}",
+        "notes": "open; UAF on the XFS error path (fserror_worker) after a bad mount"
+    },
+    {
+        "extid": "9f6d080dece587cfdd4c",
+        "title": "KASAN: slab-out-of-bounds Read in xlog_cksum",
+        "link": "https://syzkaller.appspot.com/bug?extid=9f6d080dece587cfdd4c",
+        "fs": "xfs",
+        "url": "https://storage.googleapis.com/syzbot-assets/b7508e2b15b6/mount_0.gz",
+        "sha256": "423d989df8bd9896140175fa8e26df1e4b0fe2266504f45fb7918a9303d7b8a7",
+        "repro_mount_opts": "{[{@nolazytime}]}",
+        "notes": "fixed; OOB read in xlog_cksum (log recovery at mount)"
+    },
+    {
+        "extid": "66941b35e83b90763e23",
+        "title": "KCSAN: data-race in dont_mount / lookup_fast",
+        "link": "https://syzkaller.appspot.com/bug?extid=66941b35e83b90763e23",
+        "fs": "fat",
+        "url": "https://storage.googleapis.com/syzbot-assets/51b0b5fbff7d/mount_19.gz",
+        "sha256": "30fae99181470c8b417aa16a13dab4f34116eb2608991d922e19aa5055908b3b",
+        "repro_mount_opts": "ANY=[@ANYBLOB=\"756e695f786c6174653d312c6e6f6e756d7461696c3d300000000000000008303030303030303030303034303030303030303030302c73686f72746e616d653d65722c73686f72746e616d653d6d697865642c756e695f786c6174653d312c73686f72746e616d653d6d697865642c696f636861727365743d757466f69e75731725e72216799ebd57484a7e1948a8aa65667265652c757466383d312c6e66733d6e6f7374616c655f726f2c73686f72742e616d653d6d697865642c757466383d306d653d77696e6e742c007aea3388304ddedb3208ceb9b2c23924743277bd2c0d0019d44efede967f3df81cce421f7aafa8aa7c706311ab7a0ce39abf7858b6ba6ef5206da03692650000000000000001d0559b166f8c433d34c03a60999dea3bab649...",
+        "notes": "open; FAT32 image from a lookup_fast race report; vfat lookup path"
+    },
+    {
+        "extid": "f687659f3c2acfa34201",
+        "title": "KASAN: wild-memory-access Read in hfsplus_bnode_dump",
+        "link": "https://syzkaller.appspot.com/bug?extid=f687659f3c2acfa34201",
+        "fs": "hfsplus",
+        "url": "https://storage.googleapis.com/syzbot-assets/08cfd519d6ca/mount_0.gz",
+        "sha256": "5cde203c3ba71f97abfb82d73f9c94731040e89896c54c03799e61576a1a1c92",
+        "repro_mount_opts": "ANY=[]",
+        "notes": "open; wild memory access in hfsplus_bnode_dump (B-tree node parse)"
+    },
+    {
+        "extid": "e76bf3d19b85350571ac",
+        "title": "KASAN: slab-out-of-bounds Read in hfsplus_bnode_read",
+        "link": "https://syzkaller.appspot.com/bug?extid=e76bf3d19b85350571ac",
+        "fs": "hfsplus",
+        "url": "https://storage.googleapis.com/syzbot-assets/4dd1c6c6a033/mount_0.gz",
+        "sha256": "5e058806cc8c8260177c09157bb5e354d7bbc418efdc122b6ca46dd8cf115367",
+        "repro_mount_opts": "ANY=[@ANYRES32=0x0, @ANYRESDEC]",
+        "notes": "fixed; OOB read in hfsplus_bnode_read (B-tree node read)"
+    },
+    {
+        "extid": "e2787430e752a92b8750",
+        "title": "WARNING in hfsplus_cat_read_inode",
+        "link": "https://syzkaller.appspot.com/bug?extid=e2787430e752a92b8750",
+        "fs": "hfsplus",
+        "url": "https://storage.googleapis.com/syzbot-assets/2522406919d4/mount_0.gz",
+        "sha256": "81904dbc936f069f19fe250a61b352ac66f5233afc8729c542395ebaa6e61803",
+        "repro_mount_opts": "ANY=[]",
+        "notes": "fixed; warning in hfsplus_cat_read_inode (catalog inode read)"
+    },
+    {
+        "extid": "812641c6c3d7586a1613",
+        "title": "KMSAN: uninit-value in isofs_readdir",
+        "link": "https://syzkaller.appspot.com/bug?extid=812641c6c3d7586a1613",
+        "fs": "iso9660",
+        "url": "https://storage.googleapis.com/syzbot-assets/24fb8c942e20/mount_0.gz",
+        "sha256": "272a1babd2000bce0ad993fe8ed7e6d6f3a47843b8d615e81995bd6c3f637d32",
+        "repro_mount_opts": "{[{}, {@hide}, {@uid}, {@cruft}, {@mode={'mode', 0x3d, 0x1}}, {@overriderock}, {@utf8}, {@check_relaxed}]}",
+        "notes": "fixed; uninit value in isofs_readdir (readdir on a corrupt ISO)"
+    },
+    {
+        "extid": "4d7cd7dd0ce1aa8d5c65",
+        "title": "KASAN: slab-out-of-bounds Read in isofs_fh_to_parent",
+        "link": "https://syzkaller.appspot.com/bug?extid=4d7cd7dd0ce1aa8d5c65",
+        "fs": "iso9660",
+        "url": "https://storage.googleapis.com/syzbot-assets/191f689db82e/mount_0.gz",
+        "sha256": "7bb64163205760be790ca35fc8437e71a3b8a717a45b38627571cb4c576ab9fc",
+        "repro_mount_opts": "ANY=[@ANYBLOB='map=acorn,sbsector=0x0000000000000000,uid=', @ANYRESDEC=0x0, @ANYBLOB=\"0000b18eb0ea96e8437d91edf727e1e38533740c5b1da10b83273fa468d364205a63adda5262cda8e690c1049c88d615fd8362cd464a35e122ae29c203d5ce837a5f88eb1f09a8a7f55959926a7fd5ac27fd519b5c217ed420e41ddcfd9072f503656169e720fdc2da8c998a870683232e5263a0\", @ANYBLOB=\"a09160ded880b9f6182741b8219be2753fed7f6991201facf3ff065502eb11cb54351349bdb6195ff9e3753bda2a4e07e4967c3defaee749122c2229ca590d636a18c34f67c493ea3ebc3f1ff123380993058cbdfdbc63fa604ab6230c747c821dfac7d53dc58327a60007fee77c6cbd346c9cc1f8fadbd0c64e5b247303763ed533018d61389...",
+        "notes": "fixed; OOB read in isofs_fh_to_parent (Rock Ridge parent lookup)"
+    },
+    {
+        "extid": "7a4842f0b1801230a989",
+        "title": "KASAN: slab-out-of-bounds Read in udf_get_filelongad (2)",
+        "link": "https://syzkaller.appspot.com/bug?extid=7a4842f0b1801230a989",
+        "fs": "udf",
+        "url": "https://storage.googleapis.com/syzbot-assets/0604f67569f1/mount_0.gz",
+        "sha256": "05df6fcea2466e43417ffb6da3e0f51d677fd1438d0cddfe3d3140c246d27481",
+        "repro_mount_opts": "ANY=[@ANYRES8=0x0, @ANYRESDEC]",
+        "notes": "fixed; OOB read in udf_get_filelongad (long allocation descriptors)"
+    },
+    {
+        "extid": "48011b86c8ea329af1b9",
+        "title": "KASAN: null-ptr-deref Read in filemap_fault",
+        "link": "https://syzkaller.appspot.com/bug?extid=48011b86c8ea329af1b9",
+        "fs": "udf",
+        "url": "https://storage.googleapis.com/syzbot-assets/21df08f169b8/mount_0.gz",
+        "sha256": "7d2e86f60fddfc5fc47b5b7e641a8c92814d677b316472d3e38749bbe729cbf0",
+        "repro_mount_opts": "ANY=[@ANYBLOB=\"6e6f7672732c00fbebeb633968278c5b110dd28637f49e49087d66cd89fd358538ceb28f23545112bf67b6dc9f6d1ed120c4962530406b8bebfd9b24a8cdb6fb2435c7aa2e209b6469bd5b44cb100af4dcb1a6eb6193f92fb079b71f09\"]",
+        "notes": "fixed; null deref in filemap_fault on a UDF file (read fault)"
+    },
+    {
+        "extid": "cfc6e8106bec1c524f7d",
+        "title": "possible deadlock in ntfs_readdir",
+        "link": "https://syzkaller.appspot.com/bug?extid=cfc6e8106bec1c524f7d",
+        "fs": "ntfs",
+        "url": "https://storage.googleapis.com/syzbot-assets/af636d4059ff/mount_0.gz",
+        "sha256": "4dcd8fe75ebef3438710006dd67627721f9364d9d94a51a5273a4ad820c3923f",
+        "repro_mount_opts": "",
+        "notes": "open; deadlock in ntfs_readdir (NTFS index walk); no syz mount repro"
+    },
+    {
+        "extid": "4768a8f039aa677897d0",
+        "title": "UBSAN: shift-out-of-bounds in ntfs_iget",
+        "link": "https://syzkaller.appspot.com/bug?extid=4768a8f039aa677897d0",
+        "fs": "ntfs",
+        "url": "https://storage.googleapis.com/syzbot-assets/f883741f113d/mount_0.gz",
+        "sha256": "6ebab1018b29994b4591b1a7273c0714da8fee1d3287d82a1776fb8d57dbda9a",
+        "repro_mount_opts": "",
+        "notes": "fixed; UBSAN shift out of bounds in ntfs_iget (inode load)"
+    },
+    {
+        "extid": "601018296973a481f302",
+        "title": "UBSAN: array-index-out-of-bounds in f2fs_iget",
+        "link": "https://syzkaller.appspot.com/bug?extid=601018296973a481f302",
+        "fs": "f2fs",
+        "url": "https://storage.googleapis.com/syzbot-assets/6c71e5bdd419/mount_0.gz",
+        "sha256": "17b9324318749655e2f9c82ac77ed3b45b99a262fb0406805b972b0f6a3d4e5d",
+        "repro_mount_opts": "ANY=[]",
+        "notes": "fixed; array index OOB in f2fs_iget (inode load)"
+    },
+    {
+        "extid": "3694e283cf5c40df6d14",
+        "title": "KASAN: slab-out-of-bounds Read in f2fs_get_node_info",
+        "link": "https://syzkaller.appspot.com/bug?extid=3694e283cf5c40df6d14",
+        "fs": "f2fs",
+        "url": "https://storage.googleapis.com/syzbot-assets/42ddf2738cf7/mount_0.gz",
+        "sha256": "3897d125788f43c91f0f40cd2e1bef3e80e92d3790190e5e0e1e2795fceac83c",
+        "repro_mount_opts": "",
+        "notes": "fixed; OOB read in f2fs_get_node_info (node table lookup); no syz mount repro"
+    },
+    {
+        "extid": "65761fc25a137b9c8c6e",
+        "title": "UBSAN: shift-out-of-bounds in squashfs_bio_read",
+        "link": "https://syzkaller.appspot.com/bug?extid=65761fc25a137b9c8c6e",
+        "fs": "squashfs",
+        "url": "https://storage.googleapis.com/syzbot-assets/f9d150e929ed/mount_0.gz",
+        "sha256": "ff94eaecc581afe422c8ec1cba5d3195277b55bd5405473698aed70f90dec3bd",
+        "repro_mount_opts": "ANY=[@ANYBLOB='\\x00']",
+        "notes": "fixed; UBSAN shift out of bounds in squashfs_bio_read (block size parse)"
+    },
+    {
+        "extid": "32d3767580a1ea339a81",
+        "title": "WARNING in squashfs_read_data",
+        "link": "https://syzkaller.appspot.com/bug?extid=32d3767580a1ea339a81",
+        "fs": "squashfs",
+        "url": "https://storage.googleapis.com/syzbot-assets/296bbea0ae0a/mount_0.gz",
+        "sha256": "b7506cbd2f5187e062c613afd790e91936440047f80d4c9af5d601063508a4d5",
+        "repro_mount_opts": "ANY=[]",
+        "notes": "fixed; warning in squashfs_read_data (metadata read)"
+    },
+    {
+        "extid": "98cc76a76de46b3714d4",
+        "title": "KASAN: stack-out-of-bounds Read in exfat_nls_to_utf16",
+        "link": "https://syzkaller.appspot.com/bug?extid=98cc76a76de46b3714d4",
+        "fs": "exfat",
+        "url": "https://storage.googleapis.com/syzbot-assets/0204bf2eab84/mount_0.gz",
+        "sha256": "15824264d017ac2802740f0aab27932ea7ec74843d7cf9331899f050a3408de8",
+        "repro_mount_opts": "{[{@errors_continue}, {@errors_continue}, {@utf8}, {@umask={'umask', 0x3d, 0x2396}}, {@iocharset={'iocharset', 0x3d, 'cp950'}}, {@discard}, {@allow_utime={'allow_utime', 0x3d, 0x5}}, {@errors_remount}, {@discard}]}",
+        "notes": "fixed; stack OOB read in exfat_nls_to_utf16 (name conversion on lookup/readdir)"
+    }
+]
