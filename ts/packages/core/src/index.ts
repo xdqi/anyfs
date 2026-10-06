@@ -122,13 +122,13 @@ export async function mountBlob(blob: Blob, opts: BrowserMountOpts): Promise<Was
  *  The host kernel is process-global and idempotently booted; calling
  *  `prewarmNative()` from multiple renderers / components is safe. */
 export async function prewarmNative(
-    opts: Pick<SessionOpts, 'memMb' | 'loglevel'> = {},
+    opts: Pick<SessionOpts, 'memMb' | 'loglevel' | 'opTimeoutMs'> = {},
 ): Promise<NativeSession | null> {
     const bridge = getAnyfsNative();
     if (!bridge) return null;
     const ok = await bridge.available();
     if (!ok) return null;
-    const session = new NativeSession(bridge);
+    const session = new NativeSession(bridge, { opTimeoutMs: opts.opTimeoutMs });
     try {
         await session.boot(opts.memMb ?? 256, opts.loglevel ?? 0);
         return session;

@@ -1,5 +1,5 @@
 import type { DirEntry, LklFd, SessionMeta, SessionPartInfo, Stat } from './types.js';
-import { AnyfsSessionBase } from './session-base.js';
+import { AnyfsSessionBase, EngineFatalError, type SessionBaseOpts } from './session-base.js';
 
 /** Shape of the preload-injected bridge. Async because IPC is async. */
 export interface AnyfsNativeBridge {
@@ -51,22 +51,17 @@ export class NativeSession extends AnyfsSessionBase {
     private readonly bridge: AnyfsNativeBridge;
     private handle = -1;
     private proxyId: string | null = null;
-    // Serialize ops so a slow readdir doesn't interleave with a pread on
-    // the same kernel.
-    private opChain: Promise<unknown> = Promise.resolve();
-
-    // Set once the host reports the engine wedged: every pending and future
-    // call would hang, so dispose must not wait on them.
-    private engineFailed = false;
     private readonly unsubscribeFatal: (() => void) | null;
 
-    constructor(bridge: AnyfsNativeBridge) {
-        super();
+    constructor(bridge: AnyfsNativeBridge, opts: SessionBaseOpts = {}) {
+        super(opts);
         this.bridge = bridge;
+        // The host reports a wedged engine (the QEMU thread missed its own
+        // watchdog). Either way, that or our op watchdog, the session is
+        // fatal and dispose must not wait on the engine.
         this.unsubscribeFatal =
             bridge.onFatal?.((reason) => {
-                this.engineFailed = true;
-                this.fireFatal(new Error(`anyfs-native engine failed: ${reason}`));
+                this.fireFatal(new EngineFatalError(`anyfs-native engine failed: ${reason}`));
             }) ?? null;
     }
 
@@ -80,18 +75,18 @@ export class NativeSession extends AnyfsSessionBase {
 
     // ── Op serialization ───────────────────────────────
 
-    private chain<T>(fn: () => Promise<T>): Promise<T> {
-        if (this.disposed) return Promise.reject(new Error('AnyfsSession: already disposed'));
-        const next = this.opChain.then(fn, fn);
-        this.opChain = next.catch(() => undefined);
-        return next;
+    /** An engine op: serialized (a slow readdir must not interleave with a
+     *  pread on the same kernel), then run under the base watchdog. The timer
+     *  starts when the op reaches the engine, not while it queues. */
+    private op<T>(op: string, fn: () => Promise<T>): Promise<T> {
+        return this.serialize(() => this.guard(op, fn));
     }
 
     // ── Attach ─────────────────────────────────────────
 
     async attachPath(path: string): Promise<void> {
         if (this.handle >= 0) throw new Error('NativeSession: already attached');
-        const h = await this.chain(() => this.bridge.diskOpen(path, 1));
+        const h = await this.serialize(() => this.bridge.diskOpen(path, 1));
         if (h < 0) throw new Error(`diskOpen failed: rc=${h}`);
         this.handle = h;
     }
@@ -107,7 +102,7 @@ export class NativeSession extends AnyfsSessionBase {
         const { proxyUrl, id } = await this.bridge.startProxy({ upstreamUrl: url });
         this.proxyId = id;
         try {
-            const h = await this.chain(() => this.bridge.diskOpen(proxyUrl, 1));
+            const h = await this.serialize(() => this.bridge.diskOpen(proxyUrl, 1));
             if (h < 0) throw new Error(`diskOpen(${proxyUrl}) failed: rc=${h}`);
             this.handle = h;
         } catch (err) {
@@ -120,37 +115,39 @@ export class NativeSession extends AnyfsSessionBase {
     // ── Partition / mount ──────────────────────────────
 
     async enter(part: number, flags = 0): Promise<string> {
-        return this.chain(() => this.bridge.diskEnter(this.handle, part, flags));
+        return this.op('enter', () => this.bridge.diskEnter(this.handle, part, flags));
     }
 
     async listParts(): Promise<SessionPartInfo[]> {
-        return this.chain(async () => JSON.parse(await this.bridge.diskListJson(this.handle)));
+        return this.op('listParts', async () =>
+            JSON.parse(await this.bridge.diskListJson(this.handle)),
+        );
     }
 
     async meta(): Promise<SessionMeta> {
-        return this.chain(async () => JSON.parse(await this.bridge.diskMetaJson(this.handle)));
+        return this.op('meta', async () => JSON.parse(await this.bridge.diskMetaJson(this.handle)));
     }
 
     // ── Filesystem ops ─────────────────────────────────
 
     async readdir(path: string): Promise<DirEntry[]> {
-        return this.chain(async () => JSON.parse(await this.bridge.readdirJson(path)));
+        return this.op('readdir', async () => JSON.parse(await this.bridge.readdirJson(path)));
     }
 
     async stat(path: string): Promise<Stat> {
-        return this.chain(async () => JSON.parse(await this.bridge.lstatJson(path)));
+        return this.op('stat', async () => JSON.parse(await this.bridge.lstatJson(path)));
     }
 
     async statFollow(path: string): Promise<Stat> {
-        return this.chain(async () => JSON.parse(await this.bridge.statJson(path)));
+        return this.op('statFollow', async () => JSON.parse(await this.bridge.statJson(path)));
     }
 
     async readlink(path: string): Promise<string> {
-        return this.chain(() => this.bridge.readlink(path));
+        return this.op('readlink', () => this.bridge.readlink(path));
     }
 
     async realpath(path: string): Promise<string> {
-        return this.chain(() => this.bridge.realpath(path));
+        return this.op('realpath', () => this.bridge.realpath(path));
     }
 
     async readKernelFile(path: string, maxBytes = 64 * 1024): Promise<string> {
@@ -192,21 +189,21 @@ export class NativeSession extends AnyfsSessionBase {
 
     /** @internal */
     protected async _openFdRaw(path: string): Promise<LklFd> {
-        const fd = await this.chain(() => this.bridge.fileOpen(path, 0));
+        const fd = await this.op('open', () => this.bridge.fileOpen(path, 0));
         if (fd < 0) throw new Error(`open(${path}) failed: ${fd}`);
         return fd;
     }
 
     /** @internal */
     protected async _readFdRaw(fd: LklFd, offset: number, length: number): Promise<Uint8Array> {
-        const { rc, data } = await this.chain(() => this.bridge.pread(fd, length, offset));
+        const { rc, data } = await this.op('read', () => this.bridge.pread(fd, length, offset));
         if (rc < 0) throw new Error(`pread rc=${rc}`);
         return data;
     }
 
     /** @internal */
     protected async _closeFdRaw(fd: LklFd): Promise<void> {
-        const rc = await this.chain(() => this.bridge.fileClose(fd));
+        const rc = await this.op('close', () => this.bridge.fileClose(fd));
         if (rc < 0) throw new Error(`close(${fd}) failed: ${rc}`);
     }
 
@@ -214,13 +211,9 @@ export class NativeSession extends AnyfsSessionBase {
     protected async _dispose(): Promise<void> {
         this.unsubscribeFatal?.();
         // A wedged engine never settles the in-flight op or a close call.
-        if (this.engineFailed) return;
+        if (this.fatalError) return;
         // Wait for any in-flight op to settle.
-        try {
-            await this.opChain;
-        } catch {
-            /* the chain is already swallowing errors */
-        }
+        await this.queueIdle;
         if (this.handle >= 0) {
             try {
                 await this.bridge.diskClose(this.handle);
