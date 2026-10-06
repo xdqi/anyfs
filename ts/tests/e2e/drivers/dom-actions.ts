@@ -199,6 +199,8 @@ export async function expectError(page: Page, _kind: ErrorKind): Promise<void> {
     //   - URL/open failures pop the UrlErrorDialog (data-testid url-error-dialog)
     //   - mount/boot failures render inline in DiskView ("Error: …" or
     //     "Can't mount partition #N"), and getState().status becomes 'error'.
+    //   - a failed directory read renders inline in the file browser
+    //     (data-testid dir-error)
     // Resolve when ANY of these is observed. We don't assert the specific
     // kind here — that's the test's job; the driver just waits for the
     // error surface to appear.
@@ -215,7 +217,13 @@ export async function expectError(page: Page, _kind: ErrorKind): Promise<void> {
             .getByText(/Can.t mount partition #/i)
             .first()
             .waitFor({ state: 'visible', timeout: 120_000 }),
+        page.locator('[data-testid="dir-error"]').waitFor({ state: 'visible', timeout: 120_000 }),
     ]);
+}
+
+/** The provider status the test bridge reports ('ready', 'error', …). */
+export async function getStatus(page: Page): Promise<string | null> {
+    return page.evaluate(() => (window as any).__anyfsTest?.getState().status ?? null);
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────

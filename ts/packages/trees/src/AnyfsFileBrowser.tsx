@@ -166,6 +166,7 @@ export function AnyfsFileBrowser({
     const [relPath, setRelPath] = useState<string>(() => parseHash());
     const relPathRef = useRef(relPath);
     const [files, setFiles] = useState<FileArray>([null]);
+    const [dirError, setDirError] = useState<string | null>(null);
     const navGen = useRef(0);
 
     // Single navigation helper. Sets state, mirrors to hash, and updates the
@@ -225,6 +226,7 @@ export function AnyfsFileBrowser({
         if (!session || !mountPath) return;
         const myGen = ++navGen.current;
         setFiles([null, null, null]); // chonky shows a loader skeleton
+        setDirError(null);
 
         const abs = joinAbs(mountPath, relPath);
         (async () => {
@@ -235,6 +237,7 @@ export function AnyfsFileBrowser({
                 if (navGen.current !== myGen) return;
                 // eslint-disable-next-line no-console
                 console.warn(`[anyfs/trees] readdir(${abs}) failed:`, err);
+                setDirError(err instanceof Error ? err.message : String(err));
                 setFiles([]);
                 return;
             }
@@ -442,6 +445,23 @@ export function AnyfsFileBrowser({
                 flexDirection: 'column',
             }}
         >
+            {dirError && (
+                // A corrupt directory used to look like an empty one.
+                <div
+                    role="alert"
+                    data-testid="dir-error"
+                    style={{
+                        margin: '0 0 6px',
+                        padding: '6px 10px',
+                        borderRadius: 6,
+                        fontSize: 13,
+                        color: darkMode ? '#fca5a5' : '#b91c1c',
+                        background: darkMode ? 'rgba(127, 29, 29, 0.35)' : '#fee2e2',
+                    }}
+                >
+                    Can’t read this folder: {dirError}
+                </div>
+            )}
             <FileBrowser
                 files={files}
                 folderChain={folderChain}

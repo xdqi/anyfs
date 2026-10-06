@@ -110,6 +110,10 @@ export class WebDriver implements Driver {
         return dom.expectError(this.page, kind);
     }
 
+    async status(): Promise<string | null> {
+        return dom.getStatus(this.page);
+    }
+
     async backendMode(): Promise<string | null> {
         return dom.backendMode(this.page);
     }

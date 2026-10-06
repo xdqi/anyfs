@@ -8,7 +8,7 @@ export interface DownloadResult {
     mechanism: DownloadMechanism;
 }
 
-export type ErrorKind = 'bad-image' | 'no-range' | 'unsupported' | 'mount-failed';
+export type ErrorKind = 'bad-image' | 'no-range' | 'unsupported' | 'mount-failed' | 'read-failed';
 
 export interface RowInfo {
     name: string;
@@ -56,6 +56,8 @@ export interface Driver {
 
     /** The resolved backend after ready ('native' | 'wasm' | 'node-wasm'). */
     backendMode(): Promise<string | null>;
+    /** The provider status from the test bridge ('ready', 'error', …). */
+    status(): Promise<string | null>;
 }
 
 export type { Fixture, TreeEntry };
