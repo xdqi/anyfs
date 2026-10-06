@@ -48,7 +48,7 @@ jobs:
       - name: Farm disabled — TS_OAUTH_SECRET not configured
         if: ${{ env.FARM_SECRET_SET == 'false' }}
         run: echo "TS_OAUTH_SECRET is not set; skipping farm worker (build compiles locally)."
-      - uses: xdqi/sccache-dist-action@v0.0.9-rc.1
+      - uses: xdqi/sccache-dist-action@v0.0.9-rc.2
         if: ${{ env.FARM_SECRET_SET == 'true' }}
         with:
           mode: worker
@@ -187,7 +187,7 @@ jobs:
         id: farm
         if: ${{ github.event_name != 'pull_request' && env.FARM_SECRET_SET == 'true' }}
         continue-on-error: true
-        uses: xdqi/sccache-dist-action@v0.0.9-rc.1
+        uses: xdqi/sccache-dist-action@v0.0.9-rc.2
         with:
           mode: coordinator
           expected-workers: 2
@@ -196,6 +196,17 @@ jobs:
           oauth-secret: '${{ secrets.TS_OAUTH_SECRET }}'
           # The OAuth client owns tag:ci (not the action default tag:ci-sccache).
           tags: 'tag:ci'
+
+      # Start the sccache daemon now with a warning log: --show-stats only
+      # counts compiles that couldn't be distributed, the daemon's warnings
+      # say why. Idle timeout off, so a quiet stretch can't let it exit and
+      # come back without the log.
+      - name: Start sccache with a warning log
+        if: ${{ steps.farm.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          SCCACHE_IDLE_TIMEOUT=0 SCCACHE_LOG=warn \
+            SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-daemon.log" sccache --start-server
 
       # Route zig compiles through sccache when the farm put it on PATH.
       - name: Enable sccache for zig
@@ -324,11 +335,13 @@ jobs:
 
       # The farm's forwarder outlives its setup step, and the runner stops
       # printing its output (and the scheduler's) once that step ends; the
-      # action keeps a copy in this file.
+      # action keeps a copy in log-file. Uploaded with the daemon's warnings.
       - name: Upload sccache-dist coordinator log
         if: ${{ always() && steps.farm.outputs.log-file != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: sccache-dist-coordinator-log-linux-amd64
-          path: ${{ steps.farm.outputs.log-file }}
+          path: |
+            ${{ steps.farm.outputs.log-file }}
+            ${{ runner.temp }}/sccache-daemon.log
           retention-days: 14
