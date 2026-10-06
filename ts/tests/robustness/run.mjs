@@ -15,6 +15,7 @@ import {
     existsSync,
     mkdirSync,
     readFileSync,
+    readdirSync,
     renameSync,
     writeFileSync,
 } from 'node:fs';
@@ -130,8 +131,12 @@ function runCase(c) {
             { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] },
         );
         child.on('error', (e) => {
-            child.kill('SIGKILL');
-            finish(null, null, e);
+            if (child.pid === undefined || !outcome) {
+                child.kill('SIGKILL');
+                finish(null, null, e);
+            } else {
+                log.write(`\n[run.mjs] child error after outcome: ${e.message}\n`);
+            }
         });
         child.stdout?.pipe(log, { end: false });
         child.stderr?.pipe(log, { end: false });
@@ -187,12 +192,20 @@ try {
 }
 const sh = (cmd, a) =>
     spawnSync(cmd, a, { encoding: 'utf-8', cwd: ROBUSTNESS_DIR }).stdout?.trim() || null;
+const coreJs = readdirSync(CORE_DIST)
+    .filter((f) => f.endsWith('.js'))
+    .sort()
+    .map((f) => join(CORE_DIST, f));
+const engineFiles =
+    backend === 'wasm'
+        ? [WASM_NODE_BUNDLE.replace(/\.mjs$/, '.wasm'), WASM_NODE_BUNDLE, ...coreJs]
+        : [NATIVE_ADDON, ...coreJs];
+const engineHash = createHash('sha256');
+for (const f of engineFiles) engineHash.update(readFileSync(f));
+// head is informational; engine (wasm/addon plus @anyfs/core dist) decides "build changed".
 const build = {
     head: sh('git', ['rev-parse', '--short', 'HEAD']),
-    bundle: createHash('sha256')
-        .update(readFileSync(backend === 'wasm' ? WASM_NODE_BUNDLE : NATIVE_ADDON))
-        .digest('hex')
-        .slice(0, 16),
+    engine: engineHash.digest('hex').slice(0, 16),
 };
 const flips = diffRuns(prev, records, build);
 const verdict = gate(records, backend);

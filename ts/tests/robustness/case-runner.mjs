@@ -39,7 +39,7 @@ const { values: args } = parseArgs({
     },
 });
 if (!['wasm', 'native'].includes(args.backend) || !args.image) {
-    console.error('usage: case-runner.mjs --backend wasm|native --image <path>');
+    console.error('usage: case-runner.mjs --backend wasm|native --image <path> [--loglevel N]');
     process.exit(2);
 }
 
@@ -155,6 +155,7 @@ async function main() {
         try {
             mountPoint = await session.enter(idx, ANYFS_MOUNT_RDONLY);
         } catch (e) {
+            if (e instanceof WebAssembly.RuntimeError) throw e; // a trap bricks the module
             errors.push({
                 op: 'enter',
                 path: `#${idx}`,

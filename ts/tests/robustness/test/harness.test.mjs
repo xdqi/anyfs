@@ -248,12 +248,20 @@ test('walk skips malformed entry names', async () => {
 });
 
 test('diffRuns marks flips under a different build', () => {
-    const prev = { build: { head: 'a', bundle: '1' }, records: [rec('a', 'ok')] };
-    assert.deepEqual(diffRuns(prev, [rec('a', 'fatal')], { head: 'b', bundle: '1' }), [
+    const prev = { build: { head: 'a', engine: '1' }, records: [rec('a', 'ok')] };
+    assert.deepEqual(diffRuns(prev, [rec('a', 'fatal')], { head: 'b', engine: '2' }), [
         { name: 'a', was: 'ok', now: 'fatal', buildChanged: true },
     ]);
     assert.equal(
-        diffRuns(prev, [rec('a', 'fatal')], { head: 'a', bundle: '1' })[0].buildChanged,
+        diffRuns(prev, [rec('a', 'fatal')], { head: 'b', engine: '1' })[0].buildChanged,
         false,
     );
+});
+
+test('walk propagates a wasm trap instead of recording it', async () => {
+    const s = fakeTree();
+    s.readdir = async () => {
+        throw new WebAssembly.RuntimeError('unreachable');
+    };
+    await assert.rejects(walkAndRead(s, '/m'), WebAssembly.RuntimeError);
 });

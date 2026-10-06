@@ -124,6 +124,9 @@ function main() {
     const { bufs, layouts } = buildAllBases(scratch, { log: (n) => console.log(`base  ${n}`) });
 
     const cases = [];
+    for (const base of Object.keys(BASES)) {
+        if (!BASE_EXPECT[base]) throw new Error(`BASE_EXPECT has no entry for base ${base}`);
+    }
     const emit = (name, base, mutation, buf) => {
         const b = BASES[base];
         const file = join(GENERATED_DIR, `${name}.${b.ext}`);

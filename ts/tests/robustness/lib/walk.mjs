@@ -19,6 +19,8 @@ export async function walkAndRead(
         try {
             return await fn();
         } catch (e) {
+            // A wasm trap bricks the module: let the caller make it a fatal.
+            if (e instanceof WebAssembly.RuntimeError) throw e;
             errors.push({
                 op,
                 path,
@@ -39,6 +41,7 @@ export async function walkAndRead(
         if (!list) continue;
         for (const e of list) {
             if (e.name === '.' || e.name === '..') continue;
+            if (entries >= limits.entries || stopped()) break;
             if (!e.name || e.name.includes('/')) {
                 errors.push({
                     op: 'readdir',
@@ -48,7 +51,6 @@ export async function walkAndRead(
                 });
                 continue;
             }
-            if (entries >= limits.entries || stopped()) break;
             entries++;
             const child = path.endsWith('/') ? `${path}${e.name}` : `${path}/${e.name}`;
             const st = await attempt('stat', child, () => session.stat(child));

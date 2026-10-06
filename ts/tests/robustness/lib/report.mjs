@@ -19,8 +19,7 @@ export function diffRuns(prev, records, build) {
         .map((r) => {
             const f = { name: r.name, was: was.get(r.name).class, now: r.class };
             if (build) {
-                f.buildChanged =
-                    prev.build?.head !== build.head || prev.build?.bundle !== build.bundle;
+                f.buildChanged = prev.build?.engine !== build.engine;
             }
             return f;
         });
