@@ -14,6 +14,7 @@ function fakeModule() {
         HEAPU32: new Uint32Array(heap),
         top: 1024,
         submitted: [],
+        ccalls: 0,
         autoAnswer: false,
         _malloc(n) {
             const p = M.top;
@@ -23,6 +24,7 @@ function fakeModule() {
         _free() {},
         ccall(name, _ret, _types, [req]) {
             assert.equal(name, 'anyfs_ts_api_submit');
+            M.ccalls++;
             M.submitted.push(req);
             if (M.autoAnswer) queueMicrotask(() => M.answer(0));
             return 0;
@@ -75,9 +77,9 @@ test('halt lifecycle', { timeout: 10000 }, async () => {
 
     // abort: halt sends no KERNEL_HALT and allows a new boot
     onAbort('dead');
-    const before = M2.submitted.length;
+    const before = M2.ccalls;
     await haltKernel();
-    assert.equal(M2.submitted.length, before);
+    assert.equal(M2.ccalls, before, 'no KERNEL_HALT to a dead module');
     const M3 = await bootNodeKernel('/f', factory);
     assert.notEqual(M3, M2);
 

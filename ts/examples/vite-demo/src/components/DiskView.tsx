@@ -115,8 +115,8 @@ export function DiskView({
                         className="text-sm text-zinc-600 dark:text-zinc-400"
                         data-testid="engine-fatal-hint"
                     >
-                        The native engine stopped responding. Switch to the wasm engine in Settings,
-                        or restart the app.
+                        The native engine stopped responding. Turn on “Disable native module” in
+                        Settings (restarts the app), or restart the app.
                     </div>
                 )}
             </div>

@@ -13,7 +13,9 @@ let g_hostDir: string | null = null;
 
 /** Boot the process-global wasm kernel with host directory `hostDir`
  *  mounted at /work (NODEFS). Later calls reuse the first kernel: their
- *  memMb / loglevel are ignored, and a different hostDir throws. */
+ *  memMb / loglevel are ignored, and a different hostDir throws. A failed
+ *  boot stays cached, so later calls reject the same way until
+ *  `haltKernel()` resets it. */
 export async function bootNodeKernel(
     hostDir: string,
     factory: AnyfsModuleFactory,

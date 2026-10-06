@@ -503,6 +503,9 @@ function installAnyfsNativeIpc() {
     ipcMain.handle('anyfs-native:init', async (_event, memMb: number, loglevel: number) => {
         const m = loadNativeAddon();
         if (!m) throw new Error('anyfs-native addon not loadable');
+        if (nativeFailed) {
+            throw new Error('anyfs-native engine failed earlier in this process; restart the app');
+        }
         if (nativeInitDone) return 0; // idempotent — kernel is global
         const rc = await m.kernelInit(memMb >>> 0, loglevel >>> 0);
         if (rc === 0) nativeInitDone = true;

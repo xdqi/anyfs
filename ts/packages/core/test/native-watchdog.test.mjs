@@ -250,3 +250,41 @@ test('prewarmNative forwards opTimeoutMs', { timeout: 3000 }, async () => {
         delete globalThis.anyfsNative;
     }
 });
+
+test('a dead native engine is latched per bridge', { timeout: 5000 }, async () => {
+    const { bridge, calls } = fakeBridge({ diskOpen: async () => 0 });
+    const s = new NativeSession(bridge, { opTimeoutMs: 50 });
+    await s.attachPath('/img');
+    let first;
+    s.onFatal((e) => (first = e));
+    await assert.rejects(s.readdir('/x'), /timed out/);
+    assert.ok(first);
+
+    const s2 = new NativeSession(bridge);
+    let second;
+    s2.onFatal((e) => (second = e));
+    assert.equal(second, first);
+    const n = calls.length;
+    await assert.rejects(s2.boot(64, 0), (e) => e === first);
+    assert.equal(calls.length, n, 'init not called');
+
+    // prewarmNative rejects with the original error
+    const prev = globalThis.anyfsNative;
+    bridge.available = async () => true;
+    globalThis.anyfsNative = bridge;
+    try {
+        await assert.rejects(prewarmNative(), (e) => e === first);
+    } finally {
+        if (prev === undefined) delete globalThis.anyfsNative;
+        else globalThis.anyfsNative = prev;
+    }
+
+    // another bridge is unaffected
+    const other = fakeBridge({ init: async () => 0 });
+    const s3 = new NativeSession(other.bridge);
+    let fatal3 = null;
+    s3.onFatal((e) => (fatal3 = e));
+    assert.equal(fatal3, null);
+    await s3.boot(64, 0);
+    assert.deepEqual(other.calls, ['init']);
+});

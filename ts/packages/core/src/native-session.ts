@@ -41,6 +41,11 @@ export function getAnyfsNative(): AnyfsNativeBridge | null {
     return null;
 }
 
+/** Bridges whose engine died (watchdog or host fatal). The addon's kernel is
+ *  process-global and a wedged op holds its mutex until the app restarts, so
+ *  later sessions on the same bridge fail at once instead of queueing behind it. */
+const deadEngines = new WeakMap<AnyfsNativeBridge, Error>();
+
 /**
  * Electron native-addon session — communicates via the preload-injected
  * `window.anyfsNative` IPC bridge.
@@ -63,12 +68,16 @@ export class NativeSession extends AnyfsSessionBase {
             bridge.onFatal?.((reason) => {
                 this.fireFatal(new EngineFatalError(`anyfs-native engine failed: ${reason}`));
             }) ?? null;
+        this.onFatal((e) => deadEngines.set(bridge, e));
+        const dead = deadEngines.get(bridge);
+        if (dead) this.fireFatal(dead);
     }
 
     // ── Boot (platform-specific, not on AnyfsSession) ──
 
     /** Boot the addon's kernel (idempotent in the main process). */
     async boot(memMb: number, loglevel: number): Promise<void> {
+        if (this.fatalError) throw this.fatalError;
         const rc = await this.bridge.init(memMb, loglevel);
         if (rc !== 0) throw new Error(`anyfs-native init failed: rc=${rc}`);
     }
