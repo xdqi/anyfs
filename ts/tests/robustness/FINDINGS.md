@@ -53,11 +53,17 @@ reading the LKL tree (`~/linux`) and `~/oot-fs`:
   remount-ro; gfs2 defaults to withdraw.
 - **ZFS** can still panic through SPL VERIFY/ASSERT, but a mount cannot reach it, since it needs
   `zpool import` first.
-- **ext4 writes the superblock on a read-only mount** (not a panic). `ext4_handle_error` checks
-  `bdev_read_only`, not `sb_rdonly`, and LKL's virtio-blk never marks the device read-only, so
-  `save_error_info` + `ext4_commit_super` run on error. A read-only session rejects those writes
-  (EIO plus log noise). A writable session entered with `ANYFS_MOUNT_RDONLY` can have its superblock
-  modified. This was already true for images with `s_errors=continue`, the mke2fs default.
+- **ext4 wrote the superblock on a read-only mount** (not a panic; FIXED 2026-10-06).
+  `ext4_handle_error` checks `bdev_read_only`, not `sb_rdonly`, and LKL's virtio-blk never marks the
+  device read-only, so `save_error_info` + `ext4_commit_super` ran on error. A read-only session
+  rejected those writes (EIO plus log noise); a writable session entered with `ANYFS_MOUNT_RDONLY`
+  had its superblock modified. `src/core/anyfs_mount.c` now sets the block device read-only
+  (`BLKROSET`) before every read-only mount and read-write before every read-write one, since the
+  flag outlives the mount. The block layer only warns about a write to a read-only device (`Trying
+  to write to read-only block-device`, KERN_WARNING), so this protects against filesystems that
+  check `bdev_read_only`, as ext4 does; it is not a hard barrier. Test:
+  `tests/test_session_ro_mount.c`. Both gate runs after the change gave the same class for every
+  case.
 - **Read-write `errors=remount-ro` is not covered end to end.** The corpus only enters read-only; that
   path is covered by the unit test (`tests/unit/test_mount_opts.c`) and the kernel source reading
   above.

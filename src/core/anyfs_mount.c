@@ -60,6 +60,23 @@ static int get_block_fstypes(char fstypes[][FSTYPE_MAXLEN], int max)
 	return count;
 }
 
+/* Mark the block device read-only (or read-write) to match the mount.
+ * MS_RDONLY alone does not stop every write: ext4 records an error in the
+ * superblock unless bdev_read_only(), and LKL's virtio-blk never sets it.
+ * The flag is a property of the device, not of the mount, so it is set on
+ * every mount, read-write ones included: a read-write mount of a device
+ * still flagged by an earlier read-only one fails with EACCES. */
+static int set_bdev_ro(const char* dev_str, int rdonly)
+{
+	int fd = lkl_sys_open(dev_str, LKL_O_RDONLY, 0);
+	if (fd < 0)
+		return fd;
+	int ro = rdonly ? 1 : 0;
+	long ret = lkl_sys_ioctl(fd, LKL_BLKROSET, (long)&ro);
+	lkl_sys_close(fd);
+	return (int)ret;
+}
+
 /* Common path: dev_str already points to a /dev node (we may or may
  * not have mknod'd it). Returns 0 on success, negative on failure;
  * caller is responsible for any /dev/<encoded> node cleanup it owns. */
@@ -67,6 +84,10 @@ static int mount_via_devpath(const char* dev_str, const char* fstype,
 			     const char* name, uint32_t flags, AnyfsMount* out)
 {
 	int auto_detect = (!fstype || strcmp(fstype, "auto") == 0);
+
+	int ret = set_bdev_ro(dev_str, flags & ANYFS_MOUNT_RDONLY);
+	if (ret < 0)
+		return ret;
 
 	lkl_sys_mkdir("/lklmnt", 0755);
 	char mnt[64];
@@ -77,7 +98,6 @@ static int mount_via_devpath(const char* dev_str, const char* fstype,
 	if (flags & ANYFS_MOUNT_RDONLY)
 		mount_flags |= LKL_MS_RDONLY;
 
-	int ret;
 	char opts[ANYFS_MOUNT_OPTS_MAX];
 	if (!auto_detect) {
 		if (anyfs_mount_opts(fstype, flags & ANYFS_MOUNT_RDONLY, opts,
