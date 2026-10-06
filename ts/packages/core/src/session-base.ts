@@ -31,6 +31,7 @@ export abstract class AnyfsSessionBase implements AnyfsSession {
     protected readonly opTimeoutMs: number;
     private readonly fatalCbs = new Set<(e: Error) => void>();
     private fatalErr: Error | null = null;
+    private opQueue: Promise<unknown> = Promise.resolve();
     /** Reject callbacks of pending guarded ops, failed when the session goes fatal. */
     private readonly inflight = new Set<(e: Error) => void>();
 
@@ -262,6 +263,22 @@ export abstract class AnyfsSessionBase implements AnyfsSession {
                 (e: unknown) => fail(e as Error),
             );
         });
+    }
+
+    /** @internal — run `fn` once every earlier serialized call has settled.
+     *  The engine handles one op at a time; queueing here too keeps an op's
+     *  watchdog from counting time spent waiting behind another. Rejects at
+     *  once after dispose, so close() never queues behind a stuck op. */
+    protected serialize<T>(fn: () => Promise<T>): Promise<T> {
+        if (this.disposed) return Promise.reject(new Error('AnyfsSession: already disposed'));
+        const next = this.opQueue.then(fn);
+        this.opQueue = next.catch(() => undefined);
+        return next;
+    }
+
+    /** @internal — settles once every call serialized so far has settled. */
+    protected get queueIdle(): Promise<unknown> {
+        return this.opQueue;
     }
 
     // ── Internal ──────────────────────────────────────

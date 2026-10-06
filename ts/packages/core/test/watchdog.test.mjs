@@ -19,6 +19,9 @@ class GuardedSession extends AnyfsSessionBase {
             return (this.impl[op] ?? never)(...args);
         });
     }
+    ser(fn) {
+        return this.serialize(fn);
+    }
     kill(err) {
         this.fireFatal(err);
     }
@@ -204,4 +207,38 @@ test('close() after a fatal skips fd cleanup so it cannot hang', { timeout: 2000
     await s.close();
     assert.deepEqual(s.closedFds, []);
     assert.equal(s.disposedCalled, true);
+});
+
+test('serialize runs calls in order, one at a time', { timeout: 2000 }, async () => {
+    const s = new GuardedSession({ opTimeoutMs: 0 });
+    const log = [];
+    let running = 0;
+    const job = (n, ms) => async () => {
+        assert.equal(++running, 1);
+        log.push(`start${n}`);
+        await new Promise((r) => setTimeout(r, ms));
+        log.push(`end${n}`);
+        running--;
+        return n;
+    };
+    const rs = await Promise.all([s.ser(job(1, 30)), s.ser(job(2, 5)), s.ser(job(3, 1))]);
+    assert.deepEqual(rs, [1, 2, 3]);
+    assert.deepEqual(log, ['start1', 'end1', 'start2', 'end2', 'start3', 'end3']);
+});
+
+test('a serialized rejection does not block the next call', { timeout: 2000 }, async () => {
+    const s = new GuardedSession({ opTimeoutMs: 0 });
+    const a = s.ser(() => Promise.reject(new Error('nope')));
+    const b = s.ser(async () => 'ok');
+    await assert.rejects(a, /nope/);
+    assert.equal(await b, 'ok');
+});
+
+test('serialize rejects at once after close()', { timeout: 2000 }, async () => {
+    const s = new GuardedSession({ opTimeoutMs: 0 });
+    await s.close();
+    await assert.rejects(
+        s.ser(async () => 1),
+        /already disposed/,
+    );
 });

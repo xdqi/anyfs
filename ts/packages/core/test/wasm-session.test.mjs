@@ -15,6 +15,9 @@ class FakeWorker extends EventTarget {
     terminate() {
         this.terminated = true;
     }
+    fail(id, error) {
+        this.dispatchEvent(new MessageEvent('message', { data: { id, ok: false, error } }));
+    }
     reply(id, result) {
         this.dispatchEvent(new MessageEvent('message', { data: { id, ok: true, result } }));
     }
@@ -79,20 +82,92 @@ test(
     { timeout: 5000 },
     async () => {
         const w = new FakeWorker();
-        const s = new WasmSession(w, { opTimeoutMs: 100 });
+        const s = new WasmSession(w, { opTimeoutMs: 200 });
         let fatal = null;
         s.onFatal((e) => (fatal = e));
         const a = s.readdir('/a');
         const b = s.stat('/b');
         await new Promise((r) => setImmediate(r));
         assert.equal(w.posted.length, 1);
-        await new Promise((r) => setTimeout(r, 80));
+        await new Promise((r) => setTimeout(r, 150));
         w.reply(w.posted[0].id, [{ name: 'a', ino: 1, kind: 'file' }]);
         while (w.posted.length < 2) await new Promise((r) => setImmediate(r));
-        await new Promise((r) => setTimeout(r, 60));
+        await new Promise((r) => setTimeout(r, 120));
         w.reply(w.posted[1].id, { size: 7 });
         assert.deepEqual(await a, [{ name: 'a', ino: 1, kind: 'file' }]);
         assert.deepEqual(await b, { size: 7 });
         assert.equal(fatal, null);
     },
 );
+
+const tick = () => new Promise((r) => setImmediate(r));
+
+test('close() with a read in flight terminates at once', { timeout: 2000 }, async () => {
+    const w = new FakeWorker();
+    const s = new WasmSession(w, { opTimeoutMs: 0 });
+    let fatal = null;
+    s.onFatal((e) => (fatal = e));
+    const o = s.openFd('/f');
+    await tick();
+    w.reply(w.posted[0].id, 3);
+    assert.equal(await o, 3);
+    const r = s.readFd(3, 0, 10);
+    r.catch(() => {});
+    await tick();
+    await s.close();
+    assert.equal(w.terminated, true);
+    assert.equal(fatal, null);
+    await assert.rejects(r);
+});
+
+test('a rejected op does not block the next one', { timeout: 5000 }, async () => {
+    const w = new FakeWorker();
+    const s = new WasmSession(w, { opTimeoutMs: 500 });
+    const a = s.stat('/a');
+    const b = s.stat('/b');
+    await tick();
+    assert.equal(w.posted.length, 1);
+    w.fail(w.posted[0].id, 'EIO');
+    await assert.rejects(a, /EIO/);
+    await tick();
+    assert.equal(w.posted.length, 2);
+    w.reply(w.posted[1].id, { size: 1 });
+    assert.deepEqual(await b, { size: 1 });
+});
+
+test('a worker error rejects queued ops and posts nothing more', { timeout: 5000 }, async () => {
+    const w = new FakeWorker();
+    const s = new WasmSession(w, { opTimeoutMs: 500 });
+    const a = s.stat('/a');
+    const b = s.stat('/b');
+    const c = s.stat('/c');
+    await tick();
+    const ev = new Event('error');
+    ev.message = 'boom';
+    w.dispatchEvent(ev);
+    await assert.rejects(a, /boom/);
+    await assert.rejects(b, /boom/);
+    await assert.rejects(c, /boom/);
+    assert.equal(w.posted.length, 1);
+});
+
+test('attach and ops reach the worker in call order', { timeout: 5000 }, async () => {
+    const w = new FakeWorker();
+    const s = new WasmSession(w, { opTimeoutMs: 500 });
+    const k = s.readKernelFile('/proc/x');
+    const at = s.attachBlob(new Blob([new Uint8Array(4)]));
+    await tick();
+    assert.deepEqual(
+        w.posted.map((m) => m.op),
+        ['readKernelFile'],
+    );
+    w.reply(w.posted[0].id, 'x');
+    await k;
+    await tick();
+    assert.deepEqual(
+        w.posted.map((m) => m.op),
+        ['readKernelFile', 'attach'],
+    );
+    w.reply(w.posted[1].id, null);
+    await at;
+});

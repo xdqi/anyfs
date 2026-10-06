@@ -126,27 +126,25 @@ export class WasmSession extends AnyfsSessionBase {
 
     /** @internal — raw call without tracking, used for initial boot. */
     callRaw<T>(op: string, args: unknown = {}): Promise<T> {
-        return this.call<T>(op, args);
+        return this.serialize(() => this.call<T>(op, args));
     }
 
-    // The worker runs ops one at a time (worker.ts opChain). Queue engine ops
-    // here too, so an op's watchdog starts when the worker gets to it, not
-    // while it waits behind a slow one.
-    private opChain: Promise<unknown> = Promise.resolve();
+    // The worker runs every message one at a time (worker.ts opChain), boot and
+    // attach included, so all calls are serialized here too. An op's watchdog
+    // then starts when the worker gets to it, not while it waits behind a slow
+    // op or a long attach.
 
-    /** An engine op: queued, then a worker call under the base watchdog.
-     *  Attach and boot use call() directly — the provider's attach timeout
-     *  bounds those. */
+    /** An engine op: serialized, then a worker call under the base watchdog.
+     *  Attach and boot are serialized but unguarded — the provider's attach
+     *  timeout bounds those. */
     private op<T>(op: string, args: unknown = {}): Promise<T> {
-        const next = this.opChain.then(() => this.guard(op, () => this.call<T>(op, args)));
-        this.opChain = next.catch(() => undefined);
-        return next;
+        return this.serialize(() => this.guard(op, () => this.call<T>(op, args)));
     }
 
     // ── Attach ─────────────────────────────────────────
 
     async attachBlob(blob: Blob): Promise<void> {
-        await this.call('attach', { blob });
+        await this.serialize(() => this.call('attach', { blob }));
     }
 
     async attachUrl(url: string, name?: string): Promise<void> {
@@ -162,7 +160,7 @@ export class WasmSession extends AnyfsSessionBase {
                 fallback = 'image';
             }
         }
-        await this.call('attachUrl', { url, name: fallback });
+        await this.serialize(() => this.call('attachUrl', { url, name: fallback }));
     }
 
     async attachPath(_path: string): Promise<void> {
