@@ -108,7 +108,8 @@ export class WasmSession extends AnyfsSessionBase {
 
     private call<T>(op: string, args: unknown = {}): Promise<T> {
         if (this.disposed) return Promise.reject(new Error('AnyfsSession: already disposed'));
-        if (this.workerError) return Promise.reject(this.workerError);
+        const dead = this.workerError ?? this.fatalError;
+        if (dead) return Promise.reject(dead);
         const id = this.nextId++;
         return new Promise<T>((res, rej) => {
             this.pending.set(id, {
@@ -129,14 +130,12 @@ export class WasmSession extends AnyfsSessionBase {
         return this.serialize(() => this.call<T>(op, args));
     }
 
-    // The worker runs every message one at a time (worker.ts opChain), boot and
-    // attach included, so all calls are serialized here too. An op's watchdog
-    // then starts when the worker gets to it, not while it waits behind a slow
-    // op or a long attach.
-
     /** An engine op: serialized, then a worker call under the base watchdog.
-     *  Attach and boot are serialized but unguarded — the provider's attach
-     *  timeout bounds those. */
+     *  The worker runs every message one at a time (worker.ts opChain), boot
+     *  and attach included, so all calls are serialized here too; an op's
+     *  watchdog then starts when the worker gets to it, not while it waits
+     *  behind a slow op or a long attach. Attach and boot are serialized but
+     *  unguarded — the provider's attach timeout bounds those. */
     private op<T>(op: string, args: unknown = {}): Promise<T> {
         return this.serialize(() => this.guard(op, () => this.call<T>(op, args)));
     }

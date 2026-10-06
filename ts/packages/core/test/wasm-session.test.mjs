@@ -171,3 +171,17 @@ test('attach and ops reach the worker in call order', { timeout: 5000 }, async (
     w.reply(w.posted[1].id, null);
     await at;
 });
+
+test('an attach queued behind a watchdog fatal is never posted', { timeout: 5000 }, async () => {
+    const w = new FakeWorker();
+    const s = new WasmSession(w, { opTimeoutMs: 100 });
+    const k = s.readKernelFile('/proc/x');
+    k.catch(() => {});
+    const at = s.attachBlob(new Blob([new Uint8Array(4)]));
+    await assert.rejects(k, /readKernelFile timed out/);
+    await assert.rejects(at, /readKernelFile timed out/);
+    assert.deepEqual(
+        w.posted.map((m) => m.op),
+        ['readKernelFile'],
+    );
+});
