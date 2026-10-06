@@ -252,6 +252,7 @@ anyfs_core_sources = files(
     'src/core/anyfs_backend.c',
     'src/core/anyfs_container.c',
     'src/core/anyfs_mount.c',
+    'src/core/anyfs_mount_opts.c',
     'src/core/raw_backend.c',
     'src/core/anyfs_session.c',
     'src/core/anyfs_strbuf.c',
@@ -394,6 +395,13 @@ test_tls_ca = executable('test_tls_ca',
     install: false,
 )
 test('tls_ca', test_tls_ca, suite: 'unit')
+test_mount_opts = executable('test_mount_opts',
+    'tests/unit/test_mount_opts.c',
+    'src/core/anyfs_mount_opts.c',
+    include_directories: [include_directories('src/core')],
+    install: false,
+)
+test('mount_opts', test_mount_opts, suite: 'unit')
 
 bench_backends = executable('bench_backends',
     'tests/bench_backends.c',

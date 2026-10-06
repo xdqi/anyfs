@@ -4,6 +4,7 @@
 #define _GNU_SOURCE
 #include "anyfs_mount.h"
 #include "anyfs.h"
+#include "anyfs_mount_opts.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -77,24 +78,15 @@ static int mount_via_devpath(const char* dev_str, const char* fstype,
 		mount_flags |= LKL_MS_RDONLY;
 
 	int ret;
+	char opts[64];
 	if (!auto_detect) {
-		const char* opts = NULL;
-		if (flags & ANYFS_MOUNT_RDONLY) {
-			if (strcmp(fstype, "xfs") == 0 ||
-			    strcmp(fstype, "btrfs") == 0)
-				opts = "norecovery";
-			else if (strcmp(fstype, "ext4") == 0 ||
-				 strcmp(fstype, "ext3") == 0)
-				opts = "noload";
+		if (anyfs_mount_opts(fstype, flags & ANYFS_MOUNT_RDONLY, opts,
+				     sizeof(opts)) < 0) {
+			lkl_sys_rmdir(mnt);
+			return -1;
 		}
-		// The Linux UFS driver needs ufstype= to pick the right
-		// superblock layout. Default is 44bsd UFS1 (ufstype=old) which
-		// fails on every modern image. FreeBSD/NetBSD/OpenBSD all ship
-		// ufs2 today.
-		if (strcmp(fstype, "ufs") == 0 && !opts)
-			opts = "ufstype=ufs2";
 		ret = lkl_sys_mount((char*)dev_str, mnt, (char*)fstype,
-				    mount_flags, (char*)opts);
+				    mount_flags, opts[0] ? opts : NULL);
 		if (ret < 0) {
 			lkl_sys_rmdir(mnt);
 			return ret;
@@ -133,22 +125,11 @@ static int mount_via_devpath(const char* dev_str, const char* fstype,
 		if (strcmp(fstypes[i], "apfs") == 0 ||
 		    strcmp(fstypes[i], "btrfs") == 0)
 			continue;
-		const char* opts = NULL;
-		if (flags & ANYFS_MOUNT_RDONLY) {
-			if (strcmp(fstypes[i], "xfs") == 0 ||
-			    strcmp(fstypes[i], "btrfs") == 0)
-				opts = "norecovery";
-			else if (strcmp(fstypes[i], "ext4") == 0 ||
-				 strcmp(fstypes[i], "ext3") == 0)
-				opts = "noload";
-		}
-		// ufstype=ufs2 covers modern FreeBSD/NetBSD/OpenBSD; the
-		// default 44bsd layout doesn't match anything you'd actually
-		// mount today.
-		if (strcmp(fstypes[i], "ufs") == 0 && !opts)
-			opts = "ufstype=ufs2";
+		if (anyfs_mount_opts(fstypes[i], flags & ANYFS_MOUNT_RDONLY,
+				     opts, sizeof(opts)) < 0)
+			continue;
 		ret = lkl_sys_mount((char*)dev_str, mnt, fstypes[i],
-				    mount_flags, (char*)opts);
+				    mount_flags, opts[0] ? opts : NULL);
 		if (ret == 0) {
 			strncpy(out->mount_point, mnt,
 				sizeof(out->mount_point) - 1);
