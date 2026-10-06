@@ -9,14 +9,22 @@ export interface NodeMountOpts extends SessionOpts {
     readOnly?: boolean;
 }
 
+let g_hostDir: string | null = null;
+
 /** Boot the process-global wasm kernel with host directory `hostDir`
- *  mounted at /work (NODEFS). Idempotent: later calls return the same
- *  module. */
+ *  mounted at /work (NODEFS). Later calls reuse the first kernel: their
+ *  memMb / loglevel are ignored, and a different hostDir throws. */
 export async function bootNodeKernel(
     hostDir: string,
     factory: AnyfsModuleFactory,
-    opts: SessionOpts = {},
+    opts: Pick<SessionOpts, 'memMb' | 'loglevel'> = {},
 ): Promise<AnyfsModule> {
+    if (g_hostDir !== null && g_hostDir !== hostDir) {
+        throw new Error(
+            `bootNodeKernel: /work is already ${g_hostDir}; one process mounts one host directory`,
+        );
+    }
+    g_hostDir = hostDir;
     return bootModule({
         factory,
         memMb: opts.memMb ?? 64,
@@ -45,4 +53,7 @@ export async function mountNodeFile(
 }
 
 export { openNodeSession };
-export const haltKernel = halt;
+export async function haltKernel(): Promise<void> {
+    await halt();
+    g_hostDir = null;
+}

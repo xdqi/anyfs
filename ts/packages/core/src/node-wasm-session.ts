@@ -23,6 +23,14 @@ export interface NodeWasmSessionOpts extends SessionBaseOpts {
  *
  * The module is process-global. When it aborts (kernel panic, wasm trap)
  * every session on it fires onFatal, and recovery means a new process.
+ * After onFatal fires for an abort, emscripten still rethrows the pthread's
+ * error as an uncaught exception on this thread: embedders need an
+ * `uncaughtException` handler, or the process exits after onFatal.
+ *
+ * Ops use guard() but not serialize(): the API thread is process-global (other
+ * sessions share it) and the base fd loop in close() relies on unqueued fd
+ * closes. So time spent queued behind another op counts against an op's
+ * watchdog.
  */
 export class NodeWasmSession extends AnyfsSessionBase {
     private readonly M: AnyfsModule;
@@ -200,16 +208,16 @@ export class NodeWasmSession extends AnyfsSessionBase {
 
     /** @internal */
     protected async _dispose(): Promise<void> {
-        this.unsubscribeFail();
-        // A wedged or aborted engine never answers session_close.
+        // Bounded like every engine op: unmounting a corrupt filesystem can
+        // wedge too, and a fatal from any other op releases it (inflight).
         if (this.handle >= 0 && !this.fatalError) {
-            try {
-                await this.api.call(ApiOp.SESSION_CLOSE, [this.handle]);
-            } catch {
-                /* best effort */
-            }
+            const h = this.handle;
+            await this.guard('sessionClose', () => this.api.call(ApiOp.SESSION_CLOSE, [h])).catch(
+                () => {},
+            );
         }
         this.handle = -1;
+        this.unsubscribeFail(); // last, so an abort during the close is still heard
     }
 
     // PATH_MAX is 4096 on Linux; longer can't be represented anyway.

@@ -15,17 +15,19 @@ export async function bootModule(args: {
     if (g_modulePromise) return g_modulePromise;
     g_modulePromise = (async () => {
         let live: AnyfsModule | null = null;
+        let early: Error | null = null; // an abort that beat the factory
         // abort() — a kernel panic, a wasm trap, OOM — calls this on the
         // module-owning thread (emscripten proxies it from pthreads). Fail
         // the API so pending and future ops reject and every session fires
         // onFatal; the module stays dead for the life of the process.
         const onAbort = (what: unknown) => {
-            if (live) {
-                wasmApiFor(live).fail(new EngineFatalError(`wasm module aborted: ${String(what)}`));
-            }
+            const err = new EngineFatalError(`wasm module aborted: ${String(what)}`);
+            if (live) wasmApiFor(live).fail(err);
+            else early ??= err;
         };
         const M = await args.factory({ preRun: args.preRun, onAbort });
         live = M;
+        if (early) wasmApiFor(M).fail(early);
         if (!g_kernelInitialised) {
             const rc = await wasmApiFor(M).call(ApiOp.KERNEL_INIT, [args.memMb, args.loglevel]);
             if (rc !== 0) throw new Error(`anyfs_ts_kernel_init failed: ${rc}`);
@@ -48,7 +50,7 @@ export async function openNodeSession(
     try {
         await session.attachPath(fsPath);
     } catch (err) {
-        await session.close();
+        await session.close().catch(() => {});
         throw err;
     }
     return session;
@@ -57,7 +59,9 @@ export async function openNodeSession(
 export async function haltKernel(): Promise<void> {
     if (!g_modulePromise) return;
     const M = await g_modulePromise;
-    await wasmApiFor(M).call(ApiOp.KERNEL_HALT);
+    // A dead module can't answer KERNEL_HALT. (A watchdog wedge without an
+    // abort makes halt hang too: recovery is a new process.)
+    if (!wasmApiFor(M).failed) await wasmApiFor(M).call(ApiOp.KERNEL_HALT);
     g_modulePromise = null;
     g_kernelInitialised = false;
 }

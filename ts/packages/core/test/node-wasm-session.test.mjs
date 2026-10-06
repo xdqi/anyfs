@@ -93,3 +93,48 @@ test('a module abort rejects pending ops and fires onFatal', { timeout: 5000 }, 
     ]);
     await assert.rejects(s.stat('/work'), /wasm module aborted/);
 });
+
+const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
+
+async function attached(opts) {
+    const M = fakeModule();
+    const s = new NodeWasmSession(M, opts);
+    const p = s.attachPath('/work/d.img');
+    M.answer(0);
+    await p;
+    return { M, s };
+}
+
+test(
+    'close() during a wedged readdir resolves once the watchdog fires',
+    { timeout: 3000 },
+    async () => {
+        const { s } = await attached({ opTimeoutMs: 100 });
+        const r = s.readdir('/work');
+        r.catch(() => {});
+        await tick();
+        const t0 = Date.now();
+        await s.close();
+        assert.ok(Date.now() - t0 < 1000);
+        await assert.rejects(r, /timed out/);
+    },
+);
+
+test(
+    'close() with session_close never answered is bounded by the watchdog',
+    { timeout: 3000 },
+    async () => {
+        const { s } = await attached({ opTimeoutMs: 100 });
+        const t0 = Date.now();
+        await s.close();
+        assert.ok(Date.now() - t0 < 1000);
+    },
+);
+
+test('close() after a watchdog fatal never submits SESSION_CLOSE', { timeout: 3000 }, async () => {
+    const { M, s } = await attached({ opTimeoutMs: 50 });
+    await assert.rejects(s.readdir('/work'), /timed out/);
+    M.submitted.length = 0;
+    await s.close();
+    assert.equal(M.submitted.length, 0);
+});

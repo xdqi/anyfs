@@ -102,7 +102,7 @@ export class WasmApi {
         this.failure = err;
         for (const p of this.pending.values()) p.reject(err);
         this.pending.clear();
-        for (const cb of this.failCbs) {
+        for (const cb of [...this.failCbs]) {
             try {
                 cb(err);
             } catch {
@@ -169,6 +169,7 @@ export class WasmApi {
         name: string,
         initialCap = 8192,
     ): Promise<string> {
+        if (this.failure) throw this.failure;
         const M = this.M;
         let cap = initialCap;
         for (let i = 0; i < 6; i++) {
@@ -198,6 +199,7 @@ export class WasmApi {
     /** The API thread's last error message (set by the op that just failed),
      *  or '' if there is none. */
     async lastError(): Promise<string> {
+        if (this.failure) throw this.failure;
         const M = this.M;
         const cap = 512;
         const buf = M._malloc(cap);
