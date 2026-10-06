@@ -53,7 +53,7 @@ jobs:
       - name: Farm disabled — TS_OAUTH_SECRET not configured
         if: ${{ env.FARM_SECRET_SET == 'false' }}
         run: echo "TS_OAUTH_SECRET is not set; skipping farm worker (build compiles locally)."
-      - uses: xdqi/sccache-dist-action@v0.0.8
+      - uses: xdqi/sccache-dist-action@v0.0.9-rc.1
         if: ${{ env.FARM_SECRET_SET == 'true' }}
         with:
           mode: worker
@@ -161,9 +161,10 @@ jobs:
             sccache-mingw64-
 
       - name: Bring up sccache-dist farm
+        id: farm
         if: ${{ github.event_name != 'pull_request' && env.FARM_SECRET_SET == 'true' }}
         continue-on-error: true
-        uses: xdqi/sccache-dist-action@v0.0.8
+        uses: xdqi/sccache-dist-action@v0.0.9-rc.1
         with:
           mode: coordinator
           expected-workers: 2
@@ -320,4 +321,15 @@ jobs:
           name: anyfs-reader-win64
           path: /tmp/anyfs-reader-*-win64.tar.gz
           if-no-files-found: error
+          retention-days: 14
+
+      # The farm's forwarder outlives its setup step, and the runner stops
+      # printing its output (and the scheduler's) once that step ends; the
+      # action keeps a copy in this file.
+      - name: Upload sccache-dist coordinator log
+        if: ${{ always() && steps.farm.outputs.log-file != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sccache-dist-coordinator-log-mingw64
+          path: ${{ steps.farm.outputs.log-file }}
           retention-days: 14
