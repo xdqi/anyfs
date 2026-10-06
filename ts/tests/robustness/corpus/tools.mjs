@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 
-const PATH = ['/usr/sbin', '/sbin', process.env.PATH ?? ''].join(delimiter);
+const PATH = [process.env.PATH ?? '', '/usr/sbin', '/sbin'].join(delimiter);
 
 /** The Debian package that ships each tool, for the error message. */
 const PROVIDER = {
@@ -44,9 +44,16 @@ export function run(tool, args, { env = {}, cwd, input } = {}) {
     const res = spawnSync(which(tool) ?? tool, args, {
         cwd,
         input,
+        timeout: 120_000,
+        maxBuffer: 16 << 20,
         encoding: 'utf-8',
         env: { ...process.env, PATH, ...env },
     });
+    if (res.error?.code === 'ETIMEDOUT' || (res.signal && res.status === null)) {
+        throw new Error(
+            `${tool} ${args.join(' ')} timed out or was killed (${res.signal ?? 'ETIMEDOUT'})`,
+        );
+    }
     if (res.error) throw res.error;
     if (res.status !== 0) {
         throw new Error(`${tool} ${args.join(' ')} failed (exit ${res.status}):\n${res.stderr}`);

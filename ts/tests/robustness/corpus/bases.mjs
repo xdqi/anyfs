@@ -5,10 +5,11 @@
  *
  * Reproducible (byte-identical across builds): the e2fs-based images (ext4,
  * ext4panic, ext2, qcow2, and the gpt / mbr / mbrext disks holding them),
- * vfat, iso9660 and squashfs. Not reproducible: btrfs and xfs (random device
- * UUIDs) and vmdk (qemu writes a random CID), so cases.json records every
- * image's sha256. exfat, f2fs and ntfs hold no files; they exist only to
- * check that the filesystem still mounts.
+ * vfat, iso9660 and squashfs. Not reproducible: btrfs (random UUIDs), xfs
+ * (root-inode timestamps and the CRC over them), vmdk (qemu writes a random
+ * CID), and exfat, f2fs and ntfs (random serials / UUIDs), so cases.json
+ * records every image's sha256. exfat, f2fs and ntfs hold no files; they
+ * exist only to check that the filesystem still mounts.
  */
 import {
     closeSync,

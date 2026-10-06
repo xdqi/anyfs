@@ -46,6 +46,10 @@ test('62 mutations over the bases, 78 cases in all, unique names', () => {
     for (const x of m) assert.ok(BASES[x.base], `${x.name}: unknown base ${x.base}`);
 });
 
+test('there are 16 bases', () => {
+    assert.equal(Object.keys(BASES).length, 16);
+});
+
 test('flip and truncate', () => {
     const z = Buffer.alloc(1 << 20);
     const f = flip(z, 1, 1e-3);
@@ -62,10 +66,6 @@ describe('base images', () => {
     before(() => {
         requireTools(TOOLS);
         bases = buildAllBases(join(SCRATCH_DIR, 'bases'));
-    });
-
-    test('there are 16 bases', () => {
-        assert.equal(Object.keys(BASES).length, 16);
     });
 
     test('checksum fix-ups reproduce the checksums mkfs wrote', () => {
@@ -149,13 +149,14 @@ describe('base images', () => {
     };
 
     test('mutations keep what they promise to keep', () => {
-        const byName = Object.fromEntries(
-            mutationCases().map((m) => [
-                m.name,
-                m.apply(bases.bufs[m.base], bases.layouts[m.base]),
-            ]),
-        );
-        for (const m of mutationCases()) {
+        // Build only the images inspected here, one at a time.
+        const INSPECTED =
+            /-sb-|^iso9660-pvd-|^gpt-|^btrfs-zero-(chunk|fs)-tree$|^mbrext-ext-loop$|^qcow2-l2-entry-at-header$/;
+        const byName = {};
+        for (const m of mutationCases().filter((x) => INSPECTED.test(x.name))) {
+            byName[m.name] = m.apply(bases.bufs[m.base], bases.layouts[m.base]);
+        }
+        for (const m of mutationCases().filter((x) => x.name in byName)) {
             const out = byName[m.name];
             if (/-sb-|^iso9660-pvd-/.test(m.name)) {
                 assert.ok(MAGIC[m.base](out), `${m.name}: magic was not kept`);
@@ -184,6 +185,9 @@ describe('base images', () => {
                 `${name}: owner ${owner} blocks remain`,
             );
         }
+        const q = find('qcow2-l2-entry-at-header');
+        const l2 = Number(q.readBigUInt64BE(Number(q.readBigUInt64BE(40))) & 0x00fffffffffffe00n);
+        assert.equal(q.readBigUInt64BE(l2 + 8), 0x8000000000000000n, 'L2[1] is COPIED, offset 0');
         const loop = find('mbrext-ext-loop');
         const e = loop.readUInt32LE(446 + 16 + 8) * 512 + 446 + 16;
         assert.equal(loop.readUInt32LE(e + 8), 0, 'EBR link start is 0');

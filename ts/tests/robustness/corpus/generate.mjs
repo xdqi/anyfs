@@ -22,7 +22,7 @@ import {
     writeFileSync,
     writeSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { CASES_JSON, GENERATED_DIR } from '../lib/paths.mjs';
@@ -58,7 +58,7 @@ function fingerprint() {
     const dir = dirname(fileURLToPath(import.meta.url));
     const h = createHash('sha256');
     for (const f of readdirSync(dir)
-        .filter((n) => n.endsWith('.mjs'))
+        .filter((n) => n.endsWith('.mjs') && !n.startsWith('.'))
         .sort()) {
         h.update(`${f}\0`)
             .update(readFileSync(join(dir, f)))
@@ -116,6 +116,11 @@ function main() {
         console.log(`case  ${m.name}`);
     }
     rmSync(scratch, { recursive: true, force: true });
+    // Prune images of cases that no longer exist.
+    const keep = new Set(['cases.json', ...cases.map((c) => basename(c.file))]);
+    for (const f of readdirSync(GENERATED_DIR)) {
+        if (!keep.has(f)) rmSync(join(GENERATED_DIR, f), { recursive: true, force: true });
+    }
     const doc = { generatedAt: new Date().toISOString(), fingerprint: fp, cases };
     writeFileSync(`${CASES_JSON}.tmp`, `${JSON.stringify(doc, null, 4)}\n`);
     renameSync(`${CASES_JSON}.tmp`, CASES_JSON);

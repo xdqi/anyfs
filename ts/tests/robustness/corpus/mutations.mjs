@@ -159,13 +159,15 @@ const HEADER_EDITS = {
         ['l1-offset', (b) => b.writeBigUInt64BE(0x7ffffffffff00000n, 40)],
         ['refcount-offset', (b) => b.writeBigUInt64BE(0x7ffffffffff00000n, 48)],
         ['cluster-bits', (b) => b.writeUInt32BE(31, 20)],
-        // Opens fine; the first L1 entry (COPIED + an L2 offset far past EOF)
-        // is only followed when the data path reads cluster 0.
+        // Opens fine and most of the disk stays intact: L2 entry 1 (guest
+        // bytes 64-128 KiB) is set to COPIED with host offset 0, so that
+        // guest cluster reads the qcow2 header cluster.
         [
-            'l1-entry-past-eof',
+            'l2-entry-at-header',
             (b) => {
                 const l1 = Number(b.readBigUInt64BE(40));
-                b.writeBigUInt64BE(0x8000000000000000n | 0x7ffff0000n, l1);
+                const l2 = Number(b.readBigUInt64BE(l1) & 0x00fffffffffffe00n);
+                b.writeBigUInt64BE(0x8000000000000000n | 0n, l2 + 8);
             },
         ],
     ],
