@@ -446,7 +446,7 @@ export function AnyfsFileBrowser({
                 flexDirection: 'column',
             }}
         >
-            {dirError && (
+            {dirError !== null && (
                 // A corrupt directory used to look like an empty one.
                 <div
                     role="alert"
@@ -460,7 +460,7 @@ export function AnyfsFileBrowser({
                         background: darkMode ? 'rgba(127, 29, 29, 0.35)' : '#fee2e2',
                     }}
                 >
-                    Can’t read this folder: {dirError}
+                    Can’t read this folder: {dirError || 'unknown error'}
                 </div>
             )}
             <FileBrowser

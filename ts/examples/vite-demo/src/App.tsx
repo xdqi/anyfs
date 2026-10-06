@@ -76,10 +76,10 @@ export function App() {
     // with an empty file list (BUG-2).
     const prevSourceRef = useRef(source);
     if (prevSourceRef.current !== source) {
+        // Leaving a loaded disk: its "#/<path>" must not carry over. The first source
+        // after a page load keeps the hash (deep-link reload). Idempotent, so safe in render.
+        if (prevSourceRef.current !== null) clearNavHash();
         prevSourceRef.current = source;
-        // The in-disk "#/<path>" hash belongs to the previous disk. Cleared here, before
-        // the new DiskView mounts and seeds its path from it (idempotent, so safe in render).
-        clearNavHash();
         if (selectedPart !== null) setSelectedPart(null);
     }
 

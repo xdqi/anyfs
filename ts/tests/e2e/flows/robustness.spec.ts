@@ -63,5 +63,8 @@ test('image that mounts but fails on read: error shown, session stays healthy', 
     await driver.navigateUp();
     await expect.poll(async () => (await driver.listRows()).map((r) => r.name)).toContain('docs');
     expect(await driver.hasDirError()).toBe(false);
+    // Fail again so recovery starts from "#/docs": the next disk must not inherit it.
+    await driver.navigateInto('docs');
+    await driver.expectError('read-failed');
     await expectRecovery(driver);
 });

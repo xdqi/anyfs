@@ -48,3 +48,24 @@ test('download hello.txt yields 13 bytes via the right mechanism', async ({ driv
     const expected = testInfo.project.name === 'web' ? 'service-worker' : 'electron-ipc';
     expect(res.mechanism).toBe(expected);
 });
+
+test('deep link: reload keeps the in-disk path for the first disk', async ({
+    driver,
+    page,
+}, testInfo) => {
+    test.skip(testInfo.project.name !== 'web', 'reload is driven through the web page');
+    const single = ensureFixture('singleExt4');
+    await driver.openImage(single);
+    await driver.enterPartition(0);
+    await driver.navigateInto('subdir');
+    await expect
+        .poll(async () => (await driver.listRows()).map((r) => r.name))
+        .toContain('random-1mib.bin');
+    await page.reload();
+    await page.waitForFunction(() => !!(window as any).__anyfsTest?.getState);
+    await driver.openImage(single);
+    await driver.enterPartition(0);
+    await expect
+        .poll(async () => (await driver.listRows()).map((r) => r.name))
+        .toContain('random-1mib.bin');
+});
