@@ -58,7 +58,9 @@ ts/tests/e2e/
 - **Fixture generation needs passwordless `sudo`** plus the mkfs tooling
   (`gdisk dosfstools e2fsprogs btrfs-progs qemu-utils` — `mkfs.ext4`/`mkfs.fat`/`mkfs.btrfs`/
   `sgdisk`/`sfdisk`/`qemu-img`; on Debian these live in `/sbin`, which the generator invokes via
-  `sudo`). The downloaded fixtures need network (~850 MB total; cached + sha-guarded).
+  `sudo`). The robustness spec also needs the corpus image tools (`ts/tests/robustness`):
+  e2fsprogs, dosfstools, mtools, exfatprogs, f2fs-tools, ntfs-3g, btrfs-progs, xfsprogs, xorriso,
+  squashfs-tools, qemu-utils, fdisk. The downloaded fixtures need network (~850 MB total; cached + sha-guarded).
 - **Native addon for `electron-native`** — `cd ts/packages/anyfs-native && npx node-gyp build`
   produces `build/Release/anyfs_native.node`. The native guard **fails loudly** if it's missing
   rather than silently skipping (ABI drift would otherwise SIGSEGV at `require()`).

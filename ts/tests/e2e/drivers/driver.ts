@@ -45,6 +45,10 @@ export interface Driver {
     /** Filesystem browsing (current dir). */
     listRows(): Promise<RowInfo[]>;
     navigateInto(name: string): Promise<void>;
+    /** Go up one directory (Chonky's "Go up a directory" button). */
+    navigateUp(): Promise<void>;
+    /** Whether the read-error banner (data-testid dir-error) is showing. */
+    hasDirError(): Promise<boolean>;
     propertiesOf(name: string): Promise<PropsInfo>;
 
     /** Download the named file from the current dir. Reports which mechanism

@@ -26,14 +26,25 @@ async function expectRecovery(driver: Driver): Promise<void> {
     await driver.close();
     await driver.openImage(good);
     await expect.poll(() => driver.listPartitionIndices(), { timeout: 90_000 }).toEqual([0]);
+    // The next image must really work, with no leftover error banner.
+    await driver.enterPartition(0);
+    const names = (await driver.listRows()).map((r) => r.name);
+    expect(names).toEqual(expect.arrayContaining(['hello.txt', 'subdir']));
+    expect(await driver.hasDirError()).toBe(false);
 }
 
 test('corrupt image that cannot mount: clean error, session stays healthy', async ({ driver }) => {
     await driver.openImage(robustnessCase(ERROR_CASE));
     expect(await driver.listPartitionIndices()).toEqual([0]);
-    // enterPartition waits for a file list that never comes; don't await it.
-    void driver.enterPartition(0).catch(() => {});
-    await driver.expectError('mount-failed');
+    // Race entering against the error surface; a file list here would be a bug.
+    let entered = false;
+    await Promise.race([
+        driver.enterPartition(0).then(() => {
+            entered = true;
+        }),
+        driver.expectError('mount-failed'),
+    ]);
+    expect(entered).toBe(false);
     expect(await driver.status()).toBe('ready');
     await expectRecovery(driver);
 });
@@ -48,5 +59,9 @@ test('image that mounts but fails on read: error shown, session stays healthy', 
     await driver.navigateInto('docs');
     await driver.expectError('read-failed');
     expect(await driver.status()).toBe('ready');
+    // Going back up lists the root again and clears the banner.
+    await driver.navigateUp();
+    await expect.poll(async () => (await driver.listRows()).map((r) => r.name)).toContain('docs');
+    expect(await driver.hasDirError()).toBe(false);
     await expectRecovery(driver);
 });

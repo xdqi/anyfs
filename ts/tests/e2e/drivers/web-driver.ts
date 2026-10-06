@@ -85,6 +85,14 @@ export class WebDriver implements Driver {
         return dom.navigateInto(this.page, name);
     }
 
+    async hasDirError(): Promise<boolean> {
+        return dom.hasDirError(this.page);
+    }
+
+    async navigateUp(): Promise<void> {
+        return dom.navigateUp(this.page);
+    }
+
     async propertiesOf(name: string): Promise<PropsInfo> {
         return dom.propertiesOf(this.page, name);
     }

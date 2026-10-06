@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, act } from '@testing-library/react';
 import React from 'react';
 
 const fakeSession = () => ({
@@ -39,6 +39,11 @@ function Status() {
             {error ? `:${error.message}` : ''}
         </div>
     );
+}
+
+function SessionProbe() {
+    const { session } = useAnyfsDisk();
+    return <div data-testid="session">{session ? 'session' : 'none'}</div>;
 }
 
 beforeEach(() => {
@@ -142,5 +147,60 @@ describe('AnyfsProvider', () => {
                 expect.objectContaining({ opTimeoutMs: 5000 }),
             ),
         );
+    });
+
+    it('onFatal after attach → error state, session dropped, close called', async () => {
+        const s = fakeSession();
+        let fatal!: (e: Error) => void;
+        s.onFatal = vi.fn((cb: (e: Error) => void) => {
+            fatal = cb;
+            return () => {};
+        });
+        prewarmMock.mockResolvedValue(s);
+        const blob = new Blob([new Uint8Array(16)]);
+        render(
+            <AnyfsProvider source={{ kind: 'blob', blob }} workerUrl="/w.js">
+                <Status />
+                <SessionProbe />
+            </AnyfsProvider>,
+        );
+        await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('ready'));
+        expect(screen.getByTestId('session').textContent).toBe('session');
+        const closesBefore = s.close.mock.calls.length;
+        act(() => fatal(new Error('engine wedged')));
+        await waitFor(() =>
+            expect(screen.getByTestId('status').textContent).toBe('error:engine wedged'),
+        );
+        expect(screen.getByTestId('session').textContent).toBe('none');
+        expect(s.close.mock.calls.length).toBeGreaterThan(closesBefore);
+    });
+
+    it('onFatal from a superseded session is ignored', async () => {
+        const a = fakeSession();
+        const b = fakeSession();
+        let fatalA!: (e: Error) => void;
+        a.onFatal = vi.fn((cb: (e: Error) => void) => {
+            fatalA = cb;
+            return () => {};
+        });
+        prewarmMock.mockResolvedValueOnce(a).mockResolvedValueOnce(b);
+        const blob1 = new Blob([new Uint8Array(16)]);
+        const blob2 = new Blob([new Uint8Array(32)]);
+        const { rerender } = render(
+            <AnyfsProvider source={{ kind: 'blob', blob: blob1 }} workerUrl="/w.js">
+                <Status />
+            </AnyfsProvider>,
+        );
+        await waitFor(() => expect(a.attachBlob).toHaveBeenCalled());
+        await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('ready'));
+        rerender(
+            <AnyfsProvider source={{ kind: 'blob', blob: blob2 }} workerUrl="/w.js">
+                <Status />
+            </AnyfsProvider>,
+        );
+        await waitFor(() => expect(b.attachBlob).toHaveBeenCalledWith(blob2));
+        await waitFor(() => expect(screen.getByTestId('status').textContent).toBe('ready'));
+        act(() => fatalA(new Error('stale boom')));
+        expect(screen.getByTestId('status').textContent).toBe('ready');
     });
 });

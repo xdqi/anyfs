@@ -167,6 +167,16 @@ export async function navigateInto(page: Page, name: string): Promise<void> {
     await row.dblclick();
 }
 
+/** Whether the file browser's read-error banner is showing. */
+export async function hasDirError(page: Page): Promise<boolean> {
+    return (await page.locator('[data-testid="dir-error"]').count()) > 0;
+}
+
+/** Go up one directory via Chonky's toolbar button. */
+export async function navigateUp(page: Page): Promise<void> {
+    await page.getByTitle('Go up a directory').click();
+}
+
 export async function propertiesOf(page: Page, name: string): Promise<PropsInfo> {
     // Select the row first (the Properties action is requiresSelection),
     // then right-click to open Chonky's MUI context menu, then click the
@@ -194,30 +204,39 @@ export async function propertiesOf(page: Page, name: string): Promise<PropsInfo>
     return { sizeText, kind };
 }
 
-export async function expectError(page: Page, _kind: ErrorKind): Promise<void> {
-    // The app surfaces failures in two places:
+export async function expectError(page: Page, kind: ErrorKind): Promise<void> {
+    // The app surfaces failures in several places:
     //   - URL/open failures pop the UrlErrorDialog (data-testid url-error-dialog)
-    //   - mount/boot failures render inline in DiskView ("Error: …" or
+    //   - mount/boot failures render inline in DiskView ("Error: ..." or
     //     "Can't mount partition #N"), and getState().status becomes 'error'.
     //   - a failed directory read renders inline in the file browser
     //     (data-testid dir-error)
-    // Resolve when ANY of these is observed. We don't assert the specific
-    // kind here — that's the test's job; the driver just waits for the
-    // error surface to appear.
-    await Promise.race([
-        page
-            .locator('[data-testid="url-error-dialog"]')
-            .waitFor({ state: 'visible', timeout: 120_000 }),
-        page.waitForFunction(
-            () => (window as any).__anyfsTest?.getState().status === 'error',
-            null,
-            { timeout: 120_000 },
-        ),
+    // read-failed and mount-failed wait on their own surface only; the other
+    // kinds resolve when ANY surface is observed.
+    const T = { timeout: 120_000 };
+    const dirError = () =>
+        page.locator('[data-testid="dir-error"]').waitFor({ state: 'visible', ...T });
+    const mountText = () =>
         page
             .getByText(/Can.t mount partition #/i)
             .first()
-            .waitFor({ state: 'visible', timeout: 120_000 }),
-        page.locator('[data-testid="dir-error"]').waitFor({ state: 'visible', timeout: 120_000 }),
+            .waitFor({ state: 'visible', ...T });
+    const statusError = () =>
+        page.waitForFunction(
+            () => (window as any).__anyfsTest?.getState().status === 'error',
+            null,
+            T,
+        );
+    if (kind === 'read-failed') return dirError();
+    if (kind === 'mount-failed') {
+        await Promise.race([mountText(), statusError()]);
+        return;
+    }
+    await Promise.race([
+        page.locator('[data-testid="url-error-dialog"]').waitFor({ state: 'visible', ...T }),
+        statusError(),
+        mountText(),
+        dirError(),
     ]);
 }
 

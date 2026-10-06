@@ -77,6 +77,9 @@ export function App() {
     const prevSourceRef = useRef(source);
     if (prevSourceRef.current !== source) {
         prevSourceRef.current = source;
+        // The in-disk "#/<path>" hash belongs to the previous disk. Cleared here, before
+        // the new DiskView mounts and seeds its path from it (idempotent, so safe in render).
+        clearNavHash();
         if (selectedPart !== null) setSelectedPart(null);
     }
 

@@ -237,7 +237,8 @@ export function AnyfsFileBrowser({
                 if (navGen.current !== myGen) return;
                 // eslint-disable-next-line no-console
                 console.warn(`[anyfs/trees] readdir(${abs}) failed:`, err);
-                setDirError(err instanceof Error ? err.message : String(err));
+                // WasmSession appends the worker stack after a newline; show only the message line.
+                setDirError((err instanceof Error ? err.message : String(err)).split('\n', 1)[0]!);
                 setFiles([]);
                 return;
             }
