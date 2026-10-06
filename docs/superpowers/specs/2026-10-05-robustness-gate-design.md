@@ -1,7 +1,7 @@
 # Robustness gate design: corrupt images must never hang or crash the sandbox
 
 **Date:** 2026-10-05
-**Status:** approved (components, outcome rules, watchdog, mount hardening, local-only scope)
+**Status:** implemented (plan: `docs/superpowers/plans/2026-10-06-robustness-gate.md`); see "Amendments during implementation" at the end
 **Scope:** `ts/tests/robustness/` (new), `ts/packages/core/src/{session-base,wasm-session,native-session,node-wasm-session}.ts`,
 `src/core/anyfs_mount.c`, a few E2E specs
 
@@ -193,3 +193,23 @@ exit status is non-zero when the wasm gate fails.
 4. Hardened mount options keep every supported base filesystem mountable. A syzbot ext4 image
    whose superblock requests `errors=panic` no longer panics LKL.
 5. The robustness E2E cases pass on web and electron-wasm, including recovery to a good image.
+
+## Amendments during implementation (2026-10-06)
+
+1. Watchdog: `AnyfsSessionBase.guard(op, run)` takes a thunk. WasmSession and NativeSession share a
+   base `serialize()` queue, so an op's timer starts when it reaches the engine, not when it is
+   queued. In-flight ops reject on any fatal.
+2. A dead native engine is latched per bridge, so retries fail fast with `EngineFatalError`. The UI
+   hint tells the user to turn on "Disable native module" or restart the app.
+3. Read-write mounts get `errors=remount-ro`, not `errors=continue`. Read-only mounts use
+   `errors=continue`.
+4. Corpus size: 78 generated cases plus 22 syzbot images = 100, with an extra `errors=panic` ext4
+   base (`ext4panic`).
+5. Acceptance 4: none of the 229 ext4 syzbot bugs has a superblock with `errors=panic`, so the
+   generated `ext4panic-zero-docs-inode` case meets the criterion. Before hardening it was fatal on
+   wasm and a crash on native.
+6. E2E: there is no fatal case, so two cases instead of three (mount failure, read failure), each
+   followed by recovery into a good image. They also run on electron-native. The fatal path is
+   covered by the Node harness and the core/react unit tests.
+7. Harness additions: `failedStep` in each record, `expect` checks on unmutated bases, a build
+   fingerprint (`build.engine`) with class-flip reporting, and `--loglevel`.
