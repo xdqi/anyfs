@@ -14,11 +14,17 @@ export async function walkAndRead(
     { stopped = () => false, onStep = () => {}, limits = LIMITS } = {},
 ) {
     const errors = [];
+    let phase = 'walk';
     const attempt = async (op, path, fn) => {
         try {
             return await fn();
         } catch (e) {
-            errors.push({ op, path, message: e instanceof Error ? e.message : String(e) });
+            errors.push({
+                op,
+                path,
+                message: e instanceof Error ? e.message : String(e),
+                step: phase,
+            });
             return undefined;
         }
     };
@@ -33,6 +39,15 @@ export async function walkAndRead(
         if (!list) continue;
         for (const e of list) {
             if (e.name === '.' || e.name === '..') continue;
+            if (!e.name || e.name.includes('/')) {
+                errors.push({
+                    op: 'readdir',
+                    path,
+                    message: `bad entry name ${JSON.stringify(e.name)}`,
+                    step: phase,
+                });
+                continue;
+            }
             if (entries >= limits.entries || stopped()) break;
             entries++;
             const child = path.endsWith('/') ? `${path}${e.name}` : `${path}/${e.name}`;
@@ -45,6 +60,7 @@ export async function walkAndRead(
         }
     }
 
+    phase = 'read';
     onStep('read');
     let bytes = 0;
     for (const f of files) {

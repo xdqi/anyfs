@@ -1,20 +1,28 @@
 #!/usr/bin/env node
 /**
  * Robustness gate: no corrupt image may hang or crash the wasm sandbox.
- *   node ts/tests/robustness/run.mjs --backend wasm|native [--only <glob>[,…]] [--jobs N]
+ *   node ts/tests/robustness/run.mjs --backend wasm|native [--only <glob>[,…]] [--jobs N] [--loglevel N]
  * Generates the corpus (a no-op when current), fetches the syzbot set, runs every case in
  * its own case-runner.mjs process, writes
  * ~/.cache/anyfs-robustness/report-<backend>[-partial].json and prints a
  * summary. Exit: 1 when the wasm gate fails; 2 when setup failed or the
  * harness is broken (a case failed before touching its image).
  */
+import { createHash } from 'node:crypto';
 import { fork, spawnSync } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+    createWriteStream,
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    renameSync,
+    writeFileSync,
+} from 'node:fs';
 import { availableParallelism } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { fetchSyzbot } from './fetch-syzbot.mjs';
-import { finalClass, gate, harnessFailures } from './lib/classify.mjs';
+import { caseRecord, gate, harnessFailures } from './lib/classify.mjs';
 import { matcher } from './lib/glob.mjs';
 import {
     CASES_JSON,
@@ -41,6 +49,7 @@ const { values: opts } = parseArgs({
     options: {
         backend: { type: 'string' },
         only: { type: 'string' },
+        loglevel: { type: 'string', default: '4' },
         jobs: {
             type: 'string',
             default: String(Math.max(1, Math.min(4, availableParallelism() >> 1))),
@@ -53,6 +62,8 @@ if (backend !== 'wasm' && backend !== 'native') {
 }
 const jobs = Number.parseInt(opts.jobs, 10);
 if (!(jobs >= 1)) die(`--jobs: expected a positive integer, got ${opts.jobs}`);
+const loglevel = Number.parseInt(opts.loglevel, 10);
+if (!(loglevel >= 0)) die(`--loglevel: expected a non-negative integer, got ${opts.loglevel}`);
 const only = opts.only ? matcher(opts.only) : null;
 
 const need = [[join(CORE_DIST, 'index.js'), 'pnpm -C ts -F @anyfs/core build']];
@@ -89,19 +100,42 @@ function runCase(c) {
         const t0 = Date.now();
         const logFile = join(LOG_DIR, backend, `${c.name}.log`);
         const log = createWriteStream(logFile);
-        const child = fork(
-            join(ROBUSTNESS_DIR, 'case-runner.mjs'),
-            ['--backend', backend, '--image', c.file],
-            { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] },
-        );
-        child.stdout.pipe(log, { end: false });
-        child.stderr.pipe(log, { end: false });
         let lastStep = 'spawn';
         let outcome = null;
         let timedOut = false;
         let killedAfterOutcome = false;
         let grace = null;
-        const timer = setTimeout(() => {
+        let timer = null;
+        let settled = false;
+        const finish = (code, signal, spawnError) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            clearTimeout(grace);
+            log.end();
+            const rec = caseRecord(
+                c,
+                { outcome, timedOut, lastStep, code, signal, killedAfterOutcome },
+                backend,
+            );
+            rec.durationMs = Date.now() - t0;
+            rec.log = logFile;
+            if (spawnError) rec.reason = `spawn failed: ${spawnError.message}`;
+            resolve(rec);
+        };
+        log.on('error', () => {}); // a lost log must not kill the run
+        const child = fork(
+            join(ROBUSTNESS_DIR, 'case-runner.mjs'),
+            ['--backend', backend, '--image', c.file, '--loglevel', String(loglevel)],
+            { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] },
+        );
+        child.on('error', (e) => {
+            child.kill('SIGKILL');
+            finish(null, null, e);
+        });
+        child.stdout?.pipe(log, { end: false });
+        child.stderr?.pipe(log, { end: false });
+        timer = setTimeout(() => {
             timedOut = true;
             child.kill('SIGKILL');
         }, CASE_TIMEOUT_MS);
@@ -117,31 +151,7 @@ function runCase(c) {
                 }, EXIT_GRACE_MS);
             }
         });
-        child.on('close', (code, signal) => {
-            clearTimeout(timer);
-            clearTimeout(grace);
-            log.end();
-            resolve({
-                name: c.name,
-                source: c.source,
-                fs: c.fs,
-                mutation: c.mutation,
-                sha256: c.sha256,
-                backend,
-                class: finalClass({ outcome, timedOut }),
-                lastStep: outcome?.lastStep ?? lastStep,
-                durationMs: Date.now() - t0,
-                reason:
-                    outcome?.reason ??
-                    (timedOut
-                        ? `no outcome within ${CASE_TIMEOUT_MS / 1000}s`
-                        : `exited without an outcome (code ${code}, signal ${signal})`),
-                errors: outcome?.errors ?? [],
-                stats: outcome?.stats ?? null,
-                exit: { code, signal, killedAfterOutcome },
-                log: logFile,
-            });
-        });
+        child.on('close', (code, signal) => finish(code, signal));
     });
 }
 
@@ -169,15 +179,30 @@ const records = await pool(cases, jobs, async (c) => {
 });
 
 const full = reportPath(backend);
-const prev = existsSync(full) ? JSON.parse(readFileSync(full, 'utf-8')) : null;
-const flips = diffRuns(prev, records);
+let prev = null;
+try {
+    prev = JSON.parse(readFileSync(full, 'utf-8'));
+} catch {
+    prev = null; // missing or corrupt: nothing to compare with
+}
+const sh = (cmd, a) =>
+    spawnSync(cmd, a, { encoding: 'utf-8', cwd: ROBUSTNESS_DIR }).stdout?.trim() || null;
+const build = {
+    head: sh('git', ['rev-parse', '--short', 'HEAD']),
+    bundle: createHash('sha256')
+        .update(readFileSync(backend === 'wasm' ? WASM_NODE_BUNDLE : NATIVE_ADDON))
+        .digest('hex')
+        .slice(0, 16),
+};
+const flips = diffRuns(prev, records, build);
 const verdict = gate(records, backend);
 const broken = harnessFailures(records);
 const out = reportPath(backend, only !== null);
 writeFileSync(
-    out,
-    `${JSON.stringify({ backend, finishedAt: new Date().toISOString(), partial: only !== null, records }, null, 4)}\n`,
+    `${out}.tmp`,
+    `${JSON.stringify({ backend, build, finishedAt: new Date().toISOString(), partial: only !== null, records }, null, 4)}\n`,
 );
+renameSync(`${out}.tmp`, out);
 console.log(formatSummary({ backend, records, verdict, flips, partial: only !== null }));
 console.log(`\nreport: ${out}\nlogs:   ${join(LOG_DIR, backend)}`);
 if (broken.length > 0) {

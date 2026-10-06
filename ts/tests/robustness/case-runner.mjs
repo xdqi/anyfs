@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 /**
  * Runs one robustness case in a fresh process (run.mjs forks one per case):
- *   node case-runner.mjs --backend wasm|native --image <path>
+ *   node case-runner.mjs --backend wasm|native --image <path> [--loglevel N]
  * Steps: boot, open, listParts, then per partition enter / walk / read, then
  * close. Sends {type:'step', step} as it goes and ends with exactly one
- * {type:'outcome', class, lastStep, reason, errors, stats}; run.mjs turns a
+ * {type:'outcome', class, lastStep, failedStep, reason, errors, stats}
+ * (failedStep: where the first error happened, e.g. enter:0, walk:1, read:0;
+ * a fatal's is its lastStep. A fatal outcome carries stats and errors only
+ * from before the partition walk that went fatal); run.mjs turns a
  * missing outcome into hang (timed out) or crash (died). Without an IPC
  * channel the messages go to stdout as JSON lines, for debugging one case.
  */
@@ -29,13 +32,18 @@ const ANYFS_MOUNT_RDONLY = 1;
 const CONTAINER_KINDS = new Set(['NESTED', 'LVM_PV', 'LUKS']);
 
 const { values: args } = parseArgs({
-    options: { backend: { type: 'string' }, image: { type: 'string' } },
+    options: {
+        backend: { type: 'string' },
+        image: { type: 'string' },
+        loglevel: { type: 'string', default: '4' },
+    },
 });
 if (!['wasm', 'native'].includes(args.backend) || !args.image) {
     console.error('usage: case-runner.mjs --backend wasm|native --image <path>');
     process.exit(2);
 }
 
+const LOGLEVEL = Number.parseInt(args.loglevel, 10);
 const errors = [];
 const stats = { parts: 0, entries: 0, files: 0, bytes: 0 };
 let lastStep = 'start';
@@ -56,14 +64,19 @@ function step(name) {
 async function report(cls, reason) {
     if (reported) return;
     reported = true;
+    const failedStep = cls === 'fatal' ? lastStep : (errors[0]?.step ?? null);
     await emit({
         type: 'outcome',
         class: cls,
         lastStep,
+        failedStep,
         reason,
         errors: errors.slice(0, 20),
         stats,
     });
+    // A piped child loses unflushed output on exit; the kernel log matters.
+    await new Promise((r) => process.stdout.write('', r));
+    await new Promise((r) => process.stderr.write('', r));
     process.exit(0);
 }
 
@@ -108,7 +121,7 @@ async function open() {
         const M = await within(
             BOOT_TIMEOUT_MS,
             'boot',
-            bootNodeKernel(dirname(args.image), factory),
+            bootNodeKernel(dirname(args.image), factory, { loglevel: LOGLEVEL }),
         );
         session = new NodeWasmSession(M, { opTimeoutMs: OP_TIMEOUT_MS, readOnly: true });
         session.onFatal(onFatal);
@@ -121,7 +134,7 @@ async function open() {
     } else {
         session = new NativeSession(nativeBridge(), { opTimeoutMs: OP_TIMEOUT_MS });
         session.onFatal(onFatal);
-        await within(BOOT_TIMEOUT_MS, 'boot', session.boot(256, 0));
+        await within(BOOT_TIMEOUT_MS, 'boot', session.boot(256, LOGLEVEL));
         step('open');
         await within(ATTACH_TIMEOUT_MS, 'attach', session.attachPath(args.image));
     }
@@ -142,7 +155,12 @@ async function main() {
         try {
             mountPoint = await session.enter(idx, ANYFS_MOUNT_RDONLY);
         } catch (e) {
-            errors.push({ op: 'enter', path: `#${idx}`, message: message(e) });
+            errors.push({
+                op: 'enter',
+                path: `#${idx}`,
+                message: message(e),
+                step: `enter:${idx}`,
+            });
             continue;
         }
         stats.parts++;
@@ -153,7 +171,7 @@ async function main() {
         stats.entries += r.entries;
         stats.files += r.files;
         stats.bytes += r.bytes;
-        errors.push(...r.errors);
+        errors.push(...r.errors.map((e) => ({ ...e, step: `${e.step}:${idx}` })));
     }
     if (fatal) return;
     step('close');
@@ -177,7 +195,12 @@ main().then(
             onFatal(e);
             return;
         }
-        errors.push({ op: lastStep, path: args.image, message: message(e) });
+        // A trap on the module-owning thread bricks the module: a fatal.
+        if (args.backend === 'wasm' && e instanceof WebAssembly.RuntimeError) {
+            onFatal(e);
+            return;
+        }
+        errors.push({ op: lastStep, path: args.image, message: message(e), step: lastStep });
         void report('error', `${lastStep}: ${message(e)}`);
     },
 );

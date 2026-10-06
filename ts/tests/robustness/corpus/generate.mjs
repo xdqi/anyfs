@@ -52,6 +52,34 @@ function writeCase(file, buf) {
     chmodSync(file, 0o444);
 }
 
+/**
+ * What a walk of each unmutated base must see (a base the harness lists as
+ * empty has silently stopped testing anything). Counts come from the tree in
+ * bases.mjs: ext* and qcow2/vmdk have lost+found (11 entries), vfat has none
+ * (9), btrfs/xfs/iso9660/squashfs have none (10). gpt/mbr/mbrext hold the
+ * ext4 and vfat bases in two partitions (11 + 9). exfat, f2fs and ntfs are
+ * formatted empty, so only their mount is checked.
+ */
+const TREE = { files: 5, bytes: 71730 };
+const BASE_EXPECT = {
+    ext4: { parts: 1, entries: 11, ...TREE },
+    ext4panic: { parts: 1, entries: 11, ...TREE },
+    ext2: { parts: 1, entries: 11, ...TREE },
+    vfat: { parts: 1, entries: 9, ...TREE },
+    exfat: { parts: 1, entries: 0 },
+    f2fs: { parts: 1, entries: 0 },
+    ntfs: { parts: 1, entries: 0 },
+    btrfs: { parts: 1, entries: 10, ...TREE },
+    xfs: { parts: 1, entries: 10, ...TREE },
+    iso9660: { parts: 1, entries: 10, ...TREE },
+    squashfs: { parts: 1, entries: 10, ...TREE },
+    qcow2: { parts: 1, entries: 11, ...TREE },
+    vmdk: { parts: 1, entries: 11, ...TREE },
+    gpt: { parts: 2, entries: 20, files: 10, bytes: 143460 },
+    mbr: { parts: 2, entries: 20, files: 10, bytes: 143460 },
+    mbrext: { parts: 2, entries: 20, files: 10, bytes: 143460 },
+};
+
 /** sha256 over corpus/*.mjs (by name) and the sorted case names: a changed
  *  builder or mutation list invalidates a generated corpus. */
 function fingerprint() {
@@ -108,6 +136,7 @@ function main() {
             mutation,
             file,
             sha256: sha256(buf),
+            ...(mutation === 'none' ? { expect: BASE_EXPECT[base] } : {}),
         });
     };
     for (const base of Object.keys(BASES)) emit(`${base}-base`, base, 'none', bufs[base]);
