@@ -74,7 +74,7 @@ export async function prewarm(opts: BrowserMountOpts): Promise<WasmSession> {
         worker.terminate();
         throw err;
     }
-    const session = new WasmSession(worker);
+    const session = new WasmSession(worker, { opTimeoutMs: opts.opTimeoutMs });
     try {
         // eslint-disable-next-line no-console
         console.log('[PREWARM] calling boot...');

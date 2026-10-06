@@ -57,6 +57,11 @@ export interface SessionOpts {
      *  surfaces an error instead of spinning forever (e.g. a slow/half-open URL
      *  with no Range support). Default 120000. Set 0 to disable. */
     attachTimeoutMs?: number;
+    /** Watchdog (ms) for every engine op after attach — enter, listParts,
+     *  readdir, stat, reads… An op that doesn't finish in time rejects and the
+     *  session fires onFatal, so a wedged filesystem driver can't spin the UI
+     *  forever. Default 60000. Set 0 to disable. */
+    opTimeoutMs?: number;
 }
 
 /** C: AnyfsSessionMeta */

@@ -1,5 +1,5 @@
 import type { DirEntry, LklFd, SessionMeta, SessionPartInfo, Stat } from './types.js';
-import { AnyfsSessionBase } from './session-base.js';
+import { AnyfsSessionBase, type SessionBaseOpts } from './session-base.js';
 
 type Pending = { res: (v: unknown) => void; rej: (e: Error) => void };
 
@@ -14,8 +14,8 @@ export class WasmSession extends AnyfsSessionBase {
     private workerError: Error | null = null;
 
     /** @internal — use mountFile() or prewarm() in index.ts. */
-    constructor(worker: Worker) {
-        super();
+    constructor(worker: Worker, opts: SessionBaseOpts = {}) {
+        super(opts);
         this.worker = worker;
         this.worker.addEventListener('message', this.onMessage);
         this.worker.addEventListener('error', this.onError);
@@ -129,6 +129,20 @@ export class WasmSession extends AnyfsSessionBase {
         return this.call<T>(op, args);
     }
 
+    // The worker runs ops one at a time (worker.ts opChain). Queue engine ops
+    // here too, so an op's watchdog starts when the worker gets to it, not
+    // while it waits behind a slow one.
+    private opChain: Promise<unknown> = Promise.resolve();
+
+    /** An engine op: queued, then a worker call under the base watchdog.
+     *  Attach and boot use call() directly — the provider's attach timeout
+     *  bounds those. */
+    private op<T>(op: string, args: unknown = {}): Promise<T> {
+        const next = this.opChain.then(() => this.guard(op, () => this.call<T>(op, args)));
+        this.opChain = next.catch(() => undefined);
+        return next;
+    }
+
     // ── Attach ─────────────────────────────────────────
 
     async attachBlob(blob: Blob): Promise<void> {
@@ -158,41 +172,41 @@ export class WasmSession extends AnyfsSessionBase {
     // ── Partition / mount ──────────────────────────────
 
     async enter(part: number, flags = 0): Promise<string> {
-        return this.call<string>('enter', { part, flags });
+        return this.op<string>('enter', { part, flags });
     }
 
     async listParts(): Promise<SessionPartInfo[]> {
-        return this.call<SessionPartInfo[]>('listParts');
+        return this.op<SessionPartInfo[]>('listParts');
     }
 
     async meta(): Promise<SessionMeta> {
-        return this.call<SessionMeta>('meta');
+        return this.op<SessionMeta>('meta');
     }
 
     // ── Filesystem ops ─────────────────────────────────
 
     async readdir(path: string): Promise<DirEntry[]> {
-        return this.call<DirEntry[]>('readdir', { path });
+        return this.op<DirEntry[]>('readdir', { path });
     }
 
     async stat(path: string): Promise<Stat> {
-        return this.call<Stat>('stat', { path });
+        return this.op<Stat>('stat', { path });
     }
 
     async statFollow(path: string): Promise<Stat> {
-        return this.call<Stat>('statFollow', { path });
+        return this.op<Stat>('statFollow', { path });
     }
 
     async readlink(path: string): Promise<string> {
-        return this.call<string>('readlink', { path });
+        return this.op<string>('readlink', { path });
     }
 
     async realpath(path: string): Promise<string> {
-        return this.call<string>('realpath', { path });
+        return this.op<string>('realpath', { path });
     }
 
     async readKernelFile(path: string, _maxBytes?: number): Promise<string> {
-        return this.call<string>('readKernelFile', { path });
+        return this.op<string>('readKernelFile', { path });
     }
 
     onProgress(cb: (step: string) => void): () => void {
@@ -208,17 +222,17 @@ export class WasmSession extends AnyfsSessionBase {
 
     /** @internal */
     protected async _openFdRaw(path: string): Promise<LklFd> {
-        return this.call<number>('open', { path });
+        return this.op<number>('open', { path });
     }
 
     /** @internal */
     protected async _readFdRaw(fd: LklFd, offset: number, length: number): Promise<Uint8Array> {
-        return this.call<Uint8Array>('read', { fd, offset, length });
+        return this.op<Uint8Array>('read', { fd, offset, length });
     }
 
     /** @internal */
     protected async _closeFdRaw(fd: LklFd): Promise<void> {
-        await this.call<number>('close', { fd });
+        await this.op<number>('close', { fd });
     }
 
     /** @internal */
