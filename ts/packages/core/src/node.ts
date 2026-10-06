@@ -45,8 +45,12 @@ export async function mountNodeFile(
     opts: NodeMountOpts = {},
 ) {
     const { default: path } = await import('node:path');
-    const M = await bootNodeKernel(path.dirname(hostPath), factory, opts);
-    return openNodeSession(M, `/work/${path.basename(hostPath)}`, {
+    // NODEFS exposes a symlink as-is and emscripten resolves its target
+    // inside the wasm FS, where it doesn't exist: mount the real directory.
+    const { realpath } = await import('node:fs/promises');
+    const real = await realpath(hostPath);
+    const M = await bootNodeKernel(path.dirname(real), factory, opts);
+    return openNodeSession(M, `/work/${path.basename(real)}`, {
         opTimeoutMs: opts.opTimeoutMs,
         readOnly: opts.readOnly,
     });
