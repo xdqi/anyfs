@@ -840,9 +840,14 @@ switch-while-inside-a-partition returns to the new disk's picker. Green on **web
   stack / topmost-only handler.
 - **F16-08 (MEDIUM, gui)** — the "Disable native" nested confirm has no Escape handler; Escape closes
   the parent Settings dialog and discards the pending toggle (`Settings.tsx:247`).
-- **F16-09 (MEDIUM, gui)** — ConfirmDialog binds Enter on `window` → any Enter confirms a destructive
-  action (`ConfirmDialog.tsx:17`). Fix: scope Enter to the dialog / autofocus Cancel for destructive
-  confirms.
+- **F16-09 (MEDIUM, gui) — ✅ FIXED 2026-10-06** — ConfirmDialog bound Enter on `window`, so Enter
+  confirmed whichever button had focus: tabbing to Cancel and pressing Enter ran `onConfirm` (window
+  listener) and then `onCancel` (the button's click). The window handler was also what made Enter
+  work at all: Chonky binds Enter on `document` through hotkeys-js and calls `preventDefault`, which
+  cancels a focused button's activation anywhere on the page while a file list is mounted. Fix: no
+  Enter on `window`; the dialog stops Enter from propagating, so Chonky never sees it and the
+  focused button (the confirm button by autoFocus) activates natively. Test:
+  `flows/confirm-dialog.spec.ts` (web).
 - **F16-12 (MEDIUM, gui)** — cancelling the URL dialog mid-probe still opens the disk after the slow
   probe resolves (`components/UrlPromptDialog.tsx:31`). Fix: a cancelled/AbortController guard.
 - **F16-13 (MEDIUM, gui)** — a URL is probed three times in wasm mode (dialog + `onSubmitUrl` +

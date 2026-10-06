@@ -16,11 +16,10 @@ export function ConfirmDialog({
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             if (e.key === 'Escape') onCancel();
-            else if (e.key === 'Enter') onConfirm();
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [onCancel, onConfirm]);
+    }, [onCancel]);
     return (
         <div
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
@@ -29,6 +28,14 @@ export function ConfirmDialog({
             <div
                 className="bg-white border border-zinc-300 dark:bg-zinc-900 dark:border-zinc-700 rounded-lg w-full max-w-md mx-4 shadow-xl"
                 onClick={(e) => e.stopPropagation()}
+                // Enter activates the focused button (the confirm button has
+                // autoFocus). Chonky binds Enter on document and calls
+                // preventDefault, which would cancel that activation, so the
+                // key must not leave the dialog. (A window-wide Enter handler
+                // confirmed even when the user had tabbed to Cancel.)
+                onKeyDown={(e) => {
+                    if (e.key === 'Enter') e.stopPropagation();
+                }}
                 role="alertdialog"
                 aria-modal="true"
             >
