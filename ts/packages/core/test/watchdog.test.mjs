@@ -19,6 +19,9 @@ class GuardedSession extends AnyfsSessionBase {
             return (this.impl[op] ?? never)(...args);
         });
     }
+    kill(err) {
+        this.fireFatal(err);
+    }
     async attachBlob() {}
     async attachUrl() {}
     async attachPath() {}
@@ -118,19 +121,80 @@ test('ordinary errors pass through and are not fatal', { timeout: 5000 }, async 
     let fatal = null;
     s.onFatal((e) => (fatal = e));
     await assert.rejects(s.enter(1), /rc=-22/);
+    await new Promise((r) => setTimeout(r, 250));
     assert.equal(fatal, null);
 });
 
-test('opTimeoutMs 0 disables the watchdog', { timeout: 5000 }, async () => {
-    const s = new GuardedSession({ opTimeoutMs: 0 });
-    const r = await Promise.race([
+const flush = async () => {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+};
+
+for (const [label, opTimeoutMs, ticks] of [
+    ['0', 0, DEFAULT_OP_TIMEOUT_MS + 1],
+    ['Infinity', Infinity, DEFAULT_OP_TIMEOUT_MS + 1],
+    ['2 ** 31 (capped, not clamped to 1 ms)', 2 ** 31, 1000],
+]) {
+    test(`opTimeoutMs ${label} does not fire early`, (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout'] });
+        const s = new GuardedSession({ opTimeoutMs });
+        let fatal = null;
+        let settled = false;
+        s.onFatal((e) => (fatal = e));
         s.readdir('/').then(
-            () => 'settled',
-            () => 'settled',
-        ),
-        new Promise((res) => setTimeout(() => res('pending'), 100)),
-    ]);
-    assert.equal(r, 'pending');
+            () => (settled = true),
+            () => (settled = true),
+        );
+        t.mock.timers.tick(ticks);
+        return flush().then(() => {
+            assert.equal(settled, false);
+            assert.equal(fatal, null);
+        });
+    });
+}
+
+test(
+    'a synchronous throw from the transport rejects the op and is not fatal',
+    { timeout: 5000 },
+    async () => {
+        const s = new GuardedSession(
+            { opTimeoutMs: 200 },
+            {
+                readdir: () => {
+                    throw new Error('sync boom');
+                },
+            },
+        );
+        let fatal = null;
+        s.onFatal((e) => (fatal = e));
+        await assert.rejects(s.readdir('/'), /sync boom/);
+        await new Promise((r) => setTimeout(r, 250));
+        assert.equal(fatal, null);
+    },
+);
+
+test('in-flight ops reject as soon as the session goes fatal', { timeout: 5000 }, async () => {
+    const s = new GuardedSession({ opTimeoutMs: 100 });
+    const a = s.run('a').then(
+        () => null,
+        (e) => ({ e, at: Date.now() }),
+    );
+    await new Promise((r) => setTimeout(r, 60));
+    const b = s.run('b').then(
+        () => null,
+        (e) => ({ e, at: Date.now() }),
+    );
+    const [ra, rb] = await Promise.all([a, b]);
+    assert.match(ra.e.message, /a timed out/);
+    assert.equal(rb.e, ra.e);
+    assert.ok(rb.at - ra.at < 40, `b settled ${rb.at - ra.at} ms after a`);
+});
+
+test('fireFatal rejects pending ops even with the watchdog off', { timeout: 5000 }, async () => {
+    const s = new GuardedSession({ opTimeoutMs: 0 });
+    const p = s.readdir('/');
+    const err = new Error('x');
+    s.kill(err);
+    await assert.rejects(p, (e) => e === err);
 });
 
 test('close() after a fatal skips fd cleanup so it cannot hang', { timeout: 2000 }, async () => {

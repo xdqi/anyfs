@@ -1,12 +1,14 @@
 import type { DirEntry, LklFd, SessionMeta, SessionPartInfo, Stat } from './types.js';
 import type { AnyfsSession } from './session.js';
 
-/** Default per-op watchdog (ms) — see SessionOpts.opTimeoutMs. */
+/** Default per-op watchdog (ms) — see SessionOpts.opTimeoutMs. 0, a negative
+ *  value, NaN or Infinity disables the watchdog. */
 export const DEFAULT_OP_TIMEOUT_MS = 60_000;
 
 /** Options every session constructor takes. */
 export interface SessionBaseOpts {
-    /** Per-op watchdog (ms); 0 disables it. Default DEFAULT_OP_TIMEOUT_MS. */
+    /** Per-op watchdog (ms). 0, a negative value, NaN or Infinity disables it;
+     *  values above 2^31-1 are capped. Default DEFAULT_OP_TIMEOUT_MS. */
     opTimeoutMs?: number | undefined;
 }
 
@@ -25,13 +27,17 @@ export class EngineFatalError extends Error {
 export abstract class AnyfsSessionBase implements AnyfsSession {
     protected disposed = false;
     protected readonly fds = new Set<LklFd>();
-    /** Per-op watchdog (ms); 0 = off. */
+    /** Normalized per-op watchdog (ms); 0 = off (also for negative/NaN/Infinity). */
     protected readonly opTimeoutMs: number;
     private readonly fatalCbs = new Set<(e: Error) => void>();
     private fatalErr: Error | null = null;
+    /** Reject callbacks of pending guarded ops, failed when the session goes fatal. */
+    private readonly inflight = new Set<(e: Error) => void>();
 
     constructor(opts: SessionBaseOpts = {}) {
-        this.opTimeoutMs = opts.opTimeoutMs ?? DEFAULT_OP_TIMEOUT_MS;
+        const ms = opts.opTimeoutMs ?? DEFAULT_OP_TIMEOUT_MS;
+        // setTimeout clamps delays past 2^31-1 ms to ~1 ms; Infinity means "never".
+        this.opTimeoutMs = Number.isFinite(ms) && ms > 0 ? Math.min(ms, 2 ** 31 - 1) : 0;
     }
 
     // ── Subclass contract ─────────────────────────────
@@ -197,6 +203,7 @@ export abstract class AnyfsSessionBase implements AnyfsSession {
     protected fireFatal(err: Error): void {
         if (this.fatalErr) return;
         this.fatalErr = err;
+        for (const fail of [...this.inflight]) fail(err);
         for (const cb of this.fatalCbs) {
             try {
                 cb(err);
@@ -220,34 +227,39 @@ export abstract class AnyfsSessionBase implements AnyfsSession {
     protected guard<T>(op: string, run: () => Promise<T>): Promise<T> {
         if (this.fatalErr) return Promise.reject(this.fatalErr);
         const ms = this.opTimeoutMs;
-        if (!(ms > 0)) return run();
         return new Promise<T>((resolve, reject) => {
-            const timer = setTimeout(() => {
-                const err = new EngineFatalError(
-                    `${op} timed out after ${ms / 1000}s — the engine is wedged`,
-                );
-                // Fatal first, so listeners know the session is dead before
-                // the op's caller sees the rejection.
-                this.fireFatal(err);
-                reject(err);
-            }, ms);
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const fail = (e: Error): void => {
+                if (timer !== undefined) clearTimeout(timer);
+                this.inflight.delete(fail);
+                reject(e);
+            };
+            this.inflight.add(fail);
+            if (ms > 0) {
+                timer = setTimeout(() => {
+                    const err = new EngineFatalError(
+                        `${op} timed out after ${ms / 1000}s — the engine is wedged`,
+                    );
+                    // Fatal first, so listeners know the session is dead before
+                    // the op's caller sees the rejection.
+                    this.fireFatal(err);
+                    fail(err);
+                }, ms);
+            }
             let p: Promise<T>;
             try {
-                p = run();
+                p = Promise.resolve(run());
             } catch (e) {
-                clearTimeout(timer);
-                reject(e);
+                fail(e as Error);
                 return;
             }
             p.then(
                 (v) => {
-                    clearTimeout(timer);
+                    if (timer !== undefined) clearTimeout(timer);
+                    this.inflight.delete(fail);
                     resolve(v);
                 },
-                (e: unknown) => {
-                    clearTimeout(timer);
-                    reject(e);
-                },
+                (e: unknown) => fail(e as Error),
             );
         });
     }
