@@ -48,7 +48,7 @@ jobs:
       - name: Farm disabled — TS_OAUTH_SECRET not configured
         if: ${{ env.FARM_SECRET_SET == 'false' }}
         run: echo "TS_OAUTH_SECRET is not set; skipping farm worker (build compiles locally)."
-      - uses: xdqi/sccache-dist-action@v0.0.9-rc.2
+      - uses: xdqi/sccache-dist-action@v0.0.9
         if: ${{ env.FARM_SECRET_SET == 'true' }}
         with:
           mode: worker
@@ -187,7 +187,7 @@ jobs:
         id: farm
         if: ${{ github.event_name != 'pull_request' && env.FARM_SECRET_SET == 'true' }}
         continue-on-error: true
-        uses: xdqi/sccache-dist-action@v0.0.9-rc.2
+        uses: xdqi/sccache-dist-action@v0.0.9
         with:
           mode: coordinator
           expected-workers: 2
