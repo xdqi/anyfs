@@ -435,8 +435,10 @@ if host_machine.system() != 'windows'
     # Build-script helper: CC launcher for mingw LKL builds through sccache.
     test('lkl_mingw_cc', find_program('tests/test_lkl_mingw_cc.sh'), suite: 'unit')
     # Build-script gates for the zig/glibc-floor toolchain (skip without zig).
-    test('check_linux_abi', find_program('tests/test_check_linux_abi.sh'), suite: 'unit')
-    test('zig_cc', find_program('tests/test_zig_cc.sh'), suite: 'unit')
+    # On a cold zig cache they first build compiler_rt, glibc stubs and (for
+    # zig_cc) libc++: 18 s and 35 s on 4 cores, past meson's 30 s default.
+    test('check_linux_abi', find_program('tests/test_check_linux_abi.sh'), suite: 'unit', timeout: 300)
+    test('zig_cc', find_program('tests/test_zig_cc.sh'), suite: 'unit', timeout: 300)
     test('lkl_linux_cc', find_program('tests/test_lkl_linux_cc.sh'), suite: 'unit')
 
     if enable_qemu
