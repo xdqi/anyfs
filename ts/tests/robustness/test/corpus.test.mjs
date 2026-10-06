@@ -4,9 +4,18 @@ import { crc32c, crc32cRaw } from '../corpus/checksum.mjs';
 import { randInt, rng } from '../corpus/rng.mjs';
 import { join } from 'node:path';
 import { BASES, TOOLS, buildAllBases } from '../corpus/bases.mjs';
-import { fixBtrfsSbCsum, fixExt4SbCsum, fixGptCrcs, fixXfsSbCrc } from '../corpus/mutations.mjs';
 import { requireTools } from '../corpus/tools.mjs';
 import { SCRATCH_DIR } from '../lib/paths.mjs';
+import { createHash } from 'node:crypto';
+import {
+    fixBtrfsSbCsum,
+    fixExt4SbCsum,
+    fixGptCrcs,
+    fixXfsSbCrc,
+    flip,
+    mutationCases,
+    truncate,
+} from '../corpus/mutations.mjs';
 
 test('crc32c matches the standard check value', () => {
     assert.equal(crc32c(Buffer.from('123456789')), 0xe3069283);
@@ -74,4 +83,36 @@ test('layouts point at the structures they name', () => {
     const iso = layouts.iso9660;
     assert.equal(iso.blockSize, 2048);
     assert.ok(bufs.iso9660[iso.rootDirOffset] >= 34, 'root dir starts with a record');
+});
+
+const sha = (b) => createHash('sha256').update(b).digest('hex');
+
+test('62 mutations over the bases, 78 cases in all, unique names', () => {
+    const m = mutationCases();
+    assert.equal(m.length, 62);
+    const names = [...Object.keys(BASES).map((b) => `${b}-base`), ...m.map((x) => x.name)];
+    assert.equal(names.length, 78);
+    assert.equal(new Set(names).size, names.length);
+    for (const x of m) assert.ok(BASES[x.base], `${x.name}: unknown base ${x.base}`);
+});
+
+test('mutations are pure, deterministic and actually change the image', () => {
+    for (const m of mutationCases()) {
+        const base = bases.bufs[m.base];
+        const before = sha(base);
+        const a = m.apply(base, bases.layouts[m.base]);
+        const b = m.apply(base, bases.layouts[m.base]);
+        assert.equal(sha(base), before, `${m.name} modified its base`);
+        assert.ok(a.equals(b), `${m.name} is not deterministic`);
+        assert.ok(!a.equals(base), `${m.name} left the image unchanged`);
+    }
+});
+
+test('flip and truncate', () => {
+    const z = Buffer.alloc(1 << 20);
+    const f = flip(z, 1, 1e-3);
+    let changed = 0;
+    for (const x of f) if (x) changed++;
+    assert.ok(changed > 900 && changed <= 1049, `changed ${changed}`);
+    assert.equal(truncate(Buffer.alloc(10_000), 25).length, 2048);
 });
