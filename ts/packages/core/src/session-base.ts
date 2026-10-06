@@ -31,11 +31,16 @@ export abstract class AnyfsSessionBase implements AnyfsSession {
     protected readonly opTimeoutMs: number;
     private readonly fatalCbs = new Set<(e: Error) => void>();
     private fatalErr: Error | null = null;
+    /** Resolves with the error on the first fireFatal; lets a waiter (dispose)
+     *  stop waiting on an engine that just died. */
+    protected readonly fatalSignal: Promise<Error>;
+    private resolveFatal!: (e: Error) => void;
     private opQueue: Promise<unknown> = Promise.resolve();
     /** Reject callbacks of pending guarded ops, failed when the session goes fatal. */
     private readonly inflight = new Set<(e: Error) => void>();
 
     constructor(opts: SessionBaseOpts = {}) {
+        this.fatalSignal = new Promise<Error>((res) => (this.resolveFatal = res));
         const ms = opts.opTimeoutMs ?? DEFAULT_OP_TIMEOUT_MS;
         // setTimeout clamps delays past 2^31-1 ms to ~1 ms; Infinity means "never".
         this.opTimeoutMs = Number.isFinite(ms) && ms > 0 ? Math.min(ms, 2 ** 31 - 1) : 0;
@@ -184,8 +189,9 @@ export abstract class AnyfsSessionBase implements AnyfsSession {
                 }
             }
         }
-        this.fds.clear();
+        // Subclass _dispose may still need the fd set (native closes them there).
         await this._dispose();
+        this.fds.clear();
     }
 
     // ── Fatal-error signalling ────────────────────────
@@ -204,6 +210,7 @@ export abstract class AnyfsSessionBase implements AnyfsSession {
     protected fireFatal(err: Error): void {
         if (this.fatalErr) return;
         this.fatalErr = err;
+        this.resolveFatal(err);
         for (const fail of [...this.inflight]) fail(err);
         for (const cb of this.fatalCbs) {
             try {
@@ -268,10 +275,16 @@ export abstract class AnyfsSessionBase implements AnyfsSession {
     /** @internal — run `fn` once every earlier serialized call has settled.
      *  The engine handles one op at a time; queueing here too keeps an op's
      *  watchdog from counting time spent waiting behind another. Rejects at
-     *  once after dispose, so close() never queues behind a stuck op. */
+     *  once after dispose, so close() never queues behind a stuck op. A _dispose
+     *  implementation must not go through serialize. */
     protected serialize<T>(fn: () => Promise<T>): Promise<T> {
         if (this.disposed) return Promise.reject(new Error('AnyfsSession: already disposed'));
-        const next = this.opQueue.then(fn);
+        const next = this.opQueue.then(() => {
+            // Checked when the call's turn comes, not just when it was queued.
+            if (this.fatalErr) throw this.fatalErr;
+            if (this.disposed) throw new Error('AnyfsSession: already disposed');
+            return fn();
+        });
         this.opQueue = next.catch(() => undefined);
         return next;
     }

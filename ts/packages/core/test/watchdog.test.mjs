@@ -241,3 +241,28 @@ test('serialize rejects at once after close()', { timeout: 2000 }, async () => {
         /already disposed/,
     );
 });
+
+test('a call queued behind a fatal does not run', { timeout: 3000 }, async () => {
+    const s = new GuardedSession({ opTimeoutMs: 50 });
+    let ran = false;
+    const r = s.ser(() => s.readdir('/'));
+    const q = s.ser(async () => (ran = true));
+    await assert.rejects(r, /readdir timed out/);
+    await assert.rejects(q, /readdir timed out/);
+    assert.equal(ran, false);
+});
+
+test('a call queued before close() does not run after close()', { timeout: 3000 }, async () => {
+    const s = new GuardedSession({ opTimeoutMs: 0 });
+    let ran = false;
+    let release;
+    const first = s.ser(() => new Promise((r) => (release = r)));
+    const q = s.ser(async () => (ran = true));
+    q.catch(() => {});
+    await new Promise((r) => setImmediate(r));
+    await s.close();
+    release();
+    await first;
+    await assert.rejects(q, /already disposed/);
+    assert.equal(ran, false);
+});

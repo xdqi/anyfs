@@ -77,7 +77,9 @@ export class NativeSession extends AnyfsSessionBase {
 
     /** An engine op: serialized (a slow readdir must not interleave with a
      *  pread on the same kernel), then run under the base watchdog. The timer
-     *  starts when the op reaches the engine, not while it queues. */
+     *  starts when the op leaves this session's queue. It still
+     *  includes the IPC hop and any wait on the addon's global op mutex behind
+     *  other sessions. */
     private op<T>(op: string, fn: () => Promise<T>): Promise<T> {
         return this.serialize(() => this.guard(op, fn));
     }
@@ -209,19 +211,31 @@ export class NativeSession extends AnyfsSessionBase {
 
     /** @internal */
     protected async _dispose(): Promise<void> {
+        // A wedged engine never settles the in-flight op or a close call: wait
+        // for the queue to drain, but stop waiting as soon as the session goes
+        // fatal (watchdog or host report). The bridge subscription stays until
+        // then so a host fatal during the wait is seen.
+        if (!this.fatalError) await Promise.race([this.queueIdle, this.fatalSignal]);
         this.unsubscribeFatal?.();
-        // A wedged engine never settles the in-flight op or a close call.
-        if (this.fatalError) return;
-        // Wait for any in-flight op to settle.
-        await this.queueIdle;
+        // Re-check before every engine call. These go straight to the bridge
+        // (not through serialize, which rejects after dispose), but stay
+        // bounded by the watchdog.
+        if (!this.fatalError) {
+            // The addon's kernel is process-global: an fd left open keeps the
+            // mount busy, so diskClose would unbind the disk under a live mount.
+            for (const fd of this.fds) {
+                if (this.fatalError) break;
+                await this.guard('close', () => this.bridge.fileClose(fd)).catch(() => {});
+            }
+        }
         if (this.handle >= 0) {
-            try {
-                await this.bridge.diskClose(this.handle);
-            } catch {
-                /* best effort */
+            if (!this.fatalError) {
+                const h = this.handle;
+                await this.guard('diskClose', () => this.bridge.diskClose(h)).catch(() => {});
             }
             this.handle = -1;
         }
+        // Main-side only, never touches the addon: safe on a dead engine too.
         if (this.proxyId) {
             try {
                 await this.bridge.stopProxy(this.proxyId);
