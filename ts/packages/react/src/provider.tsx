@@ -172,6 +172,9 @@ export function AnyfsProvider({
             return prewarmNative({
                 ...(mountOpts?.memMb !== undefined ? { memMb: mountOpts.memMb } : {}),
                 ...(mountOpts?.loglevel !== undefined ? { loglevel: mountOpts.loglevel } : {}),
+                ...(mountOpts?.opTimeoutMs !== undefined
+                    ? { opTimeoutMs: mountOpts.opTimeoutMs }
+                    : {}),
             }).then((s) => {
                 if (!s) throw new Error('native bridge unavailable');
                 return s;
@@ -183,6 +186,7 @@ export function AnyfsProvider({
         if (mountOpts?.memMb !== undefined) opts.memMb = mountOpts.memMb;
         if (mountOpts?.loglevel !== undefined) opts.loglevel = mountOpts.loglevel;
         if (mountOpts?.forceFstype !== undefined) opts.forceFstype = mountOpts.forceFstype;
+        if (mountOpts?.opTimeoutMs !== undefined) opts.opTimeoutMs = mountOpts.opTimeoutMs;
         if (dispatch.wasmCaps?.urlProxyPrefix) {
             (opts as unknown as Record<string, unknown>).urlProxyPrefix =
                 dispatch.wasmCaps.urlProxyPrefix;
@@ -410,12 +414,10 @@ export function AnyfsProvider({
             } catch (err) {
                 // Drop the worker on ANY failure — never reuse a half-attached or
                 // wedged worker. close() force-terminates it (findings F16-02/03/06).
+                // Don't await: a native attach wedged in the kernel never settles,
+                // and the error state must not wait on it.
                 if (session) {
-                    try {
-                        await session.close();
-                    } catch {
-                        /* best effort */
-                    }
+                    void session.close().catch(() => {});
                 }
                 if (inflightSrc.current === src) inflightSrc.current = null;
                 if (superseded()) return;

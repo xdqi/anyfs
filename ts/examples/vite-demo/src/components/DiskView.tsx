@@ -16,7 +16,7 @@ export function DiskView({
     selectedPart: number | null;
     setSelectedPart: (n: number | null) => void;
 }) {
-    const { session, mountPath, status, step, error } = useAnyfsDisk();
+    const { session, mountPath, status, step, error, mode } = useAnyfsDisk();
     const [parts, setParts] = useState<SessionPartInfo[] | null>(null);
     const [meta, setMeta] = useState<SessionMeta | null>(null);
     const [onDiskSize, setOnDiskSize] = useState<number | null>(null);
@@ -106,8 +106,19 @@ export function DiskView({
     }
     if (status === 'error')
         return (
-            <div className="flex-1 flex items-center justify-center text-base text-red-500 dark:text-red-400">
-                Error: {error?.message}
+            <div className="flex-1 flex flex-col items-center justify-center gap-2 text-base text-red-500 dark:text-red-400">
+                <div>Error: {error?.message}</div>
+                {mode === 'native' && error?.name === 'EngineFatalError' && (
+                    // The addon's kernel is process-global: a wedged op holds it
+                    // until the app restarts.
+                    <div
+                        className="text-sm text-zinc-600 dark:text-zinc-400"
+                        data-testid="engine-fatal-hint"
+                    >
+                        The native engine stopped responding. Switch to the wasm engine in Settings,
+                        or restart the app.
+                    </div>
+                )}
             </div>
         );
     if (status !== 'ready') return null;
