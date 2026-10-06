@@ -1,5 +1,6 @@
-import { NodeWasmSession } from './node-wasm-session.js';
+import { NodeWasmSession, type NodeWasmSessionOpts } from './node-wasm-session.js';
 import type { AnyfsModule, AnyfsModuleFactory } from './module.js';
+import { EngineFatalError } from './session-base.js';
 import { ApiOp, wasmApiFor } from './wasm-api.js';
 
 let g_modulePromise: Promise<AnyfsModule> | null = null;
@@ -13,7 +14,18 @@ export async function bootModule(args: {
 }): Promise<AnyfsModule> {
     if (g_modulePromise) return g_modulePromise;
     g_modulePromise = (async () => {
-        const M = await args.factory({ preRun: args.preRun });
+        let live: AnyfsModule | null = null;
+        // abort() — a kernel panic, a wasm trap, OOM — calls this on the
+        // module-owning thread (emscripten proxies it from pthreads). Fail
+        // the API so pending and future ops reject and every session fires
+        // onFatal; the module stays dead for the life of the process.
+        const onAbort = (what: unknown) => {
+            if (live) {
+                wasmApiFor(live).fail(new EngineFatalError(`wasm module aborted: ${String(what)}`));
+            }
+        };
+        const M = await args.factory({ preRun: args.preRun, onAbort });
+        live = M;
         if (!g_kernelInitialised) {
             const rc = await wasmApiFor(M).call(ApiOp.KERNEL_INIT, [args.memMb, args.loglevel]);
             if (rc !== 0) throw new Error(`anyfs_ts_kernel_init failed: ${rc}`);
@@ -24,12 +36,21 @@ export async function bootModule(args: {
     return g_modulePromise;
 }
 
-/** Boot the kernel and open a session for the given disk image path.
- *  NODEFS mount of the host directory must already be set up (via boot's
- *  `preRun` hook). */
-export async function openNodeSession(M: AnyfsModule, fsPath: string): Promise<NodeWasmSession> {
-    const session = new NodeWasmSession(M);
-    await session.attachPath(fsPath);
+/** Open a session for the given disk image path on a booted module. NODEFS
+ *  mount of the host directory must already be set up (via boot's `preRun`
+ *  hook). */
+export async function openNodeSession(
+    M: AnyfsModule,
+    fsPath: string,
+    opts: NodeWasmSessionOpts = {},
+): Promise<NodeWasmSession> {
+    const session = new NodeWasmSession(M, opts);
+    try {
+        await session.attachPath(fsPath);
+    } catch (err) {
+        await session.close();
+        throw err;
+    }
     return session;
 }
 

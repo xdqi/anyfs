@@ -17,4 +17,5 @@ export type AnyfsModuleFactory = (opts?: {
     locateFile?: (path: string, prefix: string) => string;
     print?: (msg: string) => void;
     printErr?: (msg: string) => void;
+    onAbort?: (what: unknown) => void;
 }) => Promise<AnyfsModule>;

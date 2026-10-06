@@ -73,21 +73,60 @@ export function wasmApiFor(M: WasmApiModule): WasmApi {
 
 export class WasmApi {
     private readonly M: WasmApiModule;
-    private readonly pending = new Map<number, () => void>();
+    private readonly pending = new Map<
+        number,
+        { resolve: () => void; reject: (e: Error) => void }
+    >();
+    private readonly failCbs = new Set<(e: Error) => void>();
+    private failure: Error | null = null;
     private nextId = 1;
 
     constructor(M: WasmApiModule) {
         this.M = M;
         M.anyfsApiDone = (id: number) => {
-            const done = this.pending.get(id);
+            const p = this.pending.get(id);
             this.pending.delete(id);
-            done?.();
+            p?.resolve();
         };
+    }
+
+    /** The error the module died with, or null while it is alive. */
+    get failed(): Error | null {
+        return this.failure;
+    }
+
+    /** Mark the module dead (it aborted): every pending and future call
+     *  rejects with `err`, and onFail listeners run once. */
+    fail(err: Error): void {
+        if (this.failure) return;
+        this.failure = err;
+        for (const p of this.pending.values()) p.reject(err);
+        this.pending.clear();
+        for (const cb of this.failCbs) {
+            try {
+                cb(err);
+            } catch {
+                /* a listener throwing must not block the others */
+            }
+        }
+        this.failCbs.clear();
+    }
+
+    /** Run `cb` once when the module dies (at once if it already has).
+     *  Returns an unsubscribe fn. */
+    onFail(cb: (err: Error) => void): () => void {
+        if (this.failure) {
+            cb(this.failure);
+            return () => {};
+        }
+        this.failCbs.add(cb);
+        return () => this.failCbs.delete(cb);
     }
 
     /** Run `op` on the API thread and resolve with its int result. String
      *  args are copied into the heap for the duration of the call. */
     async call(op: number, args: ReadonlyArray<number | string> = []): Promise<number> {
+        if (this.failure) throw this.failure;
         if (args.length > MAX_ARGS) throw new Error(`wasm op ${op}: too many args`);
         const M = this.M;
         const req = M._malloc(REQ_BYTES);
@@ -106,7 +145,9 @@ export class WasmApi {
                 }
                 M.HEAP32[w + 3 + i] = (v as number) | 0;
             });
-            const done = new Promise<void>((resolve) => this.pending.set(id, resolve));
+            const done = new Promise<void>((resolve, reject) =>
+                this.pending.set(id, { resolve, reject }),
+            );
             if (M.ccall('anyfs_ts_api_submit', 'number', ['number'], [req]) !== 0) {
                 this.pending.delete(id);
                 throw new Error('anyfs_ts_api_submit: API thread unavailable');
@@ -114,8 +155,8 @@ export class WasmApi {
             await done;
             return M.HEAP32[w + 2] ?? -1;
         } finally {
-            for (const p of strings) M._free(p);
-            M._free(req);
+            for (const p of strings) this.free(p);
+            this.free(req);
         }
     }
 
@@ -139,7 +180,7 @@ export class WasmApi {
                 if (need <= cap) throw new Error(`${name}: rc=${n}`);
                 cap = Math.max(need + 256, cap * 2);
             } finally {
-                M._free(buf);
+                this.free(buf);
             }
         }
         throw new Error(`${name}: keeps requesting more buffer`);
@@ -164,8 +205,14 @@ export class WasmApi {
             const n = await this.call(ApiOp.LAST_ERROR, [buf, cap]);
             return n > 0 ? M.UTF8ToString(buf, n) : '';
         } finally {
-            M._free(buf);
+            this.free(buf);
         }
+    }
+
+    /** Free heap memory — unless the module is dead: its heap can't be
+     *  trusted, and calling into an aborted module throws. */
+    free(p: number): void {
+        if (!this.failure) this.M._free(p);
     }
 
     private allocString(s: string): number {
