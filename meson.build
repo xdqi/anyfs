@@ -394,8 +394,8 @@ test_tls_ca = executable('test_tls_ca',
     include_directories: [include_directories('src/core')],
     install: false,
 )
-
 test('tls_ca', test_tls_ca, suite: 'unit')
+
 test_mount_opts = executable('test_mount_opts',
     'tests/unit/test_mount_opts.c',
     'src/core/anyfs_mount_opts.c',

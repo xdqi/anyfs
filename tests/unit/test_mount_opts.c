@@ -18,7 +18,7 @@ static int failures;
 
 static void expect(const char *fstype, int rdonly, const char *want)
 {
-	char buf[64];
+	char buf[ANYFS_MOUNT_OPTS_MAX];
 	int rc = anyfs_mount_opts(fstype, rdonly, buf, sizeof(buf));
 
 	if (rc != 0 || strcmp(buf, want) != 0) {
@@ -34,7 +34,7 @@ int main(void)
 
 	/* A superblock must not be able to ask for a panic. */
 	expect("ext4", 1, "noload,errors=continue");
-		expect("ext3", 1, "noload,errors=continue");
+	expect("ext3", 1, "noload,errors=continue");
 	expect("ext2", 1, "errors=continue");
 	expect("vfat", 1, "errors=continue");
 	expect("msdos", 1, "errors=continue");

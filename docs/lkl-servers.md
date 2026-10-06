@@ -17,7 +17,10 @@ Common properties:
 - Multi-disk + multi-share: each `--share` exposes one partition as one SMB share
   / NFS export.
 - Read-only by default (write mode is `-w` on `anyfs-nfsd`; `anyfs-ksmbd` enables
-  RW per-share via the partition's mount options).
+  RW per-share via the partition's mount options). In write mode, ext2/3/4,
+  FAT, exFAT, f2fs and NTFS are mounted with `errors=remount-ro`, so a corrupt
+  volume, or an NTFS volume that is hibernated or needs a log replay, is served
+  read-only.
 - All file operations execute as kernel `root` (`ALLSQUASH + anonuid=0`).
 - Data path uses a host-side userspace TCP proxy (`src/host_proxy/`) — libslirp is
   not on the data path.

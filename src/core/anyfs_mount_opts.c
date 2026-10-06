@@ -16,8 +16,14 @@
  * did not make, so a read-only mount uses errors=continue (an error surfaces
  * as an error return, e.g. EUCLEAN/EBADMSG on ext4, and the kernel lives on)
  * and a read-write mount uses errors=remount-ro (stop writing to a
- * filesystem just found corrupt; this also clears ERRORS_PANIC). */
-static const char* const errors_continue_fs[] = {
+ * filesystem just found corrupt; this also clears ERRORS_PANIC).
+ *
+ * For NTFS PLUS on a read-write mount, remount-ro is also what turns on the
+ * driver's own guards: a volume Windows hibernated, or one with a $MFTMirr
+ * mismatch or LogFile/$Quota trouble, now mounts read-only instead of
+ * read-write (oot-fs ntfsplus/super.c). The driver's own comment says it
+ * must not write anything to a hibernated volume. */
+static const char* const errors_opt_fs[] = {
 	"ext2", "ext3", "ext4", "vfat", "msdos", "exfat", "f2fs", "ntfs", NULL,
 };
 
@@ -65,7 +71,7 @@ int anyfs_mount_opts(const char* fstype, int rdonly, char* buf, size_t cap)
 	if (strcmp(fstype, "ufs") == 0 &&
 	    append(buf, cap, &len, "ufstype=ufs2"))
 		goto overflow;
-	if (in_list(fstype, errors_continue_fs) &&
+	if (in_list(fstype, errors_opt_fs) &&
 	    append(buf, cap, &len,
 		   rdonly ? "errors=continue" : "errors=remount-ro"))
 		goto overflow;
