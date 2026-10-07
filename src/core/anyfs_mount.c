@@ -6,6 +6,7 @@
 #include "anyfs.h"
 #include "anyfs_mount_opts.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -82,7 +83,9 @@ static int set_bdev_ro(const char* dev_str, int rdonly)
 	if (fd < 0)
 		return fd;
 	int ro = rdonly ? 1 : 0;
-	long ret = lkl_sys_ioctl(fd, LKL_BLKROSET, (long)&ro);
+	/* uintptr_t, not long: long is 32 bits on Win64 and would truncate
+	 * the pointer (lkl_sys_ioctl takes an lkl_ulong_t). */
+	long ret = lkl_sys_ioctl(fd, LKL_BLKROSET, (uintptr_t)&ro);
 	lkl_sys_close(fd);
 	return (int)ret;
 }

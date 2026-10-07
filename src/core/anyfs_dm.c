@@ -133,7 +133,7 @@ static void dm_fill_header(struct dm_ioctl_local* h, const char* name,
 /* Run one ioctl, retrying once if the kernel reports DM_BUFFER_FULL. */
 static int dm_ioctl(int fd, unsigned int cmd, void* arg)
 {
-	long r = lkl_sys_ioctl(fd, _DM_IOC(cmd), (long)arg);
+	long r = lkl_sys_ioctl(fd, _DM_IOC(cmd), (uintptr_t)arg); /* not long: Win64 */
 	return (int)r;
 }
 
