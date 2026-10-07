@@ -29,6 +29,19 @@ export { applyUrlProxy, getUrlProxyPrefix } from './electron-proxy.js';
 export { createSession } from './dispatch.js';
 export type { WasmCaps, SessionEnv, SessionBackend, DispatchResult } from './dispatch.js';
 export { fmtBytes, fmtMode, fmtTime, fmtDev, formatSize, splitExt } from './format.js';
+export {
+    hasEscapedBytes,
+    nameToBytes,
+    displayName,
+    defaultLegacyEncoding,
+    fatCodepageFlag,
+    MOUNT_FAT_CP_437,
+    MOUNT_FAT_CP_936,
+    MOUNT_FAT_CP_950,
+    MOUNT_FAT_CP_932,
+    MOUNT_FAT_CP_949,
+} from './names.js';
+export type { LegacyEncoding } from './names.js';
 
 // Re-export types
 export type {

@@ -5,6 +5,7 @@
  *   - multi.img         GPT, p1 ext4 + p2 vfat
  *   - mbr-extended.img  MBR/dos, 2 primary (ext4, vfat) + extended w/ 2 logicals (ext4)
  *   - btrfs-whole.vmdk  whole-disk btrfs (no PT), raw -> vmdk via qemu-img
+ *   - names.img         MBR, FAT12 + ext4 with names in every encoding
  *
  * Privileged tooling (sgdisk, sfdisk, mkfs, mount) lives in /sbin, which is NOT on
  * the non-root PATH of this Node process. We therefore run every partition/mkfs/
@@ -369,6 +370,21 @@ function buildSingleExt4() {
     console.log(`[single-ext4.img] done`);
 }
 
+// ---------------------------------------------------------------------------
+// names.img : MBR, p1 hand-made FAT12 + p2 ext4 with byte-named files
+// (tests/make_names_image.py, shared with the C test session_names)
+// ---------------------------------------------------------------------------
+function buildNames() {
+    const img = resolve(IMAGES_DIR, 'names.img');
+    if (existsSync(img)) {
+        console.log(`[names.img] exists, skipping`);
+        return;
+    }
+    console.log(`[names.img] building...`);
+    run('python3', [resolve(here, '../../../../tests/make_names_image.py'), img]);
+    console.log(`[names.img] done`);
+}
+
 function main() {
     requireRoot();
     mkdirSync(IMAGES_DIR, { recursive: true });
@@ -377,6 +393,7 @@ function main() {
     buildMbrExtended();
     buildBtrfsVmdk();
     buildSingleExt4();
+    buildNames();
 
     console.log('\n=== recorded known-file byte sizes ===');
     for (const key of Object.keys(recorded).sort()) {

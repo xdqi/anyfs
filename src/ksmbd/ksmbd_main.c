@@ -489,6 +489,13 @@ static void usage(FILE* f, const char* prog)
 	    "fast\n"
 	    "                     impl is on by default on Windows because it\n"
 	    "                     skips wineserver IPC on every sched wake.\n"
+	    "  --legacy-encoding ENC\n"
+	    "                     Encoding of file names that are not UTF-8:\n"
+	    "                     auto (default, from the locale), gb18030, "
+	    "big5,\n"
+	    "                     shift_jis, euc-kr, windows-1252, off. Sets "
+	    "the\n"
+	    "                     codepage of FAT short (8.3) names.\n"
 	    "  -h, --help         Show this help.\n"
 	    "\n"
 	    "Examples:\n"
@@ -537,6 +544,7 @@ int main(int argc, char** argv)
 	    {"max-credits", required_argument, NULL, 1004},
 	    {"busy-spin", no_argument, NULL, 1005},
 	    {"no-fast-sync", no_argument, NULL, 1006},
+	    {"legacy-encoding", required_argument, NULL, 1007},
 	    {"help", no_argument, NULL, 'h'},
 	    {NULL, 0, NULL, 0}};
 
@@ -601,6 +609,16 @@ int main(int argc, char** argv)
 			break;
 		case 1006: /* --no-fast-sync */
 			fast_sync = 0;
+			break;
+		case 1007: /* --legacy-encoding */
+			if (anyfs_legacy_parse(optarg) < 0) {
+				fprintf(
+				    stderr,
+				    "error: unknown --legacy-encoding '%s'\n",
+				    optarg);
+				return 1;
+			}
+			anyfs_legacy_set(anyfs_legacy_parse(optarg));
 			break;
 		case 'c':
 			config_file = optarg;
@@ -739,9 +757,10 @@ int main(int argc, char** argv)
 
 	/* ── 5. Resolve --share specs to LKL paths ───────────────────────── */
 	ShareInfo shares[ANYFS_MAX_SHARES];
-	int n_shares = anyfs_server_resolve_shares(share_specs, n_share_specs,
-						   disks, n_images, 0, shares,
-						   ANYFS_MAX_SHARES);
+	int n_shares = anyfs_server_resolve_shares(
+	    share_specs, n_share_specs, disks, n_images,
+	    anyfs_legacy_fat_flag(anyfs_legacy_get()), shares,
+	    ANYFS_MAX_SHARES);
 	if (n_shares < 0)
 		goto halt;
 	for (int i = 0; i < n_shares; i++)

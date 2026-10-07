@@ -172,6 +172,7 @@ Resource-tuning options (see `--help`):
 | `--busy-spin`    | off       | host_proxy spins instead of `poll()`-blocking; eliminates wineserver IPC under wine     |
 | `--no-fast-sync` | (Windows) | Revert LKL sem/mutex to stock `CreateSemaphore`/`WaitForSingleObject`                   |
 | `-P PORT`        | 4455      | Host listen port                                                                        |
+| `--legacy-encoding ENC` | auto | Encoding of names that are not UTF-8 (also on anyfs-nfsd): `auto` (from the locale / ANSI code page), `gb18030`, `big5`, `shift_jis`, `euc-kr`, `windows-1252`, `off`. Sets the FAT short-name codepage; FAT long names are always UTF-8 |
 
 `--busy-spin` and `--no-fast-sync` exist because LKL under wine spends a large
 fraction of its wall time in wineserver IPC for every scheduler wake; both are

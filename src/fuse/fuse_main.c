@@ -129,6 +129,7 @@ struct anyfs_fuse_config {
 	int loglevel;
 	char* fstype;
 	char* opts;
+	char* legacy_encoding;
 };
 
 /* Additional images beyond the first: collected in opt_proc */
@@ -157,6 +158,8 @@ static struct fuse_opt anyfs_fuse_opts[] = {
     ANYFS_FUSE_OPT("mem=%d", mem_mb, 0),
     ANYFS_FUSE_OPT("loglevel=%d", loglevel, 0),
     ANYFS_FUSE_OPT("opts=%s", opts, 0),
+    ANYFS_FUSE_OPT("--legacy-encoding=%s", legacy_encoding, 0),
+    ANYFS_FUSE_OPT("legacy_encoding=%s", legacy_encoding, 0),
     FUSE_OPT_KEY("-h", KEY_HELP),
     FUSE_OPT_KEY("--help", KEY_HELP),
     FUSE_OPT_KEY("-V", KEY_VERSION),
@@ -183,7 +186,13 @@ static void usage(void)
 	    "    -o ro                 mount read-only\n"
 	    "    -o mem=N              kernel memory in MB (default: 32)\n"
 	    "    -o loglevel=N         kernel log level 0-7 (default: 0)\n"
-	    "    -o opts=OPTS          extra mount options\n");
+	    "    -o opts=OPTS          extra mount options\n"
+	    "    --legacy-encoding=ENC encoding of names that are not UTF-8:\n"
+	    "                          auto (default, from the locale), "
+	    "gb18030,\n"
+	    "                          big5, shift_jis, euc-kr, windows-1252,\n"
+	    "                          off; sets the FAT short-name "
+	    "codepage\n");
 }
 
 /*
@@ -398,6 +407,10 @@ static PathKind parse_fuse_path(const char* fuse_path, FusePath* out)
  * Caches the top-level partition's mount path in g_disks[].parts[]
  * so back-compat lookups stay fast.
  */
+/* Enter flags for every mount: the FAT short-name codepage of the legacy
+ * encoding (--legacy-encoding). */
+static uint32_t g_enter_flags;
+
 static int resolve_walk(FusePath* fp)
 {
 	if (fp->disk_idx < 0 || fp->disk_idx >= g_ndisks)
@@ -407,8 +420,8 @@ static int resolve_walk(FusePath* fp)
 	AnyfsSession* d = g_disks[fp->disk_idx].disk;
 	int leaf = -1;
 	char lkl_path[ANYFS_LKL_PATH_MAX] = {0};
-	int rc = anyfs_session_walk(d, fp->dsl.comp, fp->dsl.n_comp, 0, &leaf,
-				    lkl_path);
+	int rc = anyfs_session_walk(d, fp->dsl.comp, fp->dsl.n_comp,
+				    g_enter_flags, &leaf, lkl_path);
 	if (rc < 0)
 		return -EIO;
 	fp->leaf_slot = leaf;
@@ -1374,6 +1387,19 @@ int main(int argc, char* argv[])
 	if (fuse_opt_parse(&args, &cfg, anyfs_fuse_opts, anyfs_fuse_opt_proc))
 		return 1;
 
+	{
+		const char* le =
+		    cfg.legacy_encoding ? cfg.legacy_encoding : "auto";
+		int enc = anyfs_legacy_parse(le);
+		if (enc < 0) {
+			fprintf(stderr,
+				"error: unknown --legacy-encoding '%s'\n", le);
+			return 1;
+		}
+		anyfs_legacy_set(enc);
+		g_enter_flags = anyfs_legacy_fat_flag(enc);
+	}
+
 	if (!cfg.image) {
 		fprintf(stderr, "error: no disk image specified\n");
 		fprintf(stderr, "usage: anyfs-fuse [options] <image> [<image2> "
@@ -1517,7 +1543,8 @@ int main(int argc, char* argv[])
 
 		char lkl_path[ANYFS_LKL_PATH_MAX];
 		ret = anyfs_session_enter_path(g_disks[didx].disk, dsl.comp,
-					       dsl.n_comp, 0, lkl_path);
+					       dsl.n_comp, g_enter_flags,
+					       lkl_path);
 		if (ret < 0) {
 			fprintf(
 			    stderr,
@@ -1556,7 +1583,8 @@ int main(int argc, char* argv[])
 					continue;
 				char lkl_path[ANYFS_LKL_PATH_MAX];
 				int r = anyfs_session_enter(g_disks[di].disk,
-							    pn, 0, lkl_path);
+							    pn, g_enter_flags,
+							    lkl_path);
 				if (r < 0) {
 					fprintf(stderr,
 						"anyfs-fuse: prefetch "

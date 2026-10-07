@@ -4,6 +4,7 @@
  * v1: KIND populated by kindprobe; FSTYPE/LABEL/UUID are "?".
  */
 #include "anyfs_format.h"
+#include "anyfs_legacy.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -49,7 +50,12 @@ void anyfs_format_disk(AnyfsStrbuf* sb, AnyfsSession* d, int disk_idx)
 		char sz[24];
 		human_size(parts[i].size_bytes, sz, sizeof(sz));
 		const char* fs = parts[i].fstype[0] ? parts[i].fstype : "?";
-		const char* label = parts[i].label[0] ? parts[i].label : "?";
+		/* A FAT label is OEM bytes as libblkid returns them. */
+		char label[sizeof(parts[i].label) * 4 + 1];
+		if (!parts[i].label[0] ||
+		    anyfs_legacy_decode(parts[i].label, label, sizeof(label)) <
+			0)
+			snprintf(label, sizeof(label), "?");
 		const char* uuid = parts[i].uuid[0] ? parts[i].uuid : "?";
 		anyfs_strbuf_printf(
 		    sb, "%-18s %-10s %-7s %-7s %-12s %-12s\n", path, sz,

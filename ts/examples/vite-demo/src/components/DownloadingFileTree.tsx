@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { displayName } from '@anyfs/core';
 import type { AnyfsSession, NativeSession } from '@anyfs/core';
 import { AnyfsFileBrowser } from '@anyfs/trees';
-import { useSettings } from '../Settings';
+import { resolveLegacyEncoding, useSettings } from '../Settings';
 import { streamDownload, type StreamDownloadHandle } from '../stream-download';
 import { DownloadStatus } from './DownloadStatus';
 
@@ -27,6 +28,8 @@ export function DownloadingFileTree({
     // Track every in-flight download so we can cancel them if the disk/partition
     // switches or the tree unmounts (finding F16-15).
     const liveHandles = useRef(new Set<StreamDownloadHandle>());
+    const encoding = resolveLegacyEncoding(settings.legacyEncoding);
+    const formatName = useCallback((n: string) => displayName(n, encoding), [encoding]);
 
     useEffect(() => {
         const handles = liveHandles.current;
@@ -45,7 +48,7 @@ export function DownloadingFileTree({
 
     const startDownload = useCallback(
         async (relPath: string) => {
-            const fileName = relPath.split('/').pop() || 'download.bin';
+            const fileName = formatName(relPath.split('/').pop() || '') || 'download.bin';
             // Resolve to LKL absolute path: mountPath + '/' + relPath
             const abs = mountPath.endsWith('/')
                 ? `${mountPath}${relPath}`
@@ -84,7 +87,7 @@ export function DownloadingFileTree({
                 liveHandles.current.delete(handle);
             }
         },
-        [disk, mountPath, inElectron, settings],
+        [disk, mountPath, inElectron, settings, formatName],
     );
 
     return (
@@ -94,6 +97,7 @@ export function DownloadingFileTree({
                 mountPath={mountPath}
                 rootLabel={rootLabel}
                 followSymlinks={settings.followSymlinks}
+                formatName={formatName}
                 darkMode={resolvedTheme === 'dark'}
                 className="rounded-md bg-zinc-100 dark:bg-zinc-800 p-2 flex-1 min-h-0"
                 onFileActivate={({ relPath }) => {

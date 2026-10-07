@@ -102,6 +102,34 @@ export const FIXTURES: Record<string, Fixture> = {
             },
         ],
     },
+    // File names in every encoding (tests/make_names_image.py): FAT long
+    // names (UTF-16 on disk), a GBK 8.3 name, ext4 byte names (GBK,
+    // Latin-1, a real U+EF80, an encoded surrogate). Paths here are the
+    // names as displayed with the gb18030 legacy encoding.
+    names: {
+        name: 'names',
+        source: 'generated',
+        file: img('names.img'),
+        parts: [
+            {
+                index: 1,
+                fs: 'vfat',
+                tree: [
+                    { path: '中文.txt', size: 7 },
+                    { path: 'café.txt', size: 9 },
+                    { path: '测试.TXT', size: 8 },
+                ],
+            },
+            {
+                index: 2,
+                fs: 'ext4',
+                tree: [
+                    { path: '中文.txt', size: 9 },
+                    { path: 'plain.txt', size: 11 },
+                ],
+            },
+        ],
+    },
     qcow2Url: {
         name: 'qcow2Url',
         source: 'downloaded',

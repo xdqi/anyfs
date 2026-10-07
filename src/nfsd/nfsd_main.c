@@ -586,6 +586,13 @@ static void usage(FILE* f, const char* prog)
 	    "disk0/p<N> (single-image only).\n"
 	    "  -P PORT            Host port for NFS (default: %d).\n"
 	    "  -w                 Read-write export (default: read-only).\n"
+	    "  --legacy-encoding ENC\n"
+	    "                     Encoding of file names that are not UTF-8:\n"
+	    "                     auto (default, from the locale), gb18030, "
+	    "big5,\n"
+	    "                     shift_jis, euc-kr, windows-1252, off. Sets "
+	    "the\n"
+	    "                     codepage of FAT short (8.3) names.\n"
 	    "  -h, --help         Show this help.\n"
 	    "\n"
 	    "Examples:\n"
@@ -613,6 +620,7 @@ int main(int argc, char** argv)
 	 */
 	static const struct option long_opts[] = {
 	    {"share", required_argument, NULL, 1000},
+	    {"legacy-encoding", required_argument, NULL, 1001},
 	    {"help", no_argument, NULL, 'h'},
 	    {NULL, 0, NULL, 0}};
 
@@ -631,6 +639,16 @@ int main(int argc, char** argv)
 				return 1;
 			}
 			share_specs[n_share_specs++] = optarg;
+			break;
+		case 1001: /* --legacy-encoding */
+			if (anyfs_legacy_parse(optarg) < 0) {
+				fprintf(
+				    stderr,
+				    "error: unknown --legacy-encoding '%s'\n",
+				    optarg);
+				return 1;
+			}
+			anyfs_legacy_set(anyfs_legacy_parse(optarg));
 			break;
 		case 'h':
 			usage(stdout, argv[0]);
@@ -735,6 +753,7 @@ int main(int argc, char** argv)
 	{
 		AnyfsShareEntry ents[ANYFS_MAX_SHARES];
 		uint32_t eflags = read_only ? ANYFS_SESSION_READONLY : 0;
+		eflags |= anyfs_legacy_fat_flag(anyfs_legacy_get());
 		int n = anyfs_server_resolve_shares(share_specs, n_share_specs,
 						    disks, n_images, eflags,
 						    ents, ANYFS_MAX_SHARES);

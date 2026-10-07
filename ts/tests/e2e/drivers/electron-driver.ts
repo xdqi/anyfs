@@ -128,7 +128,7 @@ export class ElectronDriver implements Driver {
         return dom.propertiesOf(this.page, name);
     }
 
-    async download(name: string): Promise<DownloadResult> {
+    async download(name: string, savedAs: string = name): Promise<DownloadResult> {
         // Activating a file (double-click) fires onFileActivate → streamDownload
         // → the Electron bridge path (window.electronDownload), which opens the
         // download via the download:open IPC. With ANYFS_TEST_DOWNLOAD_DIR set,
@@ -157,10 +157,22 @@ export class ElectronDriver implements Driver {
         await status.waitFor({ state: 'detached', timeout: 120_000 });
 
         // The file is now fully written to the temp download dir.
-        const filePath = join(this.downloadDir, name);
+        const filePath = join(this.downloadDir, savedAs);
         await this.waitForStableFile(filePath);
         const bytes = new Uint8Array(readFileSync(filePath));
-        return { bytes, size: bytes.byteLength, mechanism: 'electron-ipc' };
+        return { bytes, size: bytes.byteLength, mechanism: 'electron-ipc', fileName: savedAs };
+    }
+
+    async partitionLabel(index: number): Promise<string> {
+        return dom.partitionLabel(this.page, index);
+    }
+
+    async listDisplayNames(): Promise<string[]> {
+        return dom.listDisplayNames(this.page);
+    }
+
+    async setLegacyEncoding(value: string): Promise<void> {
+        return dom.setLegacyEncoding(this.page, value);
     }
 
     async expectError(kind: ErrorKind): Promise<void> {

@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
+import { defaultLegacyEncoding } from '@anyfs/core';
+import type { LegacyEncoding } from '@anyfs/core';
 
 export type Theme = 'dark' | 'light' | 'system';
 
@@ -11,6 +13,10 @@ export interface Settings {
      *  addon is available. Useful for comparing backends or working around
      *  native-specific issues. Has no effect in a pure browser environment. */
     disableNative: boolean;
+    /** Encoding of file names that are not UTF-8 (written by older or
+     *  non-Unicode systems): used to show them, and as the codepage of FAT
+     *  short names. 'auto' picks one from the UI language. */
+    legacyEncoding: 'auto' | LegacyEncoding;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -18,7 +24,14 @@ const DEFAULT_SETTINGS: Settings = {
     cacheChunks: true,
     theme: 'system',
     disableNative: false,
+    legacyEncoding: 'auto',
 };
+
+/** The encoding the legacyEncoding setting stands for right now. */
+export function resolveLegacyEncoding(v: Settings['legacyEncoding']): LegacyEncoding {
+    if (v !== 'auto') return v;
+    return defaultLegacyEncoding(typeof navigator !== 'undefined' ? navigator.language : '');
+}
 
 const STORAGE_KEY = 'anyfs.settings.v1';
 
@@ -156,6 +169,10 @@ export function SettingsDialog({ open, onClose, nativeAvailable }: SettingsDialo
                         checked={settings.cacheChunks}
                         onChange={(v) => update('cacheChunks', v)}
                     />
+                    <LegacyEncodingChoice
+                        value={settings.legacyEncoding}
+                        onChange={(v) => update('legacyEncoding', v)}
+                    />
                     {nativeAvailable && <DisableNativeToggle settings={settings} update={update} />}
                 </div>
             </div>
@@ -208,6 +225,49 @@ function ThemeChoice({ value, onChange }: ThemeChoiceProps) {
                 Affects this page and the embedded file browser.
             </div>
         </div>
+    );
+}
+
+const LEGACY_ENCODINGS: { v: LegacyEncoding; label: string }[] = [
+    { v: 'gb18030', label: 'Chinese, Simplified (GBK / GB18030)' },
+    { v: 'big5', label: 'Chinese, Traditional (Big5)' },
+    { v: 'shift_jis', label: 'Japanese (Shift_JIS)' },
+    { v: 'euc-kr', label: 'Korean (EUC-KR)' },
+    { v: 'windows-1252', label: 'Western (Windows-1252)' },
+    { v: 'off', label: 'None (show bytes as \\xNN)' },
+];
+
+interface LegacyEncodingChoiceProps {
+    value: Settings['legacyEncoding'];
+    onChange: (v: Settings['legacyEncoding']) => void;
+}
+
+function LegacyEncodingChoice({ value, onChange }: LegacyEncodingChoiceProps) {
+    const auto = resolveLegacyEncoding('auto');
+    const autoLabel = LEGACY_ENCODINGS.find((o) => o.v === auto)?.label ?? auto;
+    return (
+        <label className="block">
+            <span className="block text-zinc-900 dark:text-zinc-100 text-sm mb-1">
+                Legacy file-name encoding
+            </span>
+            <select
+                value={value}
+                onChange={(e) => onChange(e.target.value as Settings['legacyEncoding'])}
+                data-testid="legacy-encoding"
+                className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 text-sm px-2 py-1"
+            >
+                <option value="auto">Automatic: {autoLabel}</option>
+                {LEGACY_ENCODINGS.map((o) => (
+                    <option key={o.v} value={o.v}>
+                        {o.label}
+                    </option>
+                ))}
+            </select>
+            <span className="block text-zinc-600 dark:text-zinc-400 text-xs mt-1">
+                For names that are not UTF-8, such as those written by older Windows or Linux
+                systems. FAT short (8.3) names follow this setting the next time a disk is opened.
+            </span>
+        </label>
     );
 }
 

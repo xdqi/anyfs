@@ -1,7 +1,7 @@
 # Unicode and legacy-encoded filenames: design
 
 **Date:** 2026-10-07
-**Status:** in progress (plan: `docs/superpowers/plans/2026-10-07-unicode-filenames.md`); see "Amendments during implementation" at the end
+**Status:** implemented (plan: `docs/superpowers/plans/2026-10-07-unicode-filenames.md`); see "Amendments during implementation" at the end
 **Scope:** `src/core/anyfs_mount_opts.c`, `src/core/anyfs_name.{c,h}` (new), `ts/native/anyfs_ts.c`,
 `src/win32/` (new), `src/core/{raw_backend,anyfs_probe,anyfs_container,anyfs_tls,anyfs_session,qemu_thread}.c`,
 the CLIs (`lspart`, `ksmbd`, `nfsd`, `fuse`), `patches/qemu/0012-*`, `ts/packages/{core,trees}`,
@@ -313,3 +313,23 @@ A → D → B → C, each committed and pushed on its own with its tests:
   QEMU backend (raw, qcow2, vmdk) and QEMU snapshot mode; `test_u8.exe` passes. The Electron
   probe could not be run in this environment (Electron 42 under wine dies in
   `hwnd_util.cc` without a usable display); `test_open_paths.exe` exercises the same core code.
+- **B, buffers.** `realpath` / `readlink` results are escaped in place; when the escaped form does
+  not fit, the call returns `-(bytes needed)` like the `*_json` helpers (callers that retry do;
+  the others report an error). Incoming paths are unescaped into a 16 KiB stack buffer.
+- **B, verification.** `tests/test_session_names.c` lists, stats and reads every ext4 byte name
+  and checks the escaped GBK FAT label through the glue; the robustness case runner walks the
+  names image on wasm and native (2 partitions, 8 files, 80 bytes, all read). No robustness case
+  changed class: the four syzbot images with non-UTF-8 names fail on other corruption.
+- **C, CLI decoding** lives in `src/core/anyfs_legacy.{c,h}` (`include/anyfs_legacy.h`), not in
+  `anyfs_name.c`, which stays pure string logic. Linux uses libc `iconv` directly rather than
+  GLib: the shipped binaries link glibc dynamically, so the system's gconv modules provide
+  GB18030/Big5/Shift_JIS/EUC-KR/CP1252 (checked with the zig-built toolchain). If a converter is
+  missing, names show as `\xNN`. On Windows `MultiByteToWideChar` (GB18030 = code page 54936).
+  anyfs-fuse takes the option as `--legacy-encoding=ENC` or `-o legacy_encoding=ENC`.
+- **C, test image.** The FAT partition carries a GBK volume label (`测试`) as a root-directory
+  volume entry, which is where libblkid reads it (a boot-sector label alone was not reported). The E2E checks it in the partition picker.
+- **C, E2E.** `flows/unicode-names.spec.ts` passes on web, electron-native and electron-wasm.
+  Drivers gained `setLegacyEncoding`, `listDisplayNames`, `partitionLabel`, and `download()`
+  returns the saved file name (Electron: `savedAs`). The vite-demo serves the wasm from
+  `public/wasm/`, synced from `@anyfs/core` by `scripts/sync_wasm_bundle.sh`; a stale copy there
+  made the first run show `??.txt`.

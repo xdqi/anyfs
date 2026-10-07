@@ -80,7 +80,17 @@ export interface AnyfsFileBrowserProps {
      * etc.). When omitted, the chain starts at the root crumb.
      */
     superCrumb?: { label: string; onClick: () => void };
+    /**
+     * Maps a file name to the text shown for it (rows, breadcrumbs, sort
+     * order, the properties dialog). Ids, paths and the URL hash keep the
+     * name as the engine reported it, so every operation still addresses
+     * the right file. Typically `(n) => displayName(n, encoding)` from
+     * `@anyfs/core`. Defaults to showing names as they are.
+     */
+    formatName?: (name: string) => string;
 }
+
+const identity = (name: string) => name;
 
 function joinAbs(mountPath: string, relPath: string): string {
     const base = mountPath.endsWith('/') ? mountPath.slice(0, -1) : mountPath;
@@ -93,12 +103,14 @@ function rowIdFor(relPath: string, name: string): string {
 }
 
 interface PropsTarget {
+    /** Display form (formatName applied). */
     name: string;
+    /** Display form of the mount-relative path. */
     relPath: string;
     absPath: string;
     /** Raw lstat result — never follows symlinks. */
     stat: Stat;
-    /** For symlinks, the verbatim target stored in the link inode. null otherwise. */
+    /** For symlinks, the target stored in the link inode (display form). null otherwise. */
     linkTarget: string | null;
 }
 
@@ -156,7 +168,9 @@ export function AnyfsFileBrowser({
     onFileActivate,
     rootLabel = '/',
     superCrumb,
+    formatName,
 }: AnyfsFileBrowserProps) {
+    const fmt = formatName ?? identity;
     const ctx = useAnyfsDiskMaybe();
     const session = sessionProp ?? ctx?.session ?? null;
     const mountPath = mountProp ?? ctx?.mountPath ?? null;
@@ -248,13 +262,13 @@ export function AnyfsFileBrowser({
                 const ad = a.kind === 'dir' ? 0 : 1;
                 const bd = b.kind === 'dir' ? 0 : 1;
                 if (ad !== bd) return ad - bd;
-                return a.name.localeCompare(b.name);
+                return fmt(a.name).localeCompare(fmt(b.name));
             });
 
             const initial: FileData[] = entries.map((e) => ({
                 id: rowIdFor(relPath, e.name),
-                name: e.name,
-                ext: e.kind === 'dir' ? '' : splitExt(e.name),
+                name: fmt(e.name),
+                ext: e.kind === 'dir' ? '' : splitExt(fmt(e.name)),
                 isDir: e.kind === 'dir',
                 isSymlink: e.kind === 'link',
             }));
@@ -298,7 +312,7 @@ export function AnyfsFileBrowser({
                 });
             }
         })();
-    }, [session, mountPath, relPath, followSymlinks]);
+    }, [session, mountPath, relPath, followSymlinks, fmt]);
 
     const folderChain = useMemo<FileArray>(() => {
         if (!mountPath) return [];
@@ -329,10 +343,10 @@ export function AnyfsFileBrowser({
         let acc = '';
         for (const p of parts) {
             acc = acc ? `${acc}/${p}` : p;
-            chain.push({ id: acc, name: p, isDir: true });
+            chain.push({ id: acc, name: fmt(p), isDir: true });
         }
         return chain;
-    }, [mountPath, relPath, rootLabel, superCrumb]);
+    }, [mountPath, relPath, rootLabel, superCrumb, fmt]);
 
     const [propsTarget, setPropsTarget] = useState<PropsTarget | null>(null);
 
@@ -378,11 +392,12 @@ export function AnyfsFileBrowser({
                     if (stale()) return;
                 }
                 setPropsTarget({
-                    name: tgt.name ?? tgt.id.split('/').pop() ?? tgt.id,
-                    relPath: tgt.id,
+                    name: tgt.name ?? fmt(tgt.id.split('/').pop() ?? tgt.id),
+                    relPath: tgt.id.split('/').map(fmt).join('/'),
                     absPath: abs,
                     stat: lstat,
-                    linkTarget,
+                    linkTarget:
+                        linkTarget === null ? null : linkTarget.split('/').map(fmt).join('/'),
                 });
                 return;
             }
@@ -430,7 +445,7 @@ export function AnyfsFileBrowser({
                 onFileActivate({ relPath: tgt.id, mountPath });
             }
         },
-        [onFileActivate, mountPath, session, followSymlinks, navigate, superCrumb],
+        [onFileActivate, mountPath, session, followSymlinks, navigate, superCrumb, fmt],
     );
 
     if (!session || !mountPath) {

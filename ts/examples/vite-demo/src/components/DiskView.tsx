@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { applyUrlProxy, formatSize } from '@anyfs/core';
+import { applyUrlProxy, displayName, fatCodepageFlag, formatSize } from '@anyfs/core';
 import { useAnyfsDisk } from '@anyfs/react';
 import { AnyfsFileBrowser } from '@anyfs/trees';
 import type { NativeSession, SessionPartInfo, SessionMeta, SessionSource } from '@anyfs/core';
 import { SupportedFormats } from './SupportedFormats';
 import { DiskSummary } from './DiskSummary';
 import { DownloadingFileTree } from './DownloadingFileTree';
+import { resolveLegacyEncoding, useSettings } from '../Settings';
 
 export function DiskView({
     source,
@@ -17,6 +18,8 @@ export function DiskView({
     setSelectedPart: (n: number | null) => void;
 }) {
     const { session, mountPath, status, step, error, mode } = useAnyfsDisk();
+    const { settings } = useSettings();
+    const encoding = resolveLegacyEncoding(settings.legacyEncoding);
     const [parts, setParts] = useState<SessionPartInfo[] | null>(null);
     const [meta, setMeta] = useState<SessionMeta | null>(null);
     const [onDiskSize, setOnDiskSize] = useState<number | null>(null);
@@ -77,7 +80,8 @@ export function DiskView({
         if (!session || selectedPart === null) return;
         let cancelled = false;
         setMountError(null);
-        session.enter(selectedPart).then(
+        // The FAT codepage applies when the partition is first mounted.
+        session.enter(selectedPart, fatCodepageFlag(encoding)).then(
             (mp) => {
                 if (!cancelled) setManualMount(mp);
             },
@@ -90,6 +94,9 @@ export function DiskView({
         return () => {
             cancelled = true;
         };
+        // encoding is left out on purpose: re-entering a mounted partition
+        // returns the existing mount, so a new codepage needs a reopen.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [session, selectedPart]);
 
     if (
@@ -197,8 +204,11 @@ export function DiskView({
                                         {formatSize(p.size)}
                                     </span>
                                     {p.label && (
-                                        <span className="ml-2 text-zinc-800 dark:text-zinc-300">
-                                            {p.label}
+                                        <span
+                                            className="ml-2 text-zinc-800 dark:text-zinc-300"
+                                            data-testid="partition-label"
+                                        >
+                                            {displayName(p.label, encoding)}
                                         </span>
                                     )}
                                     {p.fstype && (

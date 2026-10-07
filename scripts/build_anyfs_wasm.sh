@@ -117,6 +117,7 @@ CORE_SOURCES=(
     anyfs_mount.c
     anyfs_mount_opts.c
     anyfs_name.c
+    anyfs_legacy.c
     raw_backend.c
     anyfs_session.c
     anyfs_strbuf.c

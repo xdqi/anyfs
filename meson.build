@@ -312,6 +312,7 @@ anyfs_core_sources = files(
     'src/core/anyfs_mount.c',
     'src/core/anyfs_mount_opts.c',
     'src/core/anyfs_name.c',
+    'src/core/anyfs_legacy.c',
     'src/core/raw_backend.c',
     'src/core/anyfs_session.c',
     'src/core/anyfs_strbuf.c',
@@ -470,6 +471,15 @@ test_name_escape = executable('test_name_escape',
     install: false,
 )
 test('name_escape', test_name_escape, suite: 'unit', timeout: 120)
+
+test_legacy = executable('test_legacy',
+    'tests/unit/test_legacy.c',
+    'src/core/anyfs_legacy.c',
+    'src/core/anyfs_name.c',
+    include_directories: [anyfs_inc, include_directories('src/core')],
+    install: false,
+)
+test('legacy', test_legacy, suite: 'unit')
 
 # Opens images by host path through the core (backend and mode from the
 # command line); tests/wine/u8-cli.sh runs it with non-ASCII paths.

@@ -15,6 +15,7 @@
 /* ── Sub-headers in dependency order ────────────────── */
 #include "anyfs_format.h"
 #include "anyfs_kernel.h"
+#include "anyfs_legacy.h"
 #include "anyfs_path.h"
 #include "anyfs_session.h"
 #include "anyfs_share.h"

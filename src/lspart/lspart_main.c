@@ -15,19 +15,23 @@
 
 static void usage(FILE* f, const char* prog)
 {
-	fprintf(f,
-		"Usage: %s [--json] [--help] [--nbd-fd N | --nbd-port P] "
-		"<image>[?<query>] [<image>...]\n"
-		"\n"
-		"Open each image, list partitions, print a unified table.\n"
-		"PATH column is the canonical disk<N>/p<M> form (drops into\n"
-		"    anyfs-fuse -o part=, anyfs-ksmbd --share, anyfs-nfsd "
-		"--share).\n"
-		"\n"
-		"v1 limitations:\n"
-		"  --json is reserved (not yet implemented).\n"
-		"  FSTYPE/LABEL/UUID columns show '?' (v2 adds libblkid).\n",
-		prog);
+	fprintf(
+	    f,
+	    "Usage: %s [--json] [--help] [--nbd-fd N | --nbd-port P] "
+	    "[--legacy-encoding ENC] <image>[?<query>] [<image>...]\n"
+	    "\n"
+	    "Open each image, list partitions, print a unified table.\n"
+	    "--legacy-encoding ENC decodes labels that are not UTF-8: auto\n"
+	    "(default, from the locale), gb18030, big5, shift_jis, euc-kr,\n"
+	    "windows-1252, off.\n"
+	    "PATH column is the canonical disk<N>/p<M> form (drops into\n"
+	    "    anyfs-fuse -o part=, anyfs-ksmbd --share, anyfs-nfsd "
+	    "--share).\n"
+	    "\n"
+	    "v1 limitations:\n"
+	    "  --json is reserved (not yet implemented).\n"
+	    "  FSTYPE/LABEL/UUID columns show '?' (v2 adds libblkid).\n",
+	    prog);
 }
 
 int main(int argc, char** argv)
@@ -45,6 +49,21 @@ int main(int argc, char** argv)
 		}
 		if (strcmp(a, "--json") == 0) {
 			json = 1;
+			continue;
+		}
+		if (strcmp(a, "--legacy-encoding") == 0 ||
+		    strncmp(a, "--legacy-encoding=", 18) == 0) {
+			const char* v = a[17] == '='   ? a + 18
+					: i + 1 < argc ? argv[++i]
+						       : NULL;
+			int enc = anyfs_legacy_parse(v);
+			if (enc < 0) {
+				fprintf(stderr,
+					"unknown --legacy-encoding '%s'\n",
+					v ? v : "");
+				return 2;
+			}
+			anyfs_legacy_set(enc);
 			continue;
 		}
 		if (strcmp(a, "--nbd-fd") == 0 || strcmp(a, "--nbd-port") == 0) {

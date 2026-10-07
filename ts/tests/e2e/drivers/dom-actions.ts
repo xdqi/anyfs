@@ -159,6 +159,38 @@ export async function listRows(page: Page): Promise<RowInfo[]> {
     );
 }
 
+/** The label shown on partition `index` in the picker ('' if none). */
+export async function partitionLabel(page: Page, index: number): Promise<string> {
+    // The picker renders once listParts resolves, after the disk is ready.
+    await page
+        .locator(`[data-testid="partition-${index}"]`)
+        .waitFor({ state: 'visible', timeout: 30_000 });
+    const label = page.locator(
+        `[data-testid="partition-${index}"] [data-testid="partition-label"]`,
+    );
+    return (await label.count()) ? ((await label.textContent()) ?? '').trim() : '';
+}
+
+/** The names as displayed (formatName applied), in row order. Chonky puts
+ *  the displayed name in the title of the row's name span; the row id keeps
+ *  the name as the engine reported it (see listRows). */
+export async function listDisplayNames(page: Page): Promise<string[]> {
+    await listRows(page); // waits for the list to settle
+    return page
+        .locator(ROW)
+        .evaluateAll((nodes) =>
+            nodes.map((n) => n.querySelector('span[title]')?.getAttribute('title') ?? ''),
+        );
+}
+
+/** Pick the legacy file-name encoding in the Settings dialog. */
+export async function setLegacyEncoding(page: Page, value: string): Promise<void> {
+    await page.getByRole('button', { name: 'Settings' }).click();
+    await page.locator('[data-testid="legacy-encoding"]').selectOption(value);
+    await page.keyboard.press('Escape');
+    await page.locator('[data-testid="legacy-encoding"]').waitFor({ state: 'detached' });
+}
+
 export async function navigateInto(page: Page, name: string): Promise<void> {
     // Chonky opens a directory on double-click. The row is identified by its
     // data-chonky-file-id; at the current dir that id ends with the name.

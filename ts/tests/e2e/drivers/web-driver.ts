@@ -111,7 +111,24 @@ export class WebDriver implements Driver {
         const path = await (download as Download).path();
         if (!path) throw new Error('download produced no file path');
         const bytes = new Uint8Array(readFileSync(path));
-        return { bytes, size: bytes.byteLength, mechanism: 'service-worker' };
+        return {
+            bytes,
+            size: bytes.byteLength,
+            mechanism: 'service-worker',
+            fileName: (download as Download).suggestedFilename(),
+        };
+    }
+
+    async partitionLabel(index: number): Promise<string> {
+        return dom.partitionLabel(this.page, index);
+    }
+
+    async listDisplayNames(): Promise<string[]> {
+        return dom.listDisplayNames(this.page);
+    }
+
+    async setLegacyEncoding(value: string): Promise<void> {
+        return dom.setLegacyEncoding(this.page, value);
     }
 
     async expectError(kind: ErrorKind): Promise<void> {

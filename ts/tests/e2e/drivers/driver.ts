@@ -6,6 +6,8 @@ export interface DownloadResult {
     bytes: Uint8Array;
     size: number;
     mechanism: DownloadMechanism;
+    /** The name the file was saved under. */
+    fileName: string;
 }
 
 export type ErrorKind = 'bad-image' | 'no-range' | 'unsupported' | 'mount-failed' | 'read-failed';
@@ -38,12 +40,19 @@ export interface Driver {
 
     /** Disk/partition. */
     listPartitionIndices(): Promise<number[]>;
+    /** The label shown on a partition in the picker ('' if none). */
+    partitionLabel(index: number): Promise<string>;
     enterPartition(index: number): Promise<void>;
     /** Step back from a mounted partition to the partition list. */
     backToPartitions(): Promise<void>;
 
     /** Filesystem browsing (current dir). */
     listRows(): Promise<RowInfo[]>;
+    /** Names as displayed (after the legacy-encoding decode). */
+    listDisplayNames(): Promise<string[]>;
+    /** Choose the legacy file-name encoding in Settings (before opening a
+     *  disk, for FAT short names). */
+    setLegacyEncoding(value: string): Promise<void>;
     navigateInto(name: string): Promise<void>;
     /** Go up one directory (Chonky's "Go up a directory" button). */
     navigateUp(): Promise<void>;
@@ -53,7 +62,9 @@ export interface Driver {
 
     /** Download the named file from the current dir. Reports which mechanism
      *  actually fired (SW on web, IPC on electron) — never papered over. */
-    download(name: string): Promise<DownloadResult>;
+    /** Download the row `name` (as listRows reports it); `savedAs` is the file
+     *  name the app saves it under when that differs (a displayed name). */
+    download(name: string, savedAs?: string): Promise<DownloadResult>;
 
     /** Error assertions — wait for the app to surface the given failure. */
     expectError(kind: ErrorKind): Promise<void>;
