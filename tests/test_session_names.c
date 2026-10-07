@@ -7,7 +7,9 @@
  *   - FAT long names came out through iocharset=iso8859-1: CJK became '?'
  *     and Latin-1 a lone byte that is not UTF-8;
  *   - FAT short (8.3) names are bytes in an OEM codepage; the caller picks
- *     it with ANYFS_MOUNT_FAT_CP_*.
+ *     it with ANYFS_MOUNT_FAT_CP_*;
+ *   - ext4 names that are not UTF-8 reached JS as U+FFFD and could not be
+ *     opened again; they now travel escaped (src/core/anyfs_name.h).
  *
  * The image comes from tests/make_names_image.py (path in argv[1]).
  * Raw backend, read-only. Exit 77 (skip) when the generator can't run.
@@ -26,6 +28,7 @@ int anyfs_ts_kernel_init(uint32_t mem_mb, uint32_t loglevel);
 int anyfs_ts_session_open(const char* image_path, uint32_t flags);
 int anyfs_ts_session_enter(int h, unsigned int part, uint32_t flags,
 			   char* mount_out, size_t mount_cap);
+int anyfs_ts_session_list_json(int h, char* buf, size_t cap);
 int anyfs_ts_readdir_json(const char* path, char* buf, size_t cap);
 int anyfs_ts_lstat_json(const char* path, char* buf, size_t cap);
 int anyfs_ts_open(const char* path, int flags);
@@ -166,6 +169,32 @@ int main(int argc, char** argv)
 	};
 	check_part(h, 1, 0, fat437, 3);
 	check_part(h936, 1, ANYFS_MOUNT_FAT_CP_936, fat936, 3);
+
+	/* ext4 names are bytes. Those that are not UTF-8 reach JS escaped
+	 * (each byte b as U+EF00 + b), and so does a real U+EF80; every one
+	 * must open again through the escaped name. */
+	const struct entry ext4[] = {
+	    /* D6 D0 CE C4 .txt (GBK) */
+	    {"\xee\xbf\x96\xee\xbf\x90\xee\xbf\x8e\xee\xbf\x84.txt",
+	     "ext4-gbk\n"},
+	    /* caf E9 .txt (Latin-1) */
+	    {"caf\xee\xbf\xa9.txt", "ext4-latin1\n"},
+	    /* U+EF80 .txt: its own three bytes, escaped */
+	    {"\xee\xbf\xae\xee\xbe\xbe\xee\xbe\x80.txt", "ext4-pua\n"},
+	    /* ED A0 80 .txt (an encoded surrogate) */
+	    {"\xee\xbf\xad\xee\xbe\xa0\xee\xbe\x80.txt", "ext4-surrogate\n"},
+	    {"plain.txt", "ext4-plain\n"},
+	};
+	check_part(h, 2, 0, ext4, 5);
+
+	/* A FAT label is OEM bytes (GBK here): it reaches JS escaped too. */
+	char list[4096];
+	int n = anyfs_ts_session_list_json(h, list, sizeof(list));
+	CHECK(n > 0, "list -> %d", n);
+	list[n] = '\0';
+	CHECK(strstr(list, "\"label\":\"\xee\xbe\xb2\xee\xbf\xa2\xee\xbf\x8a"
+			   "\xee\xbf\x94\""),
+	      "GBK label not escaped: %s", list);
 
 	unlink(img);
 	rmdir(dir);

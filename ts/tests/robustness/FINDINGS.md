@@ -74,8 +74,10 @@ reading the LKL tree (`~/linux`) and `~/oot-fs`:
   (a corrupt image that requests a panic must not take the process down) is met by the generated
   `ext4panic-*` case.
 - Some syzbot images contain names that are not valid UTF-8 (`syz-hfsplus-e76bf3d1`,
-  `syz-iso9660-4d7cd7dd`, `syz-exfat-98cc76a7`, `syz-ntfs-cfc6e810`). The walk lists the name, the
-  JSON/JS string API turns the bad bytes into U+FFFD or another code point, and the following `stat`
-  of that path returns ENOENT (`rc=-2`; the report paths show e.g. `fi\ufffd\ufffd\ufffd\ufffd`,
-  `file\u0080`). This is an encoding artifact of the string API, not corruption handling, and it is
-  identical on wasm and native.
+  `syz-iso9660-4d7cd7dd`, `syz-exfat-98cc76a7`, `syz-ntfs-cfc6e810`). Until 2026-10-07 the
+  JSON/JS string API turned the bad bytes into U+FFFD and the following `stat` returned ENOENT.
+  Names now travel escaped (bytes that are not UTF-8 as U+EF80–U+EFFF, see
+  `docs/superpowers/specs/2026-10-07-unicode-filenames-design.md`), so such a name stats and opens.
+  No error path in either report contains U+FFFD any more (2026-10-07). The four cases stay
+  `error` and no case changed class: the ENOENTs left are on names that are valid UTF-8 (`file`,
+  HFS+'s `file.cĀ␀d` for an embedded NUL), i.e. the fuzzed catalog / upcase tables, not encoding.

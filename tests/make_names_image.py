@@ -9,6 +9,7 @@ MBR disk, 13 MiB:
         café.txt   long name                           "fat-cafe\\n"
         B2 E2 CA D4 . TXT   8.3 name only, GBK bytes   "fat-gbk\\n"
             (测试.TXT in codepage 936, ▓Γ╩╘.TXT in 437)
+        volume label        GBK bytes B2 E2 CA D4 (测试), root-dir entry
   p2  ext4, built by mkfs.ext4 -d from byte-named files:
         D6 D0 CE C4 .txt   GBK                         "ext4-gbk\\n"
         caf E9 .txt        Latin-1                     "ext4-latin1\\n"
@@ -42,6 +43,8 @@ FAT_FILES = [
     ("café.txt", b"CAFE~1  TXT", b"fat-cafe\n"),
     (None, b"\xb2\xe2\xca\xd4    TXT", b"fat-gbk\n"),
 ]
+
+FAT_LABEL = b"\xb2\xe2\xca\xd4       "  # GBK 测试
 
 EXT4_FILES = [
     (b"\xd6\xd0\xce\xc4.txt", b"ext4-gbk\n"),
@@ -124,6 +127,10 @@ def fat12_image():
         root += e
         off = (DATA_SECTOR + (cluster - 2) * SPC) * SECTOR
         img[off:off + len(content)] = content
+    label = bytearray(32)
+    label[0:11] = FAT_LABEL
+    label[11] = 0x08  # ATTR_VOLUME_ID: libblkid reads the label from here
+    root += label
     assert len(root) <= ROOT_ENTRIES * 32
     for i in range(NFATS):
         off = (RESERVED + i * FAT_SECTORS) * SECTOR

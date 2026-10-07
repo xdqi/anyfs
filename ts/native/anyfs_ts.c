@@ -9,6 +9,11 @@
  * Buffer-size protocol for the *_json helpers: if `cap` is too small,
  * returns a NEGATIVE number whose absolute value is the byte count we
  * would have written. JS retries with that buffer.
+ *
+ * Names: file names are bytes, JS strings are Unicode. Every name, label
+ * and path that goes out is escaped (src/core/anyfs_name.h: bytes that are
+ * not UTF-8 become U+EF80..U+EFFF), and every LKL path that comes in is
+ * unescaped, so a name that is not UTF-8 still opens.
  */
 
 #include <stdint.h>
@@ -25,6 +30,7 @@
 #include <lkl_host.h>
 
 #include "anyfs.h"
+#include "anyfs_name.h"
 #include "anyfs_probe.h"
 
 #ifndef DT_DIR
@@ -38,6 +44,51 @@
 #endif
 
 #include "jsonw.h"
+
+/* ── Names ──────────────────────────────────────────────── */
+
+/* NAME_MAX is 255; labels and other metadata strings are shorter. */
+#define NAME_ESC_CAP ANYFS_NAME_ESCAPE_MAX(256)
+/* An LKL path in, unescaped (never longer than its escaped form). */
+#define PATH_IN_CAP 16384
+
+/* "key":"<escaped value>" — for names and other strings from the disk. */
+static void jw_kv_name(JsonW* w, const char* k, const char* v,
+		       int trailing_comma)
+{
+	char e[NAME_ESC_CAP];
+	if (anyfs_name_escape(v, e, sizeof(e)) < 0)
+		e[0] = '\0';
+	jw_kv_str(w, k, e, trailing_comma);
+}
+
+/* Unescape a path from JS into tmp. NULL if it does not fit. */
+static const char* path_in(const char* path, char* tmp)
+{
+	return anyfs_name_unescape(path, tmp, PATH_IN_CAP) < 0 ? NULL : tmp;
+}
+
+/* Escape the n bytes in buf (a path or link target) in place. Returns the
+ * escaped length, or -(bytes needed) when cap is too small. */
+static int escape_out(char* buf, size_t n, size_t cap)
+{
+	size_t need = ANYFS_NAME_ESCAPE_MAX(n);
+	char* raw = malloc(n + 1);
+	char* esc = malloc(need);
+	int r = -1;
+	if (raw && esc) {
+		memcpy(raw, buf, n);
+		raw[n] = '\0';
+		r = anyfs_name_escape(raw, esc, need);
+		if (r >= 0 && (size_t)r < cap)
+			memcpy(buf, esc, (size_t)r + 1);
+		else if (r >= 0)
+			r = -(r + 1);
+	}
+	free(raw);
+	free(esc);
+	return r;
+}
 
 /* ── Session table ──────────────────────────────────────── */
 /* anyfs_session_open returns AnyfsSession* — opaque to JS. We give JS small
@@ -151,11 +202,11 @@ int anyfs_ts_session_list_json(int h, char* buf, size_t cap)
 		jw_kv_uint(&w, "offset", (unsigned long long)p->offset_bytes,
 			   1);
 		jw_kv_uint(&w, "size", (unsigned long long)p->size_bytes, 1);
-		jw_kv_str(&w, "ptype", p->ptype, 1);
+		jw_kv_name(&w, "ptype", p->ptype, 1);
 		jw_kv_str(&w, "kind", anyfs_partkind_name(p->kind), 1);
-		jw_kv_str(&w, "fstype", p->fstype, 1);
-		jw_kv_str(&w, "label", p->label, 1);
-		jw_kv_str(&w, "uuid", p->uuid, 0);
+		jw_kv_name(&w, "fstype", p->fstype, 1);
+		jw_kv_name(&w, "label", p->label, 1);
+		jw_kv_name(&w, "uuid", p->uuid, 0);
 		jw_putc(&w, '}');
 	}
 	jw_putc(&w, ']');
@@ -174,7 +225,7 @@ int anyfs_ts_session_meta_json(int h, char* buf, size_t cap)
 	jw_init(&w, buf, cap);
 	jw_putc(&w, '{');
 	jw_kv_uint(&w, "logical_size", (unsigned long long)m.logical_size, 1);
-	jw_kv_str(&w, "pt_type", m.pt_type, 0);
+	jw_kv_name(&w, "pt_type", m.pt_type, 0);
 	jw_putc(&w, '}');
 	return jw_finish(&w, buf, cap);
 }
@@ -201,6 +252,9 @@ int anyfs_ts_session_enter(int h, unsigned int part, uint32_t flags,
 
 int anyfs_ts_readdir_json(const char* path, char* buf, size_t cap)
 {
+	char tmp[PATH_IN_CAP];
+	if (!(path = path_in(path, tmp)))
+		return -LKL_ENAMETOOLONG;
 	int err = 0;
 	struct lkl_dir* dir = lkl_opendir(path, &err);
 	if (!dir)
@@ -238,7 +292,7 @@ int anyfs_ts_readdir_json(const char* path, char* buf, size_t cap)
 		}
 
 		jw_putc(&w, '{');
-		jw_kv_str(&w, "name", name, 1);
+		jw_kv_name(&w, "name", name, 1);
 		jw_kv_uint(&w, "ino", (unsigned long long)de->d_ino, 1);
 		jw_kv_str(&w, "kind", kind, 0);
 		jw_putc(&w, '}');
@@ -282,6 +336,9 @@ static int emit_stat_json(struct lkl_stat* st, char* buf, size_t cap)
 
 int anyfs_ts_lstat_json(const char* path, char* buf, size_t cap)
 {
+	char tmp[PATH_IN_CAP];
+	if (!(path = path_in(path, tmp)))
+		return -LKL_ENAMETOOLONG;
 	struct lkl_stat st;
 	long rc = lkl_sys_lstat(path, &st);
 	if (rc < 0)
@@ -293,6 +350,9 @@ int anyfs_ts_lstat_json(const char* path, char* buf, size_t cap)
  * reflects the target file, not the symlink's text length. */
 int anyfs_ts_stat_json(const char* path, char* buf, size_t cap)
 {
+	char tmp[PATH_IN_CAP];
+	if (!(path = path_in(path, tmp)))
+		return -LKL_ENAMETOOLONG;
 	struct lkl_stat st;
 	long rc = lkl_sys_stat(path, &st);
 	if (rc < 0)
@@ -308,6 +368,9 @@ int anyfs_ts_stat_json(const char* path, char* buf, size_t cap)
  * single-threaded and we restore the saved cwd before returning. */
 int anyfs_ts_realpath(const char* path, char* buf, size_t cap)
 {
+	char tmp[PATH_IN_CAP];
+	if (!(path = path_in(path, tmp)))
+		return -LKL_ENAMETOOLONG;
 	char saved[1024];
 	long s = lkl_sys_getcwd(saved, sizeof(saved));
 	if (s < 0)
@@ -321,15 +384,20 @@ int anyfs_ts_realpath(const char* path, char* buf, size_t cap)
 		return (int)g;
 	/* sys_getcwd returns length including NUL; report strlen to match
 	 * the *_json convention (positive = bytes written, no NUL). */
-	return (int)g - 1;
+	return escape_out(buf, (size_t)g - 1, cap);
 }
 
 /* Read the verbatim target of a symlink. Returns bytes written (no NUL),
  * or negative errno (e.g. -EINVAL when `path` is not a symlink). */
 int anyfs_ts_readlink(const char* path, char* buf, size_t cap)
 {
+	char tmp[PATH_IN_CAP];
+	if (!(path = path_in(path, tmp)))
+		return -LKL_ENAMETOOLONG;
 	long n = lkl_sys_readlink(path, buf, cap);
-	return (int)n;
+	if (n < 0)
+		return (int)n;
+	return escape_out(buf, (size_t)n, cap);
 }
 
 /* Read a small text file from the LKL kernel namespace (e.g.
@@ -337,6 +405,9 @@ int anyfs_ts_readlink(const char* path, char* buf, size_t cap)
  * or negative errno. */
 int anyfs_ts_read_kernel_file(const char* path, char* buf, size_t cap)
 {
+	char tmp[PATH_IN_CAP];
+	if (!(path = path_in(path, tmp)))
+		return -LKL_ENAMETOOLONG;
 	long fd = lkl_sys_open(path, LKL_O_RDONLY, 0);
 	if (fd < 0)
 		return (int)fd;
@@ -350,6 +421,9 @@ int anyfs_ts_read_kernel_file(const char* path, char* buf, size_t cap)
 
 int anyfs_ts_open(const char* path, int flags)
 {
+	char tmp[PATH_IN_CAP];
+	if (!(path = path_in(path, tmp)))
+		return -LKL_ENAMETOOLONG;
 	long fd = lkl_sys_open(path, flags, 0);
 	return (int)fd;
 }
