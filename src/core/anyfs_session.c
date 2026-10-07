@@ -591,7 +591,7 @@ static int enter_fs_slot(AnyfsSession* d, int slot_id, uint32_t flags,
 	pthread_mutex_unlock(&d->lock);
 
 	AnyfsMount mnt = {0};
-	uint32_t mflags = 0;
+	uint32_t mflags = flags & ANYFS_MOUNT_FAT_CP_MASK;
 	if ((d->open_flags & ANYFS_SESSION_READONLY) ||
 	    (flags & ANYFS_MOUNT_RDONLY))
 		mflags |= ANYFS_MOUNT_RDONLY;
@@ -683,7 +683,8 @@ int anyfs_session_enter(AnyfsSession* d, unsigned int part, uint32_t flags,
 		 * block writes fail on the non-writable backend (-EIO),
 		 * aborting the mount. The RDONLY flag adds noload/norecovery so
 		 * the mount skips recovery and succeeds. */
-		uint32_t mflags = flags & ANYFS_MOUNT_RDONLY;
+		uint32_t mflags =
+		    flags & (ANYFS_MOUNT_RDONLY | ANYFS_MOUNT_FAT_CP_MASK);
 		if (d->open_flags & ANYFS_SESSION_READONLY)
 			mflags |= ANYFS_MOUNT_RDONLY;
 

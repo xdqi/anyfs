@@ -45,7 +45,8 @@ static int append(char* buf, size_t cap, size_t* len, const char* opt)
 	return 0;
 }
 
-int anyfs_mount_opts(const char* fstype, int rdonly, char* buf, size_t cap)
+int anyfs_mount_opts(const char* fstype, int rdonly, unsigned fat_cp, char* buf,
+		     size_t cap)
 {
 	size_t len = 0;
 
@@ -71,6 +72,21 @@ int anyfs_mount_opts(const char* fstype, int rdonly, char* buf, size_t cap)
 	if (strcmp(fstype, "ufs") == 0 &&
 	    append(buf, cap, &len, "ufstype=ufs2"))
 		goto overflow;
+	/* FAT long names are UTF-16 on disk; without utf8 the kernel converts
+	 * them with iocharset=iso8859-1 (CONFIG_FAT_DEFAULT_IOCHARSET), turning
+	 * CJK into '?' and Latin-1 into bytes that are not UTF-8. utf8 rather
+	 * than iocharset=utf8, which breaks case-insensitive lookup. Short (8.3)
+	 * names are bytes in an OEM codepage: the caller picks it. */
+	if (strcmp(fstype, "vfat") == 0 && append(buf, cap, &len, "utf8"))
+		goto overflow;
+	if (fat_cp &&
+	    (strcmp(fstype, "vfat") == 0 || strcmp(fstype, "msdos") == 0)) {
+		char cp[24];
+
+		snprintf(cp, sizeof(cp), "codepage=%u", fat_cp);
+		if (append(buf, cap, &len, cp))
+			goto overflow;
+	}
 	if (in_list(fstype, errors_opt_fs) &&
 	    append(buf, cap, &len,
 		   rdonly ? "errors=continue" : "errors=remount-ro"))

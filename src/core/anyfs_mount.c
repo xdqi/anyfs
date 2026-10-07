@@ -60,6 +60,16 @@ static int get_block_fstypes(char fstypes[][FSTYPE_MAXLEN], int max)
 	return count;
 }
 
+/* The FAT short-name codepage selected by ANYFS_MOUNT_FAT_CP_*, or 0 for
+ * the kernel default. */
+static unsigned fat_codepage(uint32_t flags)
+{
+	static const unsigned cps[] = {0, 936, 950, 932, 949};
+	unsigned i = (flags & ANYFS_MOUNT_FAT_CP_MASK) >> ANYFS_MOUNT_FAT_CP_SHIFT;
+
+	return i < sizeof(cps) / sizeof(cps[0]) ? cps[i] : 0;
+}
+
 /* Mark the block device read-only (or read-write) to match the mount.
  * MS_RDONLY alone does not stop every write: ext4 records an error in the
  * superblock unless bdev_read_only(), and LKL's virtio-blk never sets it.
@@ -100,8 +110,8 @@ static int mount_via_devpath(const char* dev_str, const char* fstype,
 
 	char opts[ANYFS_MOUNT_OPTS_MAX];
 	if (!auto_detect) {
-		if (anyfs_mount_opts(fstype, flags & ANYFS_MOUNT_RDONLY, opts,
-				     sizeof(opts)) < 0) {
+		if (anyfs_mount_opts(fstype, flags & ANYFS_MOUNT_RDONLY,
+				     fat_codepage(flags), opts, sizeof(opts)) < 0) {
 			lkl_sys_rmdir(mnt);
 			return -1;
 		}
@@ -146,7 +156,7 @@ static int mount_via_devpath(const char* dev_str, const char* fstype,
 		    strcmp(fstypes[i], "btrfs") == 0)
 			continue;
 		if (anyfs_mount_opts(fstypes[i], flags & ANYFS_MOUNT_RDONLY,
-				     opts, sizeof(opts)) < 0)
+				     fat_codepage(flags), opts, sizeof(opts)) < 0)
 			continue;
 		ret = lkl_sys_mount((char*)dev_str, mnt, fstypes[i],
 				    mount_flags, opts[0] ? opts : NULL);

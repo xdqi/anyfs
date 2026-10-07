@@ -1,7 +1,7 @@
 # Unicode and legacy-encoded filenames: design
 
 **Date:** 2026-10-07
-**Status:** proposed
+**Status:** in progress (plan: `docs/superpowers/plans/2026-10-07-unicode-filenames.md`); see "Amendments during implementation" at the end
 **Scope:** `src/core/anyfs_mount_opts.c`, `src/core/anyfs_name.{c,h}` (new), `ts/native/anyfs_ts.c`,
 `src/win32/` (new), `src/core/{raw_backend,anyfs_probe,anyfs_container,anyfs_tls,anyfs_session,qemu_thread}.c`,
 the CLIs (`lspart`, `ksmbd`, `nfsd`, `fuse`), `patches/qemu/0012-*`, `ts/packages/{core,trees}`,
@@ -278,3 +278,16 @@ A → D → B → C, each committed and pushed on its own with its tests:
   `macintosh`. Out of scope.
 - **Windows console input** (`ReadConsoleW`): no CLI reads interactive input today; the layer gets
   it when one does.
+
+## Amendments during implementation
+
+- **A, test image.** The 8.3-only name on the FAT partition is GBK `测试` (`B2 E2 CA D4`), not
+  `中文`: FAT lookup is case-insensitive, so under codepage 936 an 8.3 name `中文.TXT` is the same
+  name as the long name `中文.txt`, and opening it opened the other file. The image generator is
+  `tests/make_names_image.py`; the C test links the glue from a static library `ts_glue`
+  built with `-Dmain=anyfs_ts_main_unused` (the glue defines `main()` for wasm).
+- **A, other filesystems (checked 2026-10-07 through the native addon, no mount options):**
+  exFAT, UDF (`mkudffs`), NTFS PLUS (`ntfscp`), iso9660 with Joliet, and iso9660 with Joliet and
+  Rock Ridge list and stat `中文.txt` and `café.txt` as UTF-8, as the kernel source suggested.
+- **A, robustness gate:** after the `utf8` option, both backends give the same class for every
+  case (ok 40 / error 60).

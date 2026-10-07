@@ -441,6 +441,27 @@ if host_machine.system() != 'windows'
     )
     test('session_ro_mount', test_session_ro_mount, suite: 'unit', timeout: 120)
 
+    # Built with the TS glue: names are checked where every UI backend sees
+    # them. The glue defines main() for wasm's PROXY_TO_PTHREAD; rename it.
+    ts_glue_lib = static_library('ts_glue',
+        'ts/native/anyfs_ts.c',
+        include_directories: [anyfs_inc, include_directories('src/core')],
+        dependencies: [anyfs_dep],
+        c_args: gio_args + qemu_args + ['-Dmain=anyfs_ts_main_unused'],
+        install: false,
+    )
+    test_session_names = executable('test_session_names',
+        'tests/test_session_names.c',
+        include_directories: [anyfs_inc],
+        link_with: ts_glue_lib,
+        dependencies: [anyfs_dep],
+        c_args: gio_args + qemu_args,
+        install: false,
+    )
+    test('session_names', test_session_names,
+        args: [files('tests/make_names_image.py')],
+        suite: 'unit', timeout: 120)
+
     # Build-script helper: CC launcher for mingw LKL builds through sccache.
     test('lkl_mingw_cc', find_program('tests/test_lkl_mingw_cc.sh'), suite: 'unit')
     # Build-script gates for the zig/glibc-floor toolchain (skip without zig).

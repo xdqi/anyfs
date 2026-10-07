@@ -42,6 +42,10 @@ extern "C" {
  *                           unmount the other one first. For one-mount-
  *                           at-a-time callers such as the UI; servers
  *                           sharing several mounts must not set it.
+ *   ANYFS_MOUNT_FAT_CP_*  — codepage of FAT short (8.3) names: a 4-bit
+ *                           field at bits 8-11. 437 (the default) or a CJK
+ *                           OEM codepage; long names are always UTF-8.
+ *                           Applies to new mounts only.
  */
 #define ANYFS_SESSION_READONLY (1u << 0)
 #define ANYFS_BACKEND_RAW (1u << 1)
@@ -50,6 +54,13 @@ extern "C" {
 #define ANYFS_SESSION_SNAPSHOT (1u << 4)
 #define ANYFS_MOUNT_RDONLY (1u << 0)
 #define ANYFS_MOUNT_REPLACE (1u << 1)
+#define ANYFS_MOUNT_FAT_CP_SHIFT 8
+#define ANYFS_MOUNT_FAT_CP_MASK (0xfu << ANYFS_MOUNT_FAT_CP_SHIFT)
+#define ANYFS_MOUNT_FAT_CP_437 (0u << ANYFS_MOUNT_FAT_CP_SHIFT)
+#define ANYFS_MOUNT_FAT_CP_936 (1u << ANYFS_MOUNT_FAT_CP_SHIFT)
+#define ANYFS_MOUNT_FAT_CP_950 (2u << ANYFS_MOUNT_FAT_CP_SHIFT)
+#define ANYFS_MOUNT_FAT_CP_932 (3u << ANYFS_MOUNT_FAT_CP_SHIFT)
+#define ANYFS_MOUNT_FAT_CP_949 (4u << ANYFS_MOUNT_FAT_CP_SHIFT)
 
 /* ── Internal types ────────────────────────────────────── */
 
