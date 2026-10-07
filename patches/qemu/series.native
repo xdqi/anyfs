@@ -3,3 +3,4 @@
 # build_qemu_wasm.sh, which applies every *.patch here (these included).
 0010-main-loop-embedder-gcontext.patch
 0011-thread-pool-inline-embedder.patch
+0012-win32-utf8-filenames.patch

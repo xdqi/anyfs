@@ -143,6 +143,7 @@ $CXX -shared -o "$OUT/anyfs_native.node" \
   -L"$MINGW_SYSROOT/lib" \
   -Wl,--start-group \
     "$ANYFS_CORE_MINGW64" \
+    "$(dirname "$ANYFS_CORE_MINGW64")/libanyfs_u8.a" \
     "$LIBBLKID_MINGW64" \
     "$LKL_MINGW64/tools/lkl/lib/liblkl.dll" \
     "$QEMU_BLD_MINGW64/libanyfs-qemublk.dll" \

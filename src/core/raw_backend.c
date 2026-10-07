@@ -2,6 +2,7 @@
 #define _FILE_OFFSET_BITS 64
 #include "raw_backend.h"
 #include "anyfs.h"
+#include "anyfs_u8_win.h"
 
 #include <lkl.h>
 #include <stdbool.h>
@@ -68,8 +69,8 @@ int raw_blk_open(const char* path, uint32_t flags, struct lkl_disk* disk_out)
 	bool readonly = flags & ANYFS_SESSION_READONLY;
 	DWORD access = readonly ? GENERIC_READ : (GENERIC_READ | GENERIC_WRITE);
 	DWORD share = FILE_SHARE_READ;
-	HANDLE hFile = CreateFileA(path, access, share, NULL, OPEN_EXISTING,
-				   FILE_ATTRIBUTE_NORMAL, NULL);
+	HANDLE hFile = anyfs_u8_create_file(path, access, share, OPEN_EXISTING,
+					    FILE_ATTRIBUTE_NORMAL);
 	if (hFile == INVALID_HANDLE_VALUE)
 		return -1;
 

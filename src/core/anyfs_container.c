@@ -8,6 +8,7 @@
 
 #include "anyfs_dm.h"
 #include "anyfs_probe.h"
+#include "anyfs_u8.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -62,7 +63,7 @@ static int resolve_luks_credential(const char* query, unsigned char* out,
 				    "keyref=\n");
 				break;
 			} else if (strcmp(k, "keyref") == 0) {
-				const char* e = getenv(v);
+				const char* e = anyfs_u8_getenv(v);
 				if (!e) {
 					snprintf(errstr, 160,
 						 "keyref=%s: env var not set",
@@ -82,7 +83,7 @@ static int resolve_luks_credential(const char* query, unsigned char* out,
 				 * semantics are irrelevant here — we read the
 				 * keyfile to a buffer and close immediately,
 				 * not across a fork/exec. */
-				FILE* fp = fopen(v, "rb");
+				FILE* fp = anyfs_u8_fopen(v, "rb");
 				if (!fp) {
 					snprintf(errstr, 160,
 						 "keyfile=%s: open failed "

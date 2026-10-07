@@ -12,6 +12,7 @@
  */
 #define _GNU_SOURCE
 #include "anyfs_probe.h"
+#include "anyfs_u8.h"
 
 #include <lkl.h>
 #include <lkl_host.h>
@@ -142,21 +143,11 @@ static int spool_to_host_tmpfile(const char* lkl_blkdev_path,
 #ifdef O_TMPFILE
 	hfd = open("/tmp", O_TMPFILE | O_RDWR | O_CLOEXEC, 0600);
 #endif
-#if defined(_WIN32) || defined(__CYGWIN__)
-	/* Windows has no /tmp and no mkstemp in msvcrt. Build a template
-	 * under %TEMP%/%TMP%/CWD using GetTempPath-style env lookups. */
-	if (hfd < 0) {
-		const char* tdir = getenv("TEMP");
-		if (!tdir || !*tdir)
-			tdir = getenv("TMP");
-		if (!tdir || !*tdir)
-			tdir = ".";
-		char tmpl[260];
-		snprintf(tmpl, sizeof(tmpl), "%s\\anyfs-probe-XXXXXX", tdir);
-		hfd = mkstemp(tmpl);
-		if (hfd >= 0)
-			(void)unlink(tmpl);
-	}
+#if defined(_WIN32)
+	/* %TEMP% through the W APIs (it can hold any character), and
+	 * delete-on-close: Windows cannot unlink an open file. */
+	if (hfd < 0)
+		hfd = anyfs_u8_tmpfile_fd();
 #else
 	if (hfd < 0) {
 		char tmpl[] = "/tmp/anyfs-probe-XXXXXX";

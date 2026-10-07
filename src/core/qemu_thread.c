@@ -38,6 +38,7 @@
 #endif
 #include "anyfs_tls.h"
 #include "qemu_thread.h"
+#include "anyfs_u8.h"
 
 #define QEMU_THREAD_DEFAULT_TIMEOUT_MS 120000
 
@@ -64,7 +65,7 @@ static int timeout_ms(void)
 	int v = qatomic_read(&cached);
 	if (v > 0)
 		return v;
-	const char* env = getenv("ANYFS_QEMU_TIMEOUT_MS");
+	const char* env = anyfs_u8_getenv("ANYFS_QEMU_TIMEOUT_MS");
 	long parsed = env ? strtol(env, NULL, 10) : 0;
 	v = parsed > 0 && parsed < INT_MAX ? (int)parsed
 					   : QEMU_THREAD_DEFAULT_TIMEOUT_MS;

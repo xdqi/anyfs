@@ -23,6 +23,7 @@
 #include "anyfs_path.h"
 #include "anyfs_probe.h"
 #include "anyfs_sysfs.h"
+#include "anyfs_u8.h"
 
 #include <lkl.h>
 #include <lkl_host.h>
@@ -42,7 +43,7 @@ int anyfs_dbg(void)
 {
 	static int v = -1;
 	if (v < 0) {
-		const char* e = getenv("ANYFS_DEBUG");
+		const char* e = anyfs_u8_getenv("ANYFS_DEBUG");
 		v = (e && *e && *e != '0') ? 1 : 0;
 	}
 	return v;

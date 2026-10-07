@@ -1,0 +1,108 @@
+--- a/block/file-win32.c
++++ b/block/file-win32.c
+@@ -32,6 +32,7 @@
+ #include "block/raw-aio.h"
+ #include "trace.h"
+ #include "block/thread-pool.h"
++#include <glib/gstdio.h>
+ #include "qemu/iov.h"
+ #include "qobject/qdict.h"
+ #include "qobject/qstring.h"
+@@ -42,6 +43,24 @@
+ #define FTYPE_CD     1
+ #define FTYPE_HARDDISK 2
+ 
++/* Filenames are UTF-8 (embedders pass them that way); the ANSI CreateFile
++ * would read them in the system code page. */
++static HANDLE win32_create_file_utf8(const char *filename, DWORD access,
++                                     DWORD share, DWORD disposition,
++                                     DWORD flags)
++{
++    wchar_t *w = g_utf8_to_utf16(filename, -1, NULL, NULL, NULL);
++    HANDLE h;
++
++    if (!w) {
++        SetLastError(ERROR_INVALID_NAME);
++        return INVALID_HANDLE_VALUE;
++    }
++    h = CreateFileW(w, access, share, NULL, disposition, flags, NULL);
++    g_free(w);
++    return h;
++}
++
+ typedef struct RawWin32AIOData {
+     BlockDriverState *bs;
+     HANDLE hfile;
+@@ -362,9 +381,9 @@
+         snprintf(s->drive_path, sizeof(s->drive_path), "%c:\\", buf[0]);
+     }
+ 
+-    s->hfile = CreateFile(filename, access_flags,
+-                          FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+-                          OPEN_EXISTING, overlapped, NULL);
++    s->hfile = win32_create_file_utf8(filename, access_flags,
++                                      FILE_SHARE_READ | FILE_SHARE_WRITE,
++                                      OPEN_EXISTING, overlapped);
+     if (s->hfile == INVALID_HANDLE_VALUE) {
+         int err = GetLastError();
+ 
+@@ -455,7 +474,7 @@
+ 
+     CloseHandle(s->hfile);
+     if (bs->open_flags & BDRV_O_TEMPORARY) {
+-        unlink(bs->filename);
++        g_unlink(bs->filename);
+     }
+ }
+ 
+@@ -628,9 +647,9 @@
+      */
+ 
+     raw_parse_flags(state->flags, s->aio != NULL, &access_flags, &overlapped);
+-    rs->hfile = CreateFile(state->bs->filename, access_flags,
+-                           FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+-                           OPEN_EXISTING, overlapped, NULL);
++    rs->hfile = win32_create_file_utf8(state->bs->filename, access_flags,
++                                       FILE_SHARE_READ | FILE_SHARE_WRITE,
++                                       OPEN_EXISTING, overlapped);
+ 
+     if (rs->hfile == INVALID_HANDLE_VALUE) {
+         int err = GetLastError();
+@@ -861,9 +880,9 @@
+ 
+     create_flags = OPEN_EXISTING;
+ 
+-    s->hfile = CreateFile(filename, access_flags,
+-                          FILE_SHARE_READ, NULL,
+-                          create_flags, overlapped, NULL);
++    s->hfile = win32_create_file_utf8(filename, access_flags,
++                                      FILE_SHARE_READ, create_flags,
++                                      overlapped);
+     if (s->hfile == INVALID_HANDLE_VALUE) {
+         int err = GetLastError();
+ 
+--- a/util/osdep.c
++++ b/util/osdep.c
+@@ -22,6 +22,7 @@
+  * THE SOFTWARE.
+  */
+ #include "qemu/osdep.h"
++#include <glib/gstdio.h>
+ #include "qapi/error.h"
+ #include "qemu/cutils.h"
+ #include "qemu/sockets.h"
+@@ -310,7 +311,13 @@
+ static int qemu_open_cloexec(const char *name, int flags, mode_t mode)
+ {
+     int ret;
+-#ifdef O_CLOEXEC
++#ifdef _WIN32
++    /* name is UTF-8; g_open converts it and calls _wopen. */
++    ret = g_open(name, flags, mode);
++    if (ret >= 0) {
++        qemu_set_cloexec(ret);
++    }
++#elif defined(O_CLOEXEC)
+     ret = open(name, flags | O_CLOEXEC, mode);
+ #else
+     ret = open(name, flags, mode);

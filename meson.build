@@ -245,6 +245,64 @@ else
     qemu_shared = false
 endif
 
+# --- UTF-8 host layer (src/win32) ---
+# Every host path and console write goes through the W (UTF-16) APIs on
+# Windows; elsewhere the layer is the plain libc call. Core is force-included
+# with the output half only (it is also linked into the Electron addon and has
+# member calls such as ops->open() that a function-like open() macro would
+# rewrite); the CLIs get the full redirect header and a wmain() that hands
+# main() UTF-8 arguments.
+anyfs_u8_inc = include_directories('src/win32')
+anyfs_u8_lib = static_library('anyfs_u8',
+    'src/win32/anyfs_u8.c',
+    include_directories: anyfs_u8_inc,
+)
+anyfs_u8_dep = declare_dependency(
+    include_directories: anyfs_u8_inc,
+    link_with: anyfs_u8_lib,
+)
+if host_machine.system() == 'windows'
+    anyfs_u8_core_args = ['-include',
+        meson.project_source_root() / 'src/win32/anyfs_u8_stdio.h']
+    anyfs_u8_cli_args = ['-include',
+        meson.project_source_root() / 'src/win32/anyfs_u8_redirect.h']
+    anyfs_u8_main_args = ['-Dmain=anyfs_tool_main']
+    # Link time only: at compile time -municode would also define UNICODE
+    # and turn every CreateFile into CreateFileW.
+    anyfs_u8_link_args = ['-municode']
+else
+    anyfs_u8_core_args = []
+    anyfs_u8_cli_args = []
+    anyfs_u8_main_args = []
+    anyfs_u8_link_args = []
+endif
+
+if host_machine.system() == 'windows'
+    _u8_glib = dependency('glib-2.0', required: false)
+    anyfs_u8_main_lib = static_library('anyfs_u8_main',
+        'src/win32/anyfs_u8_main.c',
+        dependencies: [anyfs_u8_dep, _u8_glib],
+        c_args: _u8_glib.found() ? ['-DANYFS_U8_HAVE_GLIB'] : [],
+    )
+    # Everything a CLI executable needs: the redirect header on every
+    # source, main() renamed, and wmain() linked in.
+    anyfs_u8_cli_dep = declare_dependency(
+        link_whole: anyfs_u8_main_lib,
+        dependencies: [anyfs_u8_dep, _u8_glib],
+        compile_args: anyfs_u8_cli_args + anyfs_u8_main_args,
+        link_args: anyfs_u8_link_args,
+    )
+else
+    anyfs_u8_cli_dep = declare_dependency()
+endif
+
+test_u8 = executable('test_u8',
+    'tests/unit/test_u8.c',
+    dependencies: [anyfs_u8_dep],
+    install: false,
+)
+test('u8', test_u8, suite: 'unit')
+
 # --- Core library ---
 
 anyfs_core_sources = files(
@@ -321,16 +379,16 @@ endif
 anyfs_core = static_library('anyfs_core',
     anyfs_core_sources,
     include_directories: _anyfs_core_inc,
-    dependencies: [lkl_dep, gio_dep, blkid_dep] + (enable_qemu ? [qemu_dep] : []),
+    dependencies: [lkl_dep, gio_dep, blkid_dep, anyfs_u8_dep] + (enable_qemu ? [qemu_dep] : []),
     c_args: ['-DANYFS_CORE_BUILDING', '-fvisibility=hidden']
-            + gio_args + qemu_args,
+            + gio_args + qemu_args + anyfs_u8_core_args,
     install: true,
 )
 
 anyfs_dep = declare_dependency(
     include_directories: anyfs_inc,
     link_with: anyfs_core,
-    dependencies: [lkl_dep, gio_dep] + (enable_qemu ? [qemu_dep] : []),
+    dependencies: [lkl_dep, gio_dep, anyfs_u8_dep] + (enable_qemu ? [qemu_dep] : []),
 )
 
 # --- host_proxy (shared between anyfs-ksmbd, anyfs-nfsd, lkl-zerobench) ---
@@ -391,7 +449,7 @@ test('share_helpers', test_share_helpers, suite: 'unit')
 test_tls_ca = executable('test_tls_ca',
     'tests/unit/test_tls_ca.c',
     'src/core/anyfs_tls.c',
-    include_directories: [include_directories('src/core')],
+    include_directories: [include_directories('src/core'), anyfs_u8_inc],
     install: false,
 )
 test('tls_ca', test_tls_ca, suite: 'unit')
@@ -403,6 +461,17 @@ test_mount_opts = executable('test_mount_opts',
     install: false,
 )
 test('mount_opts', test_mount_opts, suite: 'unit')
+
+# Opens images by host path through the core (backend and mode from the
+# command line); tests/wine/u8-cli.sh runs it with non-ASCII paths.
+if host_machine.system() == 'windows'
+    test_open_paths = executable('test_open_paths',
+        'tests/test_open_paths.c',
+        dependencies: [anyfs_dep, anyfs_u8_cli_dep],
+        c_args: gio_args + qemu_args,
+        install: false,
+    )
+endif
 
 bench_backends = executable('bench_backends',
     'tests/bench_backends.c',
@@ -569,7 +638,7 @@ if enable_ksmbd
             '-I' + meson.current_build_dir(),
             '-Wno-pointer-sign',
             '-Dmain=ksmbd_tools_main_unused',
-        ],
+        ] + anyfs_u8_cli_args,
     )
 
     # config.h for ksmbd-tools (no KRB5)
@@ -594,7 +663,8 @@ if enable_ksmbd
         ksmbd_tools_sources,
         include_directories: [anyfs_inc, ksmbd_tools_inc,
                               include_directories('src/server_common')],
-        dependencies: [lkl_dep, glib_sys_dep2, thread_dep, host_proxy_dep],
+        dependencies: [lkl_dep, glib_sys_dep2, thread_dep, host_proxy_dep,
+                       anyfs_u8_dep, anyfs_u8_cli_dep],
         link_with: [ksmbd_tools_lib, anyfs_core],
         link_args: fastsync_link_args,
         c_args: [
@@ -618,7 +688,8 @@ if enable_ksmbd  # reuses same LKL build with NFSD config
         'src/server_common/server_common.c',
         include_directories: [anyfs_inc,
                               include_directories('src/server_common')],
-        dependencies: [lkl_dep, thread_dep, host_proxy_dep],
+        dependencies: [lkl_dep, thread_dep, host_proxy_dep, anyfs_u8_dep,
+                       anyfs_u8_cli_dep],
         link_with: [anyfs_core],
         install: true,
         install_rpath: '$ORIGIN/../lib',

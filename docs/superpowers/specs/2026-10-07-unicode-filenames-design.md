@@ -291,3 +291,25 @@ A → D → B → C, each committed and pushed on its own with its tests:
   Rock Ridge list and stat `中文.txt` and `café.txt` as UTF-8, as the kernel source suggested.
 - **A, robustness gate:** after the `utf8` option, both backends give the same class for every
   case (ok 40 / error 60).
+- **D, layer split.** `anyfs_u8.h` (force-included) must not include `<windows.h>`: its
+  macros collide with QEMU's QAPI enums and ksmbd-tools' RPC names. `HANDLE`-typed
+  `anyfs_u8_create_file` lives in `anyfs_u8_win.h`, which only `raw_backend.c` includes. Core is
+  force-included with the output half only (`anyfs_u8_stdio.h`); the CLIs get
+  `anyfs_u8_redirect.h` (output + file + environment), `-Dmain=anyfs_tool_main`, and `wmain()`
+  from `anyfs_u8_main.c` (`-municode` at link time only, so `UNICODE` stays undefined).
+- **D, import gate.** `scripts/check_win_imports.sh` reads the undefined symbols of anyfs's own
+  objects (core archive, the u8 libraries, ksmbd-tools as built into anyfs-ksmbd, host_proxy,
+  every CLI object), not the PE import tables: statically linked libblkid and the mingw CRT
+  helpers it pulls in (dirent, the stat fallback) import ANSI functions too, and anyfs never
+  hands them a path. A deliberately bad object (`fopen`, `CreateFileA`) fails the gate.
+- **D, a Win64 bug found on the way.** The session layer hung on every mount under wine. Cause:
+  `lkl_sys_ioctl(fd, LKL_BLKROSET, (long)&ro)` from d8f8091 — `long` is 32 bits on Win64, so the
+  pointer was truncated. Fixed separately (b27508f) by casting through `uintptr_t`, also in
+  `anyfs_dm.c`. `tests/test_open_paths.c` + `tests/wine/u8-cli.sh` catch it (300 s timeout with
+  the old cast).
+- **D, wine verification (2026-10-07).** Images in `测试 café/`, `TEMP` in `临时 temp/`:
+  `anyfs-lspart.exe` lists and types raw, qcow2 and vmdk images, its piped output is UTF-8;
+  `test_open_paths.exe` mounts the FAT partition and reads `中文.txt` with the raw backend, the
+  QEMU backend (raw, qcow2, vmdk) and QEMU snapshot mode; `test_u8.exe` passes. The Electron
+  probe could not be run in this environment (Electron 42 under wine dies in
+  `hwnd_util.cc` without a usable display); `test_open_paths.exe` exercises the same core code.

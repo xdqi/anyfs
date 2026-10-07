@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* anyfs_tls.c — see anyfs_tls.h. */
 #include "anyfs_tls.h"
+#include "anyfs_u8.h"
 
 #include <stdlib.h>
 #include <unistd.h>
 
 const char* anyfs_tls_ca_pick(const char* const* candidates)
 {
-	if (getenv("SSL_CERT_FILE"))
+	if (anyfs_u8_getenv("SSL_CERT_FILE"))
 		return NULL;
 	for (; *candidates; candidates++)
-		if (access(*candidates, R_OK) == 0)
+		if (anyfs_u8_access(*candidates, R_OK) == 0)
 			return *candidates;
 	return NULL;
 }

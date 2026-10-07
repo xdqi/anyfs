@@ -88,6 +88,7 @@ INC=(
     -I "$OUT/tools/lkl/include"
     -I "$REPO_ROOT/include"
     -I "$SRC_CORE"
+    -I "$REPO_ROOT/src/win32"
 )
 
 CFLAGS=(
@@ -185,6 +186,7 @@ done
 QEMU_CFLAGS=(
     -pthread -O2 -g
     -I "$SRC_CORE"
+    -I "$REPO_ROOT/src/win32"
     -I "$REPO_ROOT/include"
     -I "$QEMU_ROOT" -I "$QEMU_ROOT/include"
     -I "$QBLD" -I "$QBLD/qapi"
