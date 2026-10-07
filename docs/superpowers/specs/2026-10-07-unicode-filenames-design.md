@@ -310,9 +310,12 @@ A → D → B → C, each committed and pushed on its own with its tests:
 - **D, wine verification (2026-10-07).** Images in `测试 café/`, `TEMP` in `临时 temp/`:
   `anyfs-lspart.exe` lists and types raw, qcow2 and vmdk images, its piped output is UTF-8;
   `test_open_paths.exe` mounts the FAT partition and reads `中文.txt` with the raw backend, the
-  QEMU backend (raw, qcow2, vmdk) and QEMU snapshot mode; `test_u8.exe` passes. The Electron
-  probe could not be run in this environment (Electron 42 under wine dies in
-  `hwnd_util.cc` without a usable display); `test_open_paths.exe` exercises the same core code.
+  QEMU backend (raw, qcow2, vmdk) and QEMU snapshot mode; `test_u8.exe` passes. Electron 42 under
+  wine runs with `xvfb-run` once the wine session is started inside the display (`wineserver -k`
+  first); the addon probe then opens all five cases from `测试 café/`, reads the FAT and the ext4
+  GBK files, sees the escaped GBK label, and leaves `临时 temp/` empty. Running it found F21 (a
+  mount read a page past its 64-byte options buffer; crashed the addon on Windows), fixed in
+  `anyfs_mount.c`; `test_open_paths` now enters on a fresh thread to cover it.
 - **B, buffers.** `realpath` / `readlink` results are escaped in place; when the escaped form does
   not fit, the call returns `-(bytes needed)` like the `*_json` helpers (callers that retry do;
   the others report an error). Incoming paths are unescaped into a 16 KiB stack buffer.

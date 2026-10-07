@@ -19,6 +19,8 @@
  * 128 leaves comfortable headroom. The /proc/filesystems read buffer below is
  * sized to match. */
 #define MAX_FSTYPES 128
+/* LKL's PAGE_SIZE: what mount(2) reads from its data argument. */
+#define MOUNT_DATA_SIZE 4096
 #define FSTYPE_MAXLEN 32
 
 /* Read /proc/filesystems from LKL and return block filesystem types */
@@ -111,7 +113,11 @@ static int mount_via_devpath(const char* dev_str, const char* fstype,
 	if (flags & ANYFS_MOUNT_RDONLY)
 		mount_flags |= LKL_MS_RDONLY;
 
-	char opts[ANYFS_MOUNT_OPTS_MAX];
+	/* mount(2) copies a whole page from its data argument, and LKL's
+	 * copy_from_user is a plain memcpy: a smaller buffer is read past its
+	 * end, which crashed on Windows when the mount ran near the top of a
+	 * thread's stack (a libuv worker in the Electron addon). */
+	char opts[MOUNT_DATA_SIZE];
 	if (!auto_detect) {
 		if (anyfs_mount_opts(fstype, flags & ANYFS_MOUNT_RDONLY,
 				     fat_codepage(flags), opts, sizeof(opts)) < 0) {

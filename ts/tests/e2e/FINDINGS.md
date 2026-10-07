@@ -1004,3 +1004,27 @@ directions, and cleanup on close. It fails on the old code. `flows/hybrid-iso.sp
 EFI partition and whole disk twice on the real ISO. The proper LKL-side fix for the asynchronous
 release (host tasks without `PF_KTHREAD`, so `fput` runs as task work at syscall exit) is left for
 the LKL tree.
+
+## F21 — Windows native: every mount from the Electron addon crashed the process (✅ FIXED 2026-10-07, was High)
+
+**Observed (Electron 42 under wine + xvfb, the F9 probe with the current win64 addon):** the main
+process died with exit code 5 at the first `sessionEnter`; wine reported an access violation in
+`liblkl.dll`'s `memcpy` (`lib/string.c`) on a fresh thread, reading exactly at the top of that
+thread's stack, then "Exception frame is not in stack limits".
+
+**Root cause:** `mount(2)` copies a whole page from its `data` argument (`copy_mount_options`:
+`copy_from_user(copy, data, PAGE_SIZE)`), and LKL's `copy_from_user` is a plain `memcpy` with no
+fault handling. `src/core/anyfs_mount.c` passed the mount options from a 64-byte stack buffer, so
+every mount read about 4 KiB past it. On Linux and wasm that memory happened to be mapped. In the
+addon the mount runs on a libuv worker within a few KiB of the top of the thread's stack; on
+Windows the page above is not mapped, so the read faulted.
+
+**Fix:** the options buffer is a full page (`MOUNT_DATA_SIZE`, LKL's `PAGE_SIZE`). The only other
+mounts pass `NULL` data.
+
+**Tests:** `tests/test_open_paths.c` now enters on a fresh 256 KiB thread, like the addon; under
+wine (`tests/wine/u8-cli.sh`) it exits with 5 before the fix and passes after. The Electron probes
+(F9 switch loop over `multi.img` + `trusty-cloud.qcow2`, and the Unicode probe over raw, qcow2,
+vmdk and snapshot opens from non-ASCII paths) pass under wine with `xvfb-run`. Running Electron
+under wine needs the wine session started inside the X display: `wineserver -k` first, or a
+display-less `explorer.exe` from an earlier `winepath` call makes Electron die in `hwnd_util.cc`.

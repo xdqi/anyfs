@@ -9,6 +9,12 @@
  * Usage: test_open_paths <open-flags> <image> [<open-flags> <image> ...]
  * Each image must be one from tests/make_names_image.py: the first vfat
  * partition is entered read-only and 中文.txt must read "fat-cn\n".
+ *
+ * The enter runs on a fresh thread, as the Electron addon's does on a libuv
+ * worker: the mount then happens a few KiB below the top of the stack.
+ * Regression: mount(2) copies a whole page from its data argument, and
+ * anyfs passed a 64-byte stack buffer; on Windows the read ran past the top
+ * of the thread's stack and the process crashed.
  */
 #include "anyfs.h"
 
@@ -16,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <windows.h>
 
 #define STEP(...)                                                              \
 	do {                                                                   \
@@ -24,6 +31,32 @@
 			fputc('\n', stderr);                                   \
 		}                                                              \
 	} while (0)
+
+struct enter_args {
+	AnyfsSession* s;
+	unsigned part;
+	char* mnt;
+	int rc;
+};
+
+static DWORD WINAPI enter_thread(LPVOID p)
+{
+	struct enter_args* a = p;
+	a->rc = anyfs_session_enter(a->s, a->part, ANYFS_MOUNT_RDONLY, a->mnt);
+	return 0;
+}
+
+static int enter_on_thread(AnyfsSession* s, unsigned part, char* mnt)
+{
+	struct enter_args a = {s, part, mnt, -1};
+	HANDLE h = CreateThread(NULL, 256 * 1024, enter_thread, &a,
+				STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+	if (!h)
+		return -1;
+	WaitForSingleObject(h, INFINITE);
+	CloseHandle(h);
+	return a.rc;
+}
 
 static int check_image(const char* img, uint32_t flags)
 {
@@ -42,8 +75,7 @@ static int check_image(const char* img, uint32_t flags)
 			idx = (int)parts[i].index;
 	char mnt[ANYFS_LKL_PATH_MAX];
 	STEP("enter p%d", idx);
-	if (idx < 0 || anyfs_session_enter(s, (unsigned)idx, ANYFS_MOUNT_RDONLY,
-					   mnt) != 0) {
+	if (idx < 0 || enter_on_thread(s, (unsigned)idx, mnt) != 0) {
 		printf("FAIL %s (flags 0x%x): no vfat partition to enter\n",
 		       img, flags);
 		anyfs_session_close(s);
