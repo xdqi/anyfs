@@ -48,10 +48,56 @@ struct disk_slot g_disks[ANYFS_MAX_DISKS];
 
 /* ── Disk management ──────────────────────────────────────────── */
 
+#ifdef _WIN32
+/*
+ * The Win32 device path of a disk name the system drive list (drivelist)
+ * may hand us, or NULL when PATH is fine as it is:
+ *   \\.\PhysicalDriveN\PartitionK  ->  \\.\HarddiskNPartitionK
+ *       (no device by that name exists; this is the partition's own one)
+ *   \\?\Volume{GUID}[\]           ->  \\.\Volume{GUID}
+ *       (with the trailing backslash it names the volume's root directory;
+ *       the raw backend shares \\.\ devices for writing)
+ */
+static const char* win_device_path(const char* path, char* buf, size_t len)
+{
+	if (strncmp(path, "\\\\.\\", 4) != 0 &&
+	    strncmp(path, "\\\\?\\", 4) != 0 && strncmp(path, "//./", 4) != 0)
+		return NULL;
+	const char* p = path + 4;
+	char* end;
+	if (_strnicmp(p, "PhysicalDrive", 13) == 0) {
+		unsigned long disk = strtoul(p + 13, &end, 10);
+		if (end == p + 13 || (*end != '\\' && *end != '/') ||
+		    _strnicmp(end + 1, "Partition", 9) != 0)
+			return NULL;
+		const char* q = end + 10;
+		unsigned long part = strtoul(q, &end, 10);
+		if (end == q || *end)
+			return NULL;
+		snprintf(buf, len, "\\\\.\\Harddisk%luPartition%lu", disk, part);
+		return buf;
+	}
+	size_t n = strlen(p);
+	if (_strnicmp(p, "Volume{", 7) != 0)
+		return NULL;
+	if (p[n - 1] == '\\' || p[n - 1] == '/')
+		n--;
+	snprintf(buf, len, "\\\\.\\%.*s", (int)n, p);
+	return buf;
+}
+#endif
+
 int anyfs_disk_add(const char* image_path, uint32_t flags)
 {
 	if (!image_path)
 		return -1;
+#ifdef _WIN32
+	char dev_path[128];
+	const char* win_path =
+	    win_device_path(image_path, dev_path, sizeof(dev_path));
+	if (win_path)
+		image_path = win_path;
+#endif
 
 	/* Find free slot */
 	int slot = -1;

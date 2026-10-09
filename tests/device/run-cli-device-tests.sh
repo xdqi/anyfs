@@ -86,9 +86,12 @@ npass=0 nfail=0 nskip=0
 ok()   { npass=$((npass + 1)); echo "ok   $*"; }
 bad()  { nfail=$((nfail + 1)); echo "FAIL $*"; }
 skip() { nskip=$((nskip + 1)); echo "skip $*"; }
+# From stdin: given a name with backslashes (D:\a\...), sha256sum escapes it
+# and prefixes the hash with "\".
 sha() {
-    if command -v sha256sum > /dev/null; then sha256sum "$1" | awk '{print $1}'
-    else shasum -a 256 "$1" | awk '{print $1}'; fi
+    [ -f "$1" ] || return 1
+    if command -v sha256sum > /dev/null; then sha256sum < "$1" | awk '{print $1}'
+    else shasum -a 256 < "$1" | awk '{print $1}'; fi
 }
 # A log/file name from a device path.
 tag() { echo "$1" | tr -c 'A-Za-z0-9\n' '_'; }
