@@ -7,12 +7,20 @@ name: macos
 #   linux-amd64) converted to liblkl-kernel.dylib, the LKL host library, the
 #   static dependency sysroot, QEMU's block layer, the anyfs core and CLI
 #   tools, and the Electron addon. check_macho.sh gates every Mach-O.
+# test (macos-15 for arm64, macos-15-intel for x86_64): the runtime test
+#   bundle from package_macos_tests.sh (reproducible fixtures, committed
+#   reference data in tests/macos/reference/) run by tests/macos/run-tests.sh:
+#   core test programs, anyfs-lspart on raw and DMG images, anyfs-ksmbd
+#   through mount_smbfs, anyfs-nfsd through an NFSv4 mount, the addon under
+#   node. anyfs-fuse is not built here (macFUSE is a system extension a
+#   hosted runner cannot load), so it is not runtime-tested.
 # drivelist (macos-15): drivelist.node needs Apple's frameworks (Disk
 #   Arbitration), so it is built on a Mac with node-gyp for both arches.
 #
 # Artifacts: anyfs-native-darwin-{arm64,x64}   anyfs_native.node + liblkl-kernel.dylib
 #            drivelist-darwin-{arm64,x64}      drivelist.node
 #            anyfs-reader-macos-{arm64,x86_64} CLI tarball (scripts/package_macos.sh)
+#            anyfs-macos-test-{arm64,x86_64}   runtime test bundle, and its logs
 # electron.yml packages the app from them and runs it on real Macs.
 
 on:
@@ -57,7 +65,8 @@ jobs:
             flex bison bc rsync libelf-dev libssl-dev perl xz-utils \
             ca-certificates curl \
             gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
-            llvm-19 lld-19 clang-19 llvm-20
+            llvm-19 lld-19 clang-19 llvm-20 \
+            fdisk dosfstools e2fsprogs
 
       # Restore only: `oot_fs.sh stage --macho` patches deps/linux below, and
       # the deps cache is shared with linux.yml, mingw64.yml and wasm.yml.
@@ -153,6 +162,12 @@ jobs:
           ts/packages/anyfs-native/scripts/build-macos.sh --arch=${{ matrix.arch }}
       - name: CLI tarball
         run: ./scripts/package_macos.sh --arch=${{ matrix.arch }} --out="$RUNNER_TEMP/cli"
+      # build_anyfs.sh builds the tools; the bundle also wants the core test
+      # programs (every ninja target).
+      - name: Runtime test bundle
+        run: |
+          ninja -C build-anyfs-macos-${{ matrix.arch }}
+          ./scripts/macho/package_macos_tests.sh --arch=${{ matrix.arch }} --out="$RUNNER_TEMP/macos-tests"
 
       - name: Upload Electron addon
         uses: actions/upload-artifact@v4
@@ -169,6 +184,56 @@ jobs:
           name: anyfs-reader-macos-${{ matrix.arch }}
           path: ${{ runner.temp }}/cli/anyfs-reader-*-macos-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
+          retention-days: 14
+      - name: Upload runtime test bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: anyfs-macos-test-${{ matrix.arch }}
+          path: ${{ runner.temp }}/macos-tests/anyfs-macos-test-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  test:
+    name: test macos-${{ matrix.arch }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: anyfs-macos-test-${{ matrix.arch }}
+          path: ${{ runner.temp }}
+      # node runs the addon test (no --app here; electron.yml runs the
+      # packaged app on the same runners).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Run tests/run-tests.sh
+        working-directory: ${{ runner.temp }}
+        env:
+          LOGDIR: ${{ runner.temp }}/anyfs-macos-test-logs
+        run: |
+          sw_vers
+          uname -m
+          tar -xzf anyfs-macos-test-${{ matrix.arch }}.tar.gz
+          cd anyfs-macos-test-${{ matrix.arch }}
+          shasum -a 256 -c SHA256SUMS > /dev/null
+          tests/run-tests.sh
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: anyfs-macos-test-logs-${{ matrix.arch }}
+          path: ${{ runner.temp }}/anyfs-macos-test-logs/
+          if-no-files-found: ignore
           retention-days: 14
 
   drivelist:
