@@ -74,6 +74,8 @@ case "$(uname -s)" in
 esac
 py="$(command -v python3 || command -v python)"
 [ -n "$py" ] || { echo "python3 is required (reference parsing)" >&2; exit 2; }
+# A path for python: Windows' python wants D:\a\..., not Git Bash's /d/a/...
+pypath() { if [ $os = windows ]; then cygpath -w "$1"; else echo "$1"; fi; }
 
 npass=0 nfail=0 nskip=0
 ok()   { npass=$((npass + 1)); echo "ok   $*"; }
@@ -95,7 +97,7 @@ used() {
 
 # Reference files of parts.img: "<partition> <path> <size> <sha256>" lines.
 refs="$logdir/reference-files.txt"
-"$py" - "$reference" > "$refs" <<'PY'
+"$py" - "$(pypath "$reference")" > "$refs" <<'PY'
 import json, sys
 for img in json.load(open(sys.argv[1]))["images"]:
     if img["file"] == "parts.img":
@@ -211,7 +213,7 @@ smb_fetch() {
                 mkdir -p "$dir/$(dirname "$path")"
                 args+=("$path" "$(cygpath -w "$dir/$path")")
             done < "$refs"
-            "$py" "$here/smb_get.py" 127.0.0.1 "$port" anyfs "${args[@]}" >> "$dir.client.log" 2>&1 ;;
+            "$py" "$(pypath "$here/smb_get.py")" 127.0.0.1 "$port" anyfs "${args[@]}" >> "$dir.client.log" 2>&1 ;;
     esac
 }
 
