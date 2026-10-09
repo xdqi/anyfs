@@ -256,3 +256,38 @@ on Linux, and tars the output.
 
 WinFSP must be installed system-wide (`winfsp.msi` from <https://winfsp.dev>) before
 running `anyfs-winfsp.exe`.
+
+## Desktop app (Electron)
+
+The desktop app (`ts/examples/electron-demo`) ships as one archive per platform,
+built by `.github/workflows/electron.yml` from the artifacts of `linux.yml`
+(`anyfs-native-linux-x64`), `mingw64.yml` (`anyfs-native-win32-x64`) and `wasm.yml`
+(`anyfs-web-dist`) for the same commit. No kernel or wasm build runs in that workflow.
+
+| Archive | Contents |
+| ------- | -------- |
+| `anyfs-electron-<version>-linux-x64.tar.gz` | Electron 42 runtime, `resources/app/` (bundled main process), `resources/renderer/` (web UI + wasm fallback), `resources/native/anyfs_native.node` (LKL, QEMU block layer, glib, libblkid, curl/OpenSSL, zstd/bzip2/zlib linked statically; glibc 2.25 floor) |
+| `anyfs-electron-<version>-windows-x64.zip` | the same, with `resources/native/` holding `anyfs_native.node`, `liblkl.dll`, `libanyfs-qemublk.dll` and the MSYS2 DLLs they import |
+
+`<version>` is `sha-<short commit>` for builds of `main` and `X.Y.Z` for a `vX.Y.Z` tag.
+Each archive has a `.sha256` next to it; a release also carries `SHA256SUMS` for all of
+them. The packages are unsigned (no Authenticode signature, no notarization).
+
+Runtime floors are Electron's, not the C libraries': Linux x64 with glibc 2.25 and the
+desktop libraries Chromium needs (GTK 3, NSS, libgbm); Windows 10 x64. The CLI tarballs keep
+their lower glibc 2.11 floor. macOS packages are not built yet; Electron 42 itself requires
+macOS 12, whatever deployment target the native libraries use.
+
+Every package is checked before it is uploaded (`scripts/verify-package.sh`: addon present,
+binary format and architecture, glibc gate on Linux, complete DLL closure on Windows) and
+then run on a runner of its own OS: a headless pass that loads the staged addon, opens a
+qcow2 GPT fixture, checks partition types, filesystems and labels, mounts the ext4
+partition, hashes a 3 MiB file and halts the kernel; and a Playwright pass that drives the
+packaged GUI on the native backend.
+
+**Releases.** Tag a commit that was the head of a push to `main` (so its `linux`,
+`mingw64` and `wasm` runs exist) with `vX.Y.Z` and push the tag; `electron.yml` packages
+that commit and attaches the archives and `SHA256SUMS` to the `vX.Y.Z` GitHub release,
+creating it if needed (a tag containing `-` makes a prerelease). If the tag is pushed while
+those runs are still going, re-run the workflow once they finish.
+

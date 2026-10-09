@@ -4,6 +4,80 @@ Read any Linux-supported filesystem from userspace — no root, no FUSE, no kern
 
 Uses [LKL](https://github.com/lkl/linux) (Linux Kernel Library) to run actual kernel filesystem code in a library. Supports raw disk images and QEMU-compatible formats (qcow2, vmdk, vdi) via linked QEMU block layer.
 
+## Get it
+
+| Edition | Where | Engine |
+| ------- | ----- | ------ |
+| Web | <https://anyfs.kosaka.moe>: open a local image or an HTTP(S) URL; the image is read in the browser, not uploaded | wasm (LKL + QEMU block layer built with emscripten) in a Web Worker |
+| Desktop, Linux x64 and Windows x64 | Electron app, see [Desktop app](#desktop-app) | native addon (`anyfs_native.node`); the wasm engine is the fallback |
+| CLI servers and tools | `anyfs-ksmbd`, `anyfs-nfsd`, `anyfs-lspart`, `anyfs-fuse`: tarballs from the `linux` and `mingw64` CI workflows, see [docs/distribution.md](docs/distribution.md) | native |
+
+macOS builds of the desktop app are not available yet; the Darwin native addon is still
+being ported.
+
+## Desktop app
+
+The desktop app is the web app's interface in Electron, with the kernel running natively in
+the app process instead of in wasm. It opens images by path (raw, qcow2, vmdk, vdi, vhd(x),
+dmg, ...) and HTTP(S) URLs, and reads them read-only.
+
+![Partition picker for an Ubuntu 26.10 cloud image](docs/screenshots/desktop-partitions.png)
+
+*An Ubuntu 26.10 cloud image (qcow2, development branch) opened in the Linux build: every
+GPT partition with its size, label, filesystem and partition type. The BIOS boot partition has no filesystem and
+cannot be opened.*
+
+![Root directory of the ext4 root partition](docs/screenshots/desktop-browse.png)
+
+*The image's ext4 root filesystem, read by the Linux kernel's own ext4 driver running inside
+the app (LKL). Symbolic links (`bin`, `lib`, `sbin`) carry a link icon.*
+
+![Properties of /etc/hosts](docs/screenshots/desktop-properties.png)
+
+*Properties of `/etc/hosts`: mode, owner, inode, block usage and timestamps come from the
+kernel's `stat`.*
+
+The screenshots show the Linux x64 package built by CI (`sha-d11d371`), captured with
+Playwright (`ts/tests/e2e/packaged/docs-screenshots.spec.ts`).
+
+**Download.** Tagged releases (`vX.Y.Z`) attach `anyfs-electron-X.Y.Z-linux-x64.tar.gz`,
+`anyfs-electron-X.Y.Z-windows-x64.zip` and `SHA256SUMS` to
+[GitHub Releases](https://github.com/xdqi/anyfs/releases); no desktop release has been
+tagged yet. Every commit on `main` is also packaged by the
+[electron workflow](https://github.com/xdqi/anyfs/actions/workflows/electron.yml): open a
+run and download the `anyfs-electron-sha-<commit>-linux-x64` or `-windows-x64` artifact
+(GitHub sign-in required, kept 14 days). Each artifact holds the archive and its `.sha256`.
+
+**Run.**
+
+```bash
+# Linux
+sha256sum -c anyfs-electron-<version>-linux-x64.tar.gz.sha256
+tar -xzf anyfs-electron-<version>-linux-x64.tar.gz
+./anyfs-electron-<version>-linux-x64/anyfs-demo
+```
+
+On Windows, check the hash with `Get-FileHash anyfs-electron-<version>-windows-x64.zip`,
+extract the zip and start `anyfs-demo.exe`. The packages are not code-signed: Windows
+SmartScreen may show "Windows protected your PC" (choose *More info*, then *Run anyway*).
+On Linux distributions that restrict unprivileged user namespaces (Ubuntu 24.04 and later),
+Chromium's sandbox cannot start from an unpacked archive; run `anyfs-demo --no-sandbox`, or
+make `chrome-sandbox` owned by root with mode 4755.
+
+| OS | Arch | Requirement | Tested in CI on |
+| -- | ---- | ----------- | --------------- |
+| Linux | x64 | glibc 2.25 or later and Chromium's usual desktop libraries (GTK 3, NSS, libgbm) | Ubuntu 26.04 |
+| Windows | x64 | Windows 10 or later | Windows Server 2025 |
+| macOS | arm64, x64 | not available yet; when it is, Electron 42 needs macOS 12 or later | — |
+
+**Native and wasm.** The start screen says "Native bridge active" when the native addon is
+loaded. If it cannot load, the app falls back to the wasm engine the web edition uses;
+*Settings → Disable native module* switches to it on purpose. CI checks that every package
+starts on the native backend. "Open system drive…" needs the `drivelist` addon, which the CI
+packages do not include yet, so it reports that drive listing is unavailable.
+
+Build and packaging details: [ts/examples/electron-demo/README.md](ts/examples/electron-demo/README.md).
+
 ## Features
 
 - Mount and read ext4, btrfs, xfs, f2fs, FAT, NTFS, etc. without root
@@ -129,12 +203,12 @@ wrappers, so disk images can be inspected entirely client-side:
 | `@anyfs/core`    | wasm kernel (LKL + QEMU block layer) + JS bindings; runs in a Web Worker      |
 | `@anyfs/react`   | React 18/19 hooks (`useDir`, `useFile`) over `@anyfs/core`                    |
 | `@anyfs/trees`   | `<AnyfsFileBrowser>` — Chonky-based file UI                                   |
-| `@anyfs/native`  | Node N-API addon, links the native libs instead of wasm (Linux/macOS)         |
+| `@anyfs/native`  | Node N-API addon, links the native libs instead of wasm (Linux, Windows)      |
 
 A live build of the browser demo (`ts/examples/vite-demo`) is hosted at
 **<https://anyfs.kosaka.moe>** — drop a disk image onto the page or paste an
-HTTP URL and the kernel boots in-browser. An Electron wrapper of the same demo
-lives at `ts/examples/electron-demo`.
+HTTP URL and the kernel boots in-browser. The [desktop app](#desktop-app)
+(`ts/examples/electron-demo`) wraps the same interface in Electron.
 
 ```bash
 cd ts

@@ -97,7 +97,8 @@ Known footguns (from working on this UI):
 
 A Node N-API addon that links against the native `liblkl.so` /
 `libanyfs-qemublk.so` instead of the wasm build. Same JS surface as
-`@anyfs/core`, ~10× the throughput, Linux/macOS only. Built with `node-gyp`.
+`@anyfs/core`, ~10× the throughput. Linux (`node-gyp`, zig at glibc 2.25) and
+Windows (cross-built with mingw, `scripts/build-win64.sh`); macOS is in progress.
 
 ```bash
 pnpm -C ts -F @anyfs/native build   # node-gyp rebuild
@@ -125,20 +126,19 @@ the stale wasm.
 
 ### `examples/electron-demo`
 
-Electron wrapper around the vite-demo build, packaged for Linux x64 and macOS
-arm64 via `@electron/packager`. The renderer is loaded through a custom
-`anyfs://` protocol — `file://` can't carry the COOP/COEP headers Atomics
-needs.
+The desktop app: Electron around the vite-demo build, on the native addon with the wasm
+engine as fallback. The renderer is loaded through a custom `anyfs://` protocol — `file://`
+can't carry the COOP/COEP headers Atomics needs. CI packages Linux x64 and Windows x64
+(`.github/workflows/electron.yml`); macOS is not packaged yet.
 
 ```bash
 pnpm -C ts -F electron-demo dev          # vite + electron, live reload
-pnpm -C ts -F electron-demo package      # Linux x64
-pnpm -C ts -F electron-demo package:mac  # macOS arm64
+pnpm -C ts -F electron-demo package      # Linux x64 package from the local addon build
+pnpm -C ts -F electron-demo package:win  # Windows x64 package (cross-built addon)
 ```
 
-`preload.ts` is currently a placeholder; the renderer talks to `@anyfs/core`
-the same way the browser demo does. A future iteration will bridge to
-`@anyfs/native` via N-API.
+See [ts/examples/electron-demo/README.md](../ts/examples/electron-demo/README.md) for the
+package layout, the smoke tests and the release flow.
 
 ## Workspace commands
 

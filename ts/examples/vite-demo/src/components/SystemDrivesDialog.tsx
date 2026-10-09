@@ -37,8 +37,17 @@ export function SystemDrivesDialog({
         setLoading(true);
         setErr(null);
         try {
+            // null: the main process could not load drivelist or the
+            // listing failed (packages built without drivelist.node).
             const list = await bridge.list();
-            setDrives(list ?? []);
+            if (list === null) {
+                setDrives(null);
+                setErr(
+                    'Drive enumeration is not available in this build, or it failed; see the app log.',
+                );
+            } else {
+                setDrives(list);
+            }
         } catch (e) {
             setErr((e as Error).message);
         } finally {
