@@ -210,7 +210,7 @@ jobs:
     name: test macos-${{ matrix.arch }}
     needs: build
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -229,7 +229,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      # A step limit below the job's leaves time to upload the logs.
       - name: Run tests/run-tests.sh
+        timeout-minutes: 20
         working-directory: ${{ runner.temp }}
         env:
           LOGDIR: ${{ runner.temp }}/anyfs-macos-test-logs
