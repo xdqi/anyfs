@@ -47,13 +47,24 @@
 static char g_img[64];
 static int g_img_fd;
 
+#ifndef __linux__
+static void remove_image(void)
+{
+	unlink(g_img);
+}
+#endif
+
 static void make_image(void)
 {
 	snprintf(g_img, sizeof(g_img), "/tmp/anyfs-qt-XXXXXX");
 	g_img_fd = mkstemp(g_img);
 	CHECK(g_img_fd >= 0, "mkstemp");
+#ifdef __linux__
 	unlink(g_img); /* fd keeps it alive; QEMU opens /proc/self/fd/N */
 	snprintf(g_img, sizeof(g_img), "/proc/self/fd/%d", g_img_fd);
+#else
+	atexit(remove_image); /* no /proc elsewhere: QEMU opens the name */
+#endif
 
 	uint32_t x = 0x12345678u;
 	static uint8_t chunk[1 << 16];
