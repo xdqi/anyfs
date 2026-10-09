@@ -13,10 +13,10 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=macos_target.sh
 source "$HERE/macos_target.sh"
-CLANG="${CLANG:-$(command -v clang-19 || command -v clang)}"
-LD="${LD:-$(command -v ld.lld-19 || command -v ld.lld)}"
-NM="${NM:-$(command -v llvm-nm-19 || command -v llvm-nm)}"
-OBJDUMP="${OBJDUMP:-$(command -v llvm-objdump-19 || command -v llvm-objdump)}"
+CLANG="${CLANG:-$(command -v clang-19 || command -v clang-20 || command -v clang)}"
+LD="${LD:-$(command -v ld.lld-19 || command -v ld.lld-20 || command -v ld.lld)}"
+NM="${NM:-$(command -v llvm-nm-19 || command -v llvm-nm-20 || command -v llvm-nm)}"
+OBJDUMP="${OBJDUMP:-$(command -v llvm-objdump-19 || command -v llvm-objdump-20 || command -v llvm-objdump)}"
 ZIG="${ZIG:-$(command -v zig || echo /opt/zig/zig)}"
 LIBSYSTEM="${LIBSYSTEM:-$(dirname "$(readlink -f "$ZIG")")/lib/libc/darwin/libSystem.tbd}"
 [[ -f $LIBSYSTEM ]] || { echo "libSystem.tbd not found at $LIBSYSTEM" >&2; exit 1; }

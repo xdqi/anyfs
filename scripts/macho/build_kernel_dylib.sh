@@ -95,7 +95,7 @@ if [[ $universal -eq 1 ]]; then
     for slice in arm64 x86_64; do
         [[ -f "$out/$slice/liblkl-kernel.dylib" ]] || die "build --arch=$slice first"
     done
-    LIPO="$(tool LIPO llvm-lipo-19 llvm-lipo)"
+    LIPO="$(tool LIPO llvm-lipo-19 llvm-lipo-20 llvm-lipo)"
     "$LIPO" -create "$out/arm64/liblkl-kernel.dylib" "$out/x86_64/liblkl-kernel.dylib" \
         -output "$fat.tmp"
     for slice in arm64 x86_64; do
@@ -129,8 +129,8 @@ lkl_o="$lkl_out/tools/lkl/lib/lkl.o"
 [[ -f $lkl_o ]] || die "$lkl_o not found: run gen_lkl_config.sh and build_lkl.sh --targets=$target"
 command -v "$cc" > /dev/null || die "$cc not found"
 command -v python3 > /dev/null || die "python3 not found"
-LD="$(tool LD ld.lld-19 ld.lld)"
-NM="$(tool NM llvm-nm-19 llvm-nm)"
+LD="$(tool LD ld.lld-19 ld.lld-20 ld.lld)"
+NM="$(tool NM llvm-nm-19 llvm-nm-20 llvm-nm)"
 LIBSYSTEM="${LIBSYSTEM:-$(zig_libsystem)}"
 [[ -f $LIBSYSTEM ]] || die "libSystem.tbd not found at $LIBSYSTEM (set LIBSYSTEM or ZIG)"
 

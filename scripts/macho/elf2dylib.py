@@ -321,6 +321,18 @@ def write_asm(img, exports, path, workdir):
         f.write("\n".join(lines) + "\n")
 
 
+def check_ld64_version(ld64):
+    """ld64.lld 20 lays __TEXT out differently: it puts __lkl_text
+    (pure_instructions) ahead of __lkl_const, so every section lands away from
+    its ELF address + DELTA. The design (one section per segment, in ELF order)
+    is verified with LLVM 19's ld64.lld; refuse a newer one up front instead of
+    failing the output check."""
+    m = re.search(r"LLD (\d+)\.", run([ld64, "--version"]))
+    if m and int(m.group(1)) >= 20:
+        raise Reject(f"{ld64} is LLD {m.group(1)}; elf2dylib needs LLVM 19's ld64.lld "
+                     "(set LD64=ld64.lld-19): LLD 20 reorders the __TEXT sections")
+
+
 def link(asm, out, arch, min_os, install_name, libsystem, clang, ld64):
     obj = asm[:-2] + ".o"
     run([clang, "-target", f"{ARCHES[arch][2]}-apple-macos{min_os}", "-c", asm, "-o", obj])
@@ -444,11 +456,12 @@ def main():
                 raise Reject(f"--export {e}: {exported_as[sym]} is already exported as {sym}")
             exports[elfname] = sym
             exported_as[sym] = elfname
-        objdump = tool("OBJDUMP", "llvm-objdump-19", "llvm-objdump")
-        objcopy = tool("OBJCOPY", "llvm-objcopy-19", "llvm-objcopy")
-        nm = tool("NM", "llvm-nm-19", "llvm-nm")
-        clang = tool("CLANG", "clang-19", "clang")
+        objdump = tool("OBJDUMP", "llvm-objdump-19", "llvm-objdump-20", "llvm-objdump")
+        objcopy = tool("OBJCOPY", "llvm-objcopy-19", "llvm-objcopy-20", "llvm-objcopy")
+        nm = tool("NM", "llvm-nm-19", "llvm-nm-20", "llvm-nm")
+        clang = tool("CLANG", "clang-19", "clang-20", "clang")
         ld64 = tool("LD64", "ld64.lld-19", "ld64.lld")
+        check_ld64_version(ld64)
         img = Image(a.input, a.arch, exports, objdump)
         with tempfile.TemporaryDirectory() as tmp:
             asm = os.path.join(tmp, "image.S")
