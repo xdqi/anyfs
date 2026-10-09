@@ -37,10 +37,13 @@ ts/packages/core/test/make-single-image.sh
 ts/examples/electron-demo/scripts/collect-native.sh
 ts/examples/electron-demo/scripts/collect-win64-dlls.sh
 ts/examples/electron-demo/scripts/fetch-drivelist.sh
+ts/examples/electron-demo/scripts/make-device-fixture.sh
 ts/examples/electron-demo/scripts/make-smoke-fixture.sh
 ts/examples/electron-demo/scripts/package.sh
 ts/examples/electron-demo/scripts/sign-macos.sh
+ts/examples/electron-demo/scripts/smoke-device.sh
 ts/examples/electron-demo/scripts/smoke-package.sh
+scripts/ci/test-device.sh
 ts/examples/electron-demo/scripts/stage-native-win64.sh
 ts/examples/electron-demo/scripts/verify-package.sh
 scripts/build_macos_sysroot.sh

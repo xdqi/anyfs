@@ -148,15 +148,22 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.resolve.outputs.sha }}
-      - name: Build smoke fixture
+      - name: Build smoke fixtures (image file; virtual block device)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-utils e2fsprogs dosfstools fdisk
           bash ts/examples/electron-demo/scripts/make-smoke-fixture.sh "$RUNNER_TEMP/fixture"
+          bash ts/examples/electron-demo/scripts/make-device-fixture.sh "$RUNNER_TEMP/device-fixture"
       - uses: actions/upload-artifact@v4
         with:
           name: electron-smoke-fixture
           path: ${{ runner.temp }}/fixture/
+          if-no-files-found: error
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: electron-device-fixture
+          path: ${{ runner.temp }}/device-fixture/
           if-no-files-found: error
           retention-days: 3
 
@@ -376,7 +383,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb libnss3 libgbm1
+          sudo apt-get install -y --no-install-recommends xvfb libnss3 libgbm1 qemu-utils
       # Headless: load the staged addon, open the qcow2 fixture (QEMU block
       # layer), list partitions, mount fixroot, hash payload.bin, halt, exit 0;
       # then list the runner's disks through the staged drivelist addon.
@@ -412,6 +419,87 @@ jobs:
             xvfb-run -a npx playwright test -c packaged.config.ts
             ;;
           esac
+      # ── Virtual block device I/O ──────────────────────────────────────────
+      # make-device-fixture.sh's parts.img attached READ-ONLY as a block
+      # device this job creates: Linux loop (plus an nbd export of the same
+      # file for the GUI, because drivelist hides loop devices), macOS
+      # hdiutil -readonly -nomount, Windows Mount-DiskImage -Access ReadOnly
+      # of parts.vhdx. Never one of the runner's own disks. test-device.{sh,ps1}
+      # take the device from the attach command's answer, verify it against
+      # parts.img, and on detach check the backing file did not change.
+      - uses: actions/download-artifact@v4
+        with:
+          name: electron-device-fixture
+          path: ${{ runner.temp }}/device-fixture
+      - name: Device I/O - attach (loop / hdiutil)
+        if: matrix.platform != 'win32'
+        run: bash scripts/ci/test-device.sh attach "$RUNNER_TEMP/device-fixture/parts.img" "$RUNNER_TEMP/dev"
+      - name: Device I/O - attach (read-only VHDX)
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: ./scripts/ci/test-device.ps1 attach "$env:RUNNER_TEMP/device-fixture/parts.vhdx" "$env:RUNNER_TEMP/device-fixture/parts.img" "$env:RUNNER_TEMP/dev"
+      # Linux/macOS: the device nodes become root-owned 0600. Windows: the
+      # app runs with a restricted Basic User token (the runner account is
+      # an administrator). Either way the app must fail with a permission
+      # error, not hang or crash.
+      - name: Device I/O - app without access is denied
+        run: |
+          run=()
+          [[ "${{ matrix.platform }}" == linux ]] && run=(xvfb-run -a)
+          [[ "${{ matrix.platform }}" == win32 ]] || bash scripts/ci/test-device.sh perm deny "$RUNNER_TEMP/dev"
+          "${run[@]}" bash ts/examples/electron-demo/scripts/smoke-device.sh "$RUNNER_TEMP/pkg/$NAME" \
+            ${{ matrix.platform }} "$RUNNER_TEMP/dev" "$RUNNER_TEMP/device-fixture" deny \
+            "$RUNNER_TEMP/device-report-deny.json"
+      - name: Device I/O - app reads the device
+        run: |
+          run=()
+          [[ "${{ matrix.platform }}" == linux ]] && run=(xvfb-run -a)
+          [[ "${{ matrix.platform }}" == win32 ]] || bash scripts/ci/test-device.sh perm allow "$RUNNER_TEMP/dev"
+          "${run[@]}" bash ts/examples/electron-demo/scripts/smoke-device.sh "$RUNNER_TEMP/pkg/$NAME" \
+            ${{ matrix.platform }} "$RUNNER_TEMP/dev" "$RUNNER_TEMP/device-fixture" allow \
+            "$RUNNER_TEMP/device-report-allow.json"
+          if [[ "${{ matrix.platform }}" == darwin ]]; then
+            source "$RUNNER_TEMP/dev/device.env"
+            SMOKE_DEVICE="$ANYFS_TEST_RAW_DEVICE" bash ts/examples/electron-demo/scripts/smoke-device.sh \
+              "$RUNNER_TEMP/pkg/$NAME" darwin "$RUNNER_TEMP/dev" "$RUNNER_TEMP/device-fixture" allow \
+              "$RUNNER_TEMP/device-report-allow-raw.json"
+          fi
+      - name: Device I/O - GUI picks the device (macOS, Windows)
+        if: matrix.platform != 'linux'
+        working-directory: ts/tests/e2e
+        env:
+          ANYFS_DEVICE_JSON: ${{ runner.temp }}/dev/device.json
+          ANYFS_DEVICE_FIXTURE: ${{ runner.temp }}/device-fixture
+          ANYFS_SCREENSHOT_DIR: ${{ runner.temp }}/screenshots
+        run: |
+          if [[ "${{ matrix.platform }}" == win32 ]]; then
+            export ANYFS_PACKAGED_EXE="$RUNNER_TEMP/pkg/$NAME/anyfs-demo.exe"
+          else
+            export ANYFS_PACKAGED_EXE="$RUNNER_TEMP/pkg/$NAME/anyfs-demo.app/Contents/MacOS/anyfs-demo"
+          fi
+          npx playwright test -c packaged.config.ts device
+      - name: Device I/O - detach (loop / hdiutil)
+        if: always() && matrix.platform != 'win32'
+        run: bash scripts/ci/test-device.sh detach "$RUNNER_TEMP/dev"
+      - name: Device I/O - detach (VHDX)
+        if: always() && matrix.platform == 'win32'
+        shell: pwsh
+        run: ./scripts/ci/test-device.ps1 detach "$env:RUNNER_TEMP/dev"
+      - name: Device I/O - GUI picks the device (Linux, nbd)
+        if: matrix.platform == 'linux'
+        working-directory: ts/tests/e2e
+        env:
+          ANYFS_DEVICE_JSON: ${{ runner.temp }}/dev-nbd/device.json
+          ANYFS_DEVICE_FIXTURE: ${{ runner.temp }}/device-fixture
+          ANYFS_SCREENSHOT_DIR: ${{ runner.temp }}/screenshots
+          ANYFS_PACKAGED_EXE: ${{ runner.temp }}/pkg/${{ env.NAME }}/anyfs-demo
+        run: |
+          bash "$GITHUB_WORKSPACE/scripts/ci/test-device.sh" attach --nbd "$RUNNER_TEMP/device-fixture/parts.img" "$RUNNER_TEMP/dev-nbd"
+          bash "$GITHUB_WORKSPACE/scripts/ci/test-device.sh" perm allow "$RUNNER_TEMP/dev-nbd"
+          xvfb-run -a npx playwright test -c packaged.config.ts device
+      - name: Device I/O - detach (nbd)
+        if: always() && matrix.platform == 'linux'
+        run: bash scripts/ci/test-device.sh detach "$RUNNER_TEMP/dev-nbd"
       - name: Upload smoke report and screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -419,6 +507,8 @@ jobs:
           name: electron-smoke-${{ matrix.os }}-${{ matrix.arch }}
           path: |
             ${{ runner.temp }}/smoke-report*.json
+            ${{ runner.temp }}/device-report*.json
+            ${{ runner.temp }}/dev*/device.json
             ${{ runner.temp }}/screenshots/
           if-no-files-found: ignore
           retention-days: 14
