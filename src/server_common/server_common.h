@@ -18,7 +18,8 @@ extern "C" {
 extern volatile sig_atomic_t anyfs_server_running;
 
 /* Unbuffer stdout and route SIGINT/SIGTERM to clearing
- * anyfs_server_running. */
+ * anyfs_server_running. On Windows also report a crash (exception code and
+ * module+offset stack) on stderr. */
 void anyfs_server_install_signals(void);
 
 /* Boot the LKL kernel and bring up loopback (ifindex 1, idempotent —

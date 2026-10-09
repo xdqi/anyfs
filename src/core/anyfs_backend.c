@@ -96,6 +96,16 @@ int anyfs_disk_add(const char* image_path, uint32_t flags)
 	    (S_ISBLK(st.st_mode) || S_ISCHR(st.st_mode)))
 		ops = &raw_backend_ops;
 #endif
+#if defined(_WIN32) && defined(ANYFS_HAS_QEMU)
+	/* QEMU's win32 file driver only knows \\.\PhysicalDriveN and \\.\X:
+	 * (sized as the whole disk). A partition (\\.\HarddiskNPartitionK)
+	 * becomes drive "H:", fails to size, and a volume gets its disk's size:
+	 * open the rest of the device namespace with the raw backend. */
+	if (!ops && (strncmp(image_path, "\\\\.\\", 4) == 0 ||
+		     strncmp(image_path, "//./", 4) == 0) &&
+	    _strnicmp(image_path + 4, "PhysicalDrive", 13) != 0)
+		ops = &raw_backend_ops;
+#endif
 
 	/* Auto-detect: prefer QEMU if available, else raw */
 	if (!ops) {

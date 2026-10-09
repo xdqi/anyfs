@@ -36,8 +36,11 @@
 # --share disk0. Protocol clients: Linux smbclient and an NFSv4 mount (sudo),
 # macOS mount_smbfs and an NFSv4 mount (sudo), Windows the Python
 # smbprotocol package (tests/device/smb_get.py); Windows has no NFSv4 client,
-# so NFS is skipped there, and a Windows server cannot be sent Ctrl-C from
-# here, so its clean shutdown is skipped too (it is killed instead).
+# so there anyfs-nfsd is only started until it is ready, and a Windows server
+# cannot be sent Ctrl-C from here, so its clean shutdown is skipped too (it is
+# killed instead). Windows' anyfs-ksmbd is also served with --no-fast-sync.
+# A server that dies before it is ready has the end of its log printed (on
+# Windows that includes the crash report of server_common.c).
 # Prints ok/FAIL/skip lines; exit 0 when nothing failed.
 set -u
 
@@ -53,7 +56,7 @@ for a in "$@"; do
         --logdir=*) logdir="${a#--logdir=}" ;;
         --no-servers) servers=0 ;;
         --expect-denied) expect_denied=1 ;;
-        -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,44p' "$0"; exit 0 ;;
         *) echo "unknown argument: $a" >&2; exit 2 ;;
     esac
 done
@@ -62,9 +65,11 @@ ANYFS_TEST_DEVICE="" ANYFS_TEST_RAW_DEVICE="" ANYFS_TEST_PART_DEVICES=""
 # shellcheck disable=SC1090
 . "$devenv"
 [ -n "$ANYFS_TEST_DEVICE" ] || { echo "$devenv sets no ANYFS_TEST_DEVICE" >&2; exit 2; }
-lspart_ref="$(dirname "$reference")/lspart/parts.img.txt"
 logdir="${logdir:-${TMPDIR:-/tmp}/anyfs-device-tests-$$}"
 mkdir -p "$logdir"
+# Without the CRs a Windows checkout (core.autocrlf) adds.
+lspart_ref="$logdir/parts.img.ref"
+tr -d '\r' < "$(dirname "$reference")/lspart/parts.img.txt" > "$lspart_ref" || exit 2
 
 case "$(uname -s)" in
     Linux) os=linux exe="" ;;
@@ -234,25 +239,22 @@ nfs_fetch() {
 }
 
 port=14480
-# serve KIND DEVICE SHARE BACKEND: start anyfs-ksmbd/anyfs-nfsd on DEVICE,
-# read the files through a client, stop it.
+# serve KIND DEVICE SHARE BACKEND [OPTION...]: start anyfs-ksmbd/anyfs-nfsd
+# on DEVICE with the extra OPTIONs, read the files through a client, stop it.
 serve() {
-    local kind=$1 dev=$2 share=$3 backend=$4 what log dir pid ready
+    local kind=$1 dev=$2 share=$3 backend=$4 what log dir pid ready rc
+    shift 4
     port=$((port + 1))
-    what="$kind $dev --share $share (backend $backend)"
-    log="$logdir/$kind-$(tag "$dev")-$backend"
+    what="$kind $dev --share $share${1:+ $*} (backend $backend)"
+    log="$logdir/$kind-$(tag "$dev")-$backend$(tag "${*:+ $*}")"
     dir="$log.files"
     rm -rf "$dir" && mkdir -p "$dir"
-    if [ $kind = nfsd ] && [ $os = windows ]; then
-        skip "$what: no NFSv4 client on Windows (its NFS client is v2/v3 only)"
-        return
-    fi
     if [ $kind = ksmbd ]; then
         ready="SMB server ready"
-        set -- "$tools/anyfs-ksmbd$exe" "$dev" --share "anyfs=$share" -P "$port"
+        set -- "$tools/anyfs-ksmbd$exe" "$dev" --share "anyfs=$share" -P "$port" "$@"
     else
         ready="NFSv4 server ready"
-        set -- "$tools/anyfs-nfsd$exe" "$dev" --share "$share" -P "$port"
+        set -- "$tools/anyfs-nfsd$exe" "$dev" --share "$share" -P "$port" "$@"
     fi
     if [ "$backend" = default ]; then
         (unset ANYFS_BACKEND; exec "$@") > "$log.log" 2>&1 &
@@ -261,11 +263,23 @@ serve() {
     fi
     pid=$!
     if ! wait_for "$log.log" "$ready" 120 "$pid"; then
-        bad "$what: not ready ($log.log: $(grep -iE 'error|fail' "$log.log" | tail -1))"
-        stop_server "$pid" "$log.log" "$what"
+        if kill -0 "$pid" 2>/dev/null; then
+            bad "$what: not ready after 120 s ($log.log: $(grep -iE 'error|fail' "$log.log" | tail -1))"
+            stop_server "$pid" "$log.log" "$what"
+        else
+            wait "$pid"
+            rc=$?
+            bad "$what: exited with status $rc before it was ready; the end of $log.log:"
+            tr -d '\r' < "$log.log" | tail -40 | sed 's/^/    | /'
+        fi
         return
     fi
     ok "$what: server ready on port $port, backend $(used "$backend" "$log.log")"
+    if [ $kind = nfsd ] && [ $os = windows ]; then
+        skip "$what: reading files (no NFSv4 client on Windows; its NFS client is v2/v3 only)"
+        stop_server "$pid" "$log.log" "$what"
+        return
+    fi
     if [ $kind = ksmbd ]; then smb_fetch "$port" "$dir"; else nfs_fetch "$port" "$dir"; fi
     if [ $? -eq 0 ]; then
         check_files "$dir" "$what"
@@ -335,6 +349,9 @@ else
             serve nfsd "$ANYFS_TEST_DEVICE" "disk0/p$fs_part" "$backend"
         done
         [ -z "$ANYFS_TEST_RAW_DEVICE" ] || serve ksmbd "$ANYFS_TEST_RAW_DEVICE" "disk0/p$fs_part" default
+        # Windows' anyfs-ksmbd replaces LKL's semaphores and mutexes
+        # (fastsync_win.c) unless told not to: serve both ways.
+        [ $os != windows ] || serve ksmbd "$ANYFS_TEST_DEVICE" "disk0/p$fs_part" default --no-fast-sync
         k=0
         for dev in $ANYFS_TEST_PART_DEVICES; do
             k=$((k + 1))
