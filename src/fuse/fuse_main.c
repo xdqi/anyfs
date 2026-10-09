@@ -525,12 +525,21 @@ static void xlat_stat(const struct lkl_stat* in, fuse_stat* st)
 	st->st_size = in->st_size;
 	st->st_blksize = in->st_blksize;
 	st->st_blocks = in->st_blocks;
+#ifdef __APPLE__ /* Darwin names the struct timespec members differently */
+	st->st_atimespec.tv_sec = in->lkl_st_atime;
+	st->st_atimespec.tv_nsec = in->st_atime_nsec;
+	st->st_mtimespec.tv_sec = in->lkl_st_mtime;
+	st->st_mtimespec.tv_nsec = in->st_mtime_nsec;
+	st->st_ctimespec.tv_sec = in->lkl_st_ctime;
+	st->st_ctimespec.tv_nsec = in->st_ctime_nsec;
+#else
 	st->st_atim.tv_sec = in->lkl_st_atime;
 	st->st_atim.tv_nsec = in->st_atime_nsec;
 	st->st_mtim.tv_sec = in->lkl_st_mtime;
 	st->st_mtim.tv_nsec = in->st_mtime_nsec;
 	st->st_ctim.tv_sec = in->lkl_st_ctime;
 	st->st_ctim.tv_nsec = in->st_ctime_nsec;
+#endif
 }
 
 /* Synthesise a directory stat (used for partition nodes in Mode B). */
@@ -799,16 +808,22 @@ static int open3_lkl(const char* lkl_path_str, bool create, fuse_mode_t mode,
 		flags |= LKL_O_NONBLOCK;
 	if (fi->flags & O_DSYNC)
 		flags |= LKL_O_DSYNC;
+#ifdef O_DIRECT /* not on macOS */
 	if (fi->flags & O_DIRECT)
 		flags |= LKL_O_DIRECT;
+#endif
+#ifdef O_LARGEFILE
 	if (fi->flags & O_LARGEFILE)
 		flags |= LKL_O_LARGEFILE;
+#endif
 	if (fi->flags & O_DIRECTORY)
 		flags |= LKL_O_DIRECTORY;
 	if (fi->flags & O_NOFOLLOW)
 		flags |= LKL_O_NOFOLLOW;
+#ifdef O_NOATIME
 	if (fi->flags & O_NOATIME)
 		flags |= LKL_O_NOATIME;
+#endif
 	if (fi->flags & O_CLOEXEC)
 		flags |= LKL_O_CLOEXEC;
 	if (fi->flags & O_SYNC)
@@ -1335,41 +1350,240 @@ static void* anyfs_fuse_init(struct fuse_conn_info* conn,
 	return NULL;
 }
 
+#ifdef __APPLE__
+/*
+ * The operations above return LKL's (Linux) errno values. macFUSE hands them
+ * to the macOS kernel as they are, and many differ there: Linux ENODATA (61,
+ * a missing xattr, which Finder asks for constantly) is ECONNREFUSED on
+ * macOS, ENOTEMPTY is 39 vs 66, ENOSYS 38 vs 78. Translate at the FUSE
+ * boundary; errors without a macOS counterpart become EIO.
+ */
+static const struct {
+	int lkl;
+	int host;
+} lkl_host_errno[] = {
+#define E(name) {LKL_##name, name}
+    E(EPERM),
+    E(ENOENT),
+    E(ESRCH),
+    E(EINTR),
+    E(EIO),
+    E(ENXIO),
+    E(E2BIG),
+    E(ENOEXEC),
+    E(EBADF),
+    E(ECHILD),
+    E(EAGAIN),
+    E(ENOMEM),
+    E(EACCES),
+    E(EFAULT),
+    E(ENOTBLK),
+    E(EBUSY),
+    E(EEXIST),
+    E(EXDEV),
+    E(ENODEV),
+    E(ENOTDIR),
+    E(EISDIR),
+    E(EINVAL),
+    E(ENFILE),
+    E(EMFILE),
+    E(ENOTTY),
+    E(ETXTBSY),
+    E(EFBIG),
+    E(ENOSPC),
+    E(ESPIPE),
+    E(EROFS),
+    E(EMLINK),
+    E(EPIPE),
+    E(EDOM),
+    E(ERANGE),
+    E(EDEADLK),
+    E(ENAMETOOLONG),
+    E(ENOLCK),
+    E(ENOSYS),
+    E(ENOTEMPTY),
+    E(ELOOP),
+    E(ENOMSG),
+    E(EIDRM),
+    E(ENOSTR),
+    E(ETIME),
+    E(ENOSR),
+    E(ENOLINK),
+    E(EPROTO),
+    E(EMULTIHOP),
+    E(EBADMSG),
+    E(EOVERFLOW),
+    E(EILSEQ),
+    E(EUSERS),
+    E(ENOTSOCK),
+    E(EDESTADDRREQ),
+    E(EMSGSIZE),
+    E(EPROTOTYPE),
+    E(ENOPROTOOPT),
+    E(EPROTONOSUPPORT),
+    E(ESOCKTNOSUPPORT),
+    E(EPFNOSUPPORT),
+    E(EAFNOSUPPORT),
+    E(EADDRINUSE),
+    E(EADDRNOTAVAIL),
+    E(ENETDOWN),
+    E(ENETUNREACH),
+    E(ENETRESET),
+    E(ECONNABORTED),
+    E(ECONNRESET),
+    E(ENOBUFS),
+    E(EISCONN),
+    E(ENOTCONN),
+    E(ESHUTDOWN),
+    E(ETOOMANYREFS),
+    E(ETIMEDOUT),
+    E(ECONNREFUSED),
+    E(EHOSTDOWN),
+    E(EHOSTUNREACH),
+    E(EALREADY),
+    E(EINPROGRESS),
+    E(ESTALE),
+    E(EDQUOT),
+    E(ECANCELED),
+    E(EOWNERDEAD),
+    E(ENOTRECOVERABLE),
+#undef E
+    /* Different name on macOS: a missing xattr is ENOATTR there. */
+    {LKL_ENODATA, ENOATTR},
+    {LKL_EOPNOTSUPP, ENOTSUP},
+};
+
+static long host_errno(long r)
+{
+	if (r >= 0)
+		return r;
+	for (size_t i = 0;
+	     i < sizeof(lkl_host_errno) / sizeof(lkl_host_errno[0]); i++)
+		if (lkl_host_errno[i].lkl == -r)
+			return -lkl_host_errno[i].host;
+	return -EIO;
+}
+
+#define DARWIN_ERRNO(type, op, params, args)                                   \
+	static type darwin_##op params                                         \
+	{                                                                      \
+		return (type)host_errno((long)anyfs_fuse_##op args);           \
+	}
+DARWIN_ERRNO(int, getattr,
+	     (const char* p, fuse_stat* st, struct fuse_file_info* fi),
+	     (p, st, fi))
+DARWIN_ERRNO(int, readlink, (const char* p, char* buf, size_t len),
+	     (p, buf, len))
+DARWIN_ERRNO(int, mknod, (const char* p, fuse_mode_t m, fuse_dev_t d),
+	     (p, m, d))
+DARWIN_ERRNO(int, mkdir, (const char* p, fuse_mode_t m), (p, m))
+DARWIN_ERRNO(int, unlink, (const char* p), (p))
+DARWIN_ERRNO(int, rmdir, (const char* p), (p))
+DARWIN_ERRNO(int, symlink, (const char* a, const char* b), (a, b))
+DARWIN_ERRNO(int, rename, (const char* a, const char* b, unsigned int f),
+	     (a, b, f))
+DARWIN_ERRNO(int, link, (const char* a, const char* b), (a, b))
+DARWIN_ERRNO(int, chmod,
+	     (const char* p, fuse_mode_t m, struct fuse_file_info* fi),
+	     (p, m, fi))
+DARWIN_ERRNO(int, chown,
+	     (const char* p, fuse_uid_t u, fuse_gid_t g,
+	      struct fuse_file_info* fi),
+	     (p, u, g, fi))
+DARWIN_ERRNO(int, truncate,
+	     (const char* p, fuse_off_t o, struct fuse_file_info* fi),
+	     (p, o, fi))
+DARWIN_ERRNO(int, open, (const char* p, struct fuse_file_info* fi), (p, fi))
+DARWIN_ERRNO(int, read,
+	     (const char* p, char* b, size_t n, fuse_off_t o,
+	      struct fuse_file_info* fi),
+	     (p, b, n, o, fi))
+DARWIN_ERRNO(int, write,
+	     (const char* p, const char* b, size_t n, fuse_off_t o,
+	      struct fuse_file_info* fi),
+	     (p, b, n, o, fi))
+DARWIN_ERRNO(int, statfs, (const char* p, fuse_statvfs* s), (p, s))
+DARWIN_ERRNO(int, flush, (const char* p, struct fuse_file_info* fi), (p, fi))
+DARWIN_ERRNO(int, release, (const char* p, struct fuse_file_info* fi), (p, fi))
+DARWIN_ERRNO(int, fsync, (const char* p, int d, struct fuse_file_info* fi),
+	     (p, d, fi))
+DARWIN_ERRNO(int, setxattr,
+	     (const char* p, const char* n, const char* v, size_t s, int f),
+	     (p, n, v, s, f))
+DARWIN_ERRNO(int, getxattr, (const char* p, const char* n, char* v, size_t s),
+	     (p, n, v, s))
+DARWIN_ERRNO(int, listxattr, (const char* p, char* l, size_t s), (p, l, s))
+DARWIN_ERRNO(int, removexattr, (const char* p, const char* n), (p, n))
+DARWIN_ERRNO(int, opendir, (const char* p, struct fuse_file_info* fi), (p, fi))
+DARWIN_ERRNO(int, readdir,
+	     (const char* p, void* b, fuse_fill_dir_t f, fuse_off_t o,
+	      struct fuse_file_info* fi, enum fuse_readdir_flags fl),
+	     (p, b, f, o, fi, fl))
+DARWIN_ERRNO(int, releasedir, (const char* p, struct fuse_file_info* fi),
+	     (p, fi))
+DARWIN_ERRNO(int, fsyncdir, (const char* p, int d, struct fuse_file_info* fi),
+	     (p, d, fi))
+DARWIN_ERRNO(int, access, (const char* p, int m), (p, m))
+DARWIN_ERRNO(int, create,
+	     (const char* p, fuse_mode_t m, struct fuse_file_info* fi),
+	     (p, m, fi))
+DARWIN_ERRNO(int, utimens,
+	     (const char* p, const fuse_timespec tv[2],
+	      struct fuse_file_info* fi),
+	     (p, tv, fi))
+DARWIN_ERRNO(int, fallocate,
+	     (const char* p, int m, fuse_off_t o, fuse_off_t l,
+	      struct fuse_file_info* fi),
+	     (p, m, o, l, fi))
+DARWIN_ERRNO(ssize_t, copy_file_range,
+	     (const char* pi, struct fuse_file_info* fii, fuse_off_t oi,
+	      const char* po, struct fuse_file_info* fio, fuse_off_t oo,
+	      size_t n, int f),
+	     (pi, fii, oi, po, fio, oo, n, f))
+DARWIN_ERRNO(fuse_off_t, lseek,
+	     (const char* p, fuse_off_t o, int w, struct fuse_file_info* fi),
+	     (p, o, w, fi))
+#undef DARWIN_ERRNO
+#define FUSE_OP(op) darwin_##op
+#else
+#define FUSE_OP(op) anyfs_fuse_##op
+#endif
+
 static const struct fuse_operations anyfs_fuse_ops = {
     .init = anyfs_fuse_init,
-    .getattr = anyfs_fuse_getattr,
-    .readlink = anyfs_fuse_readlink,
-    .mknod = anyfs_fuse_mknod,
-    .mkdir = anyfs_fuse_mkdir,
-    .unlink = anyfs_fuse_unlink,
-    .rmdir = anyfs_fuse_rmdir,
-    .symlink = anyfs_fuse_symlink,
-    .rename = anyfs_fuse_rename,
-    .link = anyfs_fuse_link,
-    .chmod = anyfs_fuse_chmod,
-    .chown = anyfs_fuse_chown,
-    .truncate = anyfs_fuse_truncate,
-    .open = anyfs_fuse_open,
-    .read = anyfs_fuse_read,
-    .write = anyfs_fuse_write,
-    .statfs = anyfs_fuse_statfs,
-    .flush = anyfs_fuse_flush,
-    .release = anyfs_fuse_release,
-    .fsync = anyfs_fuse_fsync,
-    .setxattr = anyfs_fuse_setxattr,
-    .getxattr = anyfs_fuse_getxattr,
-    .listxattr = anyfs_fuse_listxattr,
-    .removexattr = anyfs_fuse_removexattr,
-    .opendir = anyfs_fuse_opendir,
-    .readdir = anyfs_fuse_readdir,
-    .releasedir = anyfs_fuse_releasedir,
-    .fsyncdir = anyfs_fuse_fsyncdir,
-    .access = anyfs_fuse_access,
-    .create = anyfs_fuse_create,
-    .utimens = anyfs_fuse_utimens,
-    .fallocate = anyfs_fuse_fallocate,
-    .copy_file_range = anyfs_fuse_copy_file_range,
-    .lseek = anyfs_fuse_lseek,
+    .getattr = FUSE_OP(getattr),
+    .readlink = FUSE_OP(readlink),
+    .mknod = FUSE_OP(mknod),
+    .mkdir = FUSE_OP(mkdir),
+    .unlink = FUSE_OP(unlink),
+    .rmdir = FUSE_OP(rmdir),
+    .symlink = FUSE_OP(symlink),
+    .rename = FUSE_OP(rename),
+    .link = FUSE_OP(link),
+    .chmod = FUSE_OP(chmod),
+    .chown = FUSE_OP(chown),
+    .truncate = FUSE_OP(truncate),
+    .open = FUSE_OP(open),
+    .read = FUSE_OP(read),
+    .write = FUSE_OP(write),
+    .statfs = FUSE_OP(statfs),
+    .flush = FUSE_OP(flush),
+    .release = FUSE_OP(release),
+    .fsync = FUSE_OP(fsync),
+    .setxattr = FUSE_OP(setxattr),
+    .getxattr = FUSE_OP(getxattr),
+    .listxattr = FUSE_OP(listxattr),
+    .removexattr = FUSE_OP(removexattr),
+    .opendir = FUSE_OP(opendir),
+    .readdir = FUSE_OP(readdir),
+    .releasedir = FUSE_OP(releasedir),
+    .fsyncdir = FUSE_OP(fsyncdir),
+    .access = FUSE_OP(access),
+    .create = FUSE_OP(create),
+    .utimens = FUSE_OP(utimens),
+    .fallocate = FUSE_OP(fallocate),
+    .copy_file_range = FUSE_OP(copy_file_range),
+    .lseek = FUSE_OP(lseek),
 };
 
 /* ── Main ──────────────────────────────────────────────────────────── */

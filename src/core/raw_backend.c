@@ -118,6 +118,36 @@ void raw_blk_destroy(struct lkl_disk* disk)
 #define BLKGETSIZE64 _IOR(0x12, 114, size_t)
 #endif
 
+#ifdef __APPLE__
+/* macOS sizes a disk as block count x block size. The raw node /dev/rdiskN
+ * is a character device. The ioctl numbers are XNU's <sys/disk.h>, which the
+ * zig toolchain doesn't ship. */
+#define IS_DISK_NODE(m) (S_ISBLK(m) || S_ISCHR(m))
+#ifndef DKIOCGETBLOCKSIZE
+#define DKIOCGETBLOCKSIZE _IOR('d', 24, uint32_t)
+#define DKIOCGETBLOCKCOUNT _IOR('d', 25, uint64_t)
+#endif
+
+static int blkdev_capacity(int fd, uint64_t* capacity)
+{
+	uint32_t bsize;
+	uint64_t count;
+
+	if (ioctl(fd, DKIOCGETBLOCKSIZE, &bsize) < 0 ||
+	    ioctl(fd, DKIOCGETBLOCKCOUNT, &count) < 0)
+		return -1;
+	*capacity = count * bsize;
+	return 0;
+}
+#else
+#define IS_DISK_NODE(m) S_ISBLK(m)
+
+static int blkdev_capacity(int fd, uint64_t* capacity)
+{
+	return ioctl(fd, BLKGETSIZE64, capacity);
+}
+#endif
+
 struct raw_blk_ctx {
 	int fd;
 	uint64_t capacity;
@@ -183,8 +213,8 @@ int raw_blk_open(const char* path, uint32_t flags, struct lkl_disk* disk_out)
 	}
 
 	uint64_t capacity;
-	if (S_ISBLK(st.st_mode)) {
-		if (ioctl(fd, BLKGETSIZE64, &capacity) < 0) {
+	if (IS_DISK_NODE(st.st_mode)) {
+		if (blkdev_capacity(fd, &capacity) < 0) {
 			close(fd);
 			return -1;
 		}

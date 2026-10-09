@@ -39,7 +39,29 @@ if host_machine.system() == 'windows'
 else
     lkl_mingw_inc = []
 endif
-if lkl_shared
+is_darwin = host_machine.system() == 'darwin'
+if is_darwin
+    # macOS: the kernel is the standard ELF build converted to a Mach-O dylib
+    # (scripts/macho/build_kernel_dylib.sh), the host side is liblkl-host.a
+    # built with zig (build_host_lib.sh), whose lkl_macho_shim.c gives the
+    # kernel's lklk_* entry points their usual lkl_* names. The ELF tree
+    # (lkl_dist linux-arm64 / linux-amd64) supplies the generated headers;
+    # the Darwin lkl_autoconf.h profile in scripts/macho/autoconf shadows the
+    # one generated for a Linux host. Executables find the dylib through
+    # @rpath (see exe_install_rpath below).
+    lkl_macho_dir = get_option('lkl_macho_dir')
+    if lkl_macho_dir == ''
+        error('macOS builds need -Dlkl_macho_dir (e.g. build/macos/arm64)')
+    endif
+    if not lkl_macho_dir.startswith('/')
+        lkl_macho_dir = meson.current_source_dir() / lkl_macho_dir
+    endif
+    lkl_lib = declare_dependency(link_args: [
+        lkl_macho_dir / 'liblkl-host.a',
+        lkl_macho_dir / 'liblkl-kernel.dylib',
+    ])
+    lkl_mingw_inc = include_directories('scripts/macho/autoconf')
+elif lkl_shared
     if host_machine.system() == 'windows'
         # mingw build emits liblkl.dll into tools/lkl/lib/ (alongside the .so
         # on Linux). Link against it directly — mingw-ld synthesises the
@@ -69,7 +91,8 @@ if host_machine.system() == 'windows'
 else
     rt_dep = cc.find_library('rt', required: false)
     lkl_extra_deps = [rt_dep]
-    lkl_compile_args = ['-DLKL_HOST_CONFIG_POSIX']
+    # The Darwin lkl_autoconf.h profile defines it already.
+    lkl_compile_args = is_darwin ? [] : ['-DLKL_HOST_CONFIG_POSIX']
 endif
 # Arch headers: lkl/asm/syscalls.h. The static source headers live in
 # the kernel source tree; the generated uapi/{asm/...} live in the dist.
@@ -78,10 +101,28 @@ lkl_arch_gen_inc = include_directories(
     lkl_root_rel / '..' / '..' / 'arch' / 'lkl' / 'include' / 'generated' / 'uapi',
 )
 # On Windows, mingw32/ must come before the rest so our lkl_autoconf.h
-# (without LKL_HOST_CONFIG_POSIX) takes precedence over the Linux one.
+# (without LKL_HOST_CONFIG_POSIX) takes precedence over the Linux one; the
+# Darwin profile does the same on macOS.
 _lkl_inc_dirs = [lkl_inc, lkl_src_inc, lkl_arch_inc, lkl_arch_gen_inc]
-if host_machine.system() == 'windows'
+if host_machine.system() == 'windows' or is_darwin
     _lkl_inc_dirs = [lkl_mingw_inc] + _lkl_inc_dirs
+endif
+
+# macOS executables load liblkl-kernel.dylib through @rpath: next to them
+# (a build or test bundle) and in ../lib (the package layout, like
+# $ORIGIN/../lib on Linux). Both are set at link time, so nothing rewrites
+# them at install (meson would need install_name_tool). -dead_strip_dylibs
+# drops the system frameworks curl links when an image never calls them; -F
+# finds their link stubs (scripts/macho/sdk-stubs).
+if is_darwin
+    exe_install_rpath = ''
+    add_project_link_arguments(
+        '-Wl,-rpath,@loader_path', '-Wl,-rpath,@loader_path/../lib',
+        '-Wl,-dead_strip_dylibs',
+        '-F' + meson.current_source_dir() / 'scripts/macho/sdk-stubs/Frameworks',
+        language: 'c')
+else
+    exe_install_rpath = '$ORIGIN/../lib'
 endif
 lkl_dep = declare_dependency(
     include_directories: _lkl_inc_dirs,
@@ -137,6 +178,14 @@ endif
 # Public include directory
 anyfs_inc = include_directories('include')
 
+# iconv for the legacy file-name encodings (src/core/anyfs_legacy.c): part of
+# glibc on Linux, GNU libiconv from the sysroot on macOS (libSystem has none).
+if host_machine.system() == 'windows'
+    iconv_dep = []
+else
+    iconv_dep = dependency('iconv')
+endif
+
 # --- QEMU Block Backend (optional) ---
 enable_qemu = get_option('enable_qemu')
 if enable_qemu
@@ -178,7 +227,9 @@ if enable_qemu
     # list libcurl as a meson dep so the toolchain sysroot path is on the
     # link line; on static builds anyfs-* binaries must pull libcurl in
     # directly to resolve block/curl.c's symbols out of libblock.a.
-    curl_dep = dependency('libcurl', required: true)
+    # macOS: the frameworks curl links (CoreFoundation, SystemConfiguration)
+    # are only in its Libs.private.
+    curl_dep = dependency('libcurl', required: true, static: is_darwin)
 
     if qemu_shared
         # Dynamic linking: use pre-built libanyfs-qemublk.so / libanyfs-qemublk.dll
@@ -213,10 +264,17 @@ if enable_qemu
         # Use qemu_build_abs: link_args paths are passed verbatim to the linker,
         # which runs from the build dir, so a relative qemu_build would not
         # resolve (the find_library dirs above are already absolutized).
-        qemu_block_link_args = [
-            '-Wl,--whole-archive',
-            qemu_build_abs / 'libblock.a',
-            '-Wl,--no-whole-archive',
+        # Mach-O linkers spell it -force_load.
+        if is_darwin
+            qemu_block_link_args = ['-Wl,-force_load,' + qemu_build_abs / 'libblock.a']
+        else
+            qemu_block_link_args = [
+                '-Wl,--whole-archive',
+                qemu_build_abs / 'libblock.a',
+                '-Wl,--no-whole-archive',
+            ]
+        endif
+        qemu_block_link_args += [
             '-lm',  # needed by some block drivers
             '-lbz2', # needed by dmg driver
         ]
@@ -224,7 +282,8 @@ if enable_qemu
         # External deps needed by QEMU
         zstd_dep = dependency('libzstd', required: true)
         uring_dep = dependency('liburing', required: false)
-        aio_lib = cc.find_library('aio', required: true)
+        # libaio is Linux native AIO; macOS QEMU uses its thread pool.
+        aio_lib = cc.find_library('aio', required: not is_darwin)
         glib_sys_dep = dependency('glib-2.0', required: true)
         gthread_dep = dependency('gthread-2.0', required: true)
         z_dep = dependency('zlib', required: true)
@@ -381,7 +440,7 @@ endif
 anyfs_core = static_library('anyfs_core',
     anyfs_core_sources,
     include_directories: _anyfs_core_inc,
-    dependencies: [lkl_dep, gio_dep, blkid_dep, anyfs_u8_dep] + (enable_qemu ? [qemu_dep] : []),
+    dependencies: [lkl_dep, gio_dep, blkid_dep, anyfs_u8_dep, iconv_dep] + (enable_qemu ? [qemu_dep] : []),
     c_args: ['-DANYFS_CORE_BUILDING', '-fvisibility=hidden']
             + gio_args + qemu_args + anyfs_u8_core_args,
     install: true,
@@ -390,7 +449,7 @@ anyfs_core = static_library('anyfs_core',
 anyfs_dep = declare_dependency(
     include_directories: anyfs_inc,
     link_with: anyfs_core,
-    dependencies: [lkl_dep, gio_dep, anyfs_u8_dep] + (enable_qemu ? [qemu_dep] : []),
+    dependencies: [lkl_dep, gio_dep, anyfs_u8_dep, iconv_dep] + (enable_qemu ? [qemu_dep] : []),
 )
 
 # --- host_proxy (shared between anyfs-ksmbd, anyfs-nfsd, lkl-zerobench) ---
@@ -477,6 +536,7 @@ test_legacy = executable('test_legacy',
     'src/core/anyfs_legacy.c',
     'src/core/anyfs_name.c',
     include_directories: [anyfs_inc, include_directories('src/core')],
+    dependencies: [iconv_dep],
     install: false,
 )
 test('legacy', test_legacy, suite: 'unit')
@@ -624,6 +684,8 @@ if enable_ksmbd
     ]
     if host_machine.system() == 'windows'
         ksmbd_tools_inc_dirs += ['src/ksmbd/win32-compat']
+    elif is_darwin
+        ksmbd_tools_inc_dirs += ['src/ksmbd/darwin-compat']
     endif
     ksmbd_tools_inc = include_directories(ksmbd_tools_inc_dirs)
 
@@ -694,7 +756,7 @@ if enable_ksmbd
             '-Wno-pointer-sign',
         ],
         install: true,
-        install_rpath: '$ORIGIN/../lib',
+        install_rpath: exe_install_rpath,
     )
 endif
 
@@ -711,7 +773,7 @@ if enable_ksmbd  # reuses same LKL build with NFSD config
                        anyfs_u8_cli_dep],
         link_with: [anyfs_core],
         install: true,
-        install_rpath: '$ORIGIN/../lib',
+        install_rpath: exe_install_rpath,
     )
 endif
 
@@ -733,6 +795,6 @@ if enable_fuse
         link_with: [anyfs_core],
         c_args: fuse_flags + qemu_args + gio_args,
         install: true,
-        install_rpath: '$ORIGIN/../lib',
+        install_rpath: exe_install_rpath,
     )
 endif

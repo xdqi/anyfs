@@ -4,5 +4,5 @@ anyfs_lspart = executable('anyfs-lspart',
     dependencies: [anyfs_dep, anyfs_u8_cli_dep],
     c_args: gio_args + qemu_args,
     install: true,
-    install_rpath: '$ORIGIN/../lib',
+    install_rpath: exe_install_rpath,
 )

@@ -1,5 +1,5 @@
 option('lkl_dist', type: 'combo',
-    choices: ['linux-amd64', 'mingw32', 'mingw64', ''],
+    choices: ['linux-amd64', 'linux-arm64', 'mingw32', 'mingw64', ''],
     value: 'linux-amd64',
     description: 'Pick a prebuilt out-of-tree LKL distribution under ./lkl-<dist>/ '
         + '(holds generated headers + liblkl.a/.so/.dll). Set to "" to use lkl_root instead.')
@@ -13,6 +13,12 @@ option('lkl_src', type: 'string',
     value: '${LINUX_SRC}',
     description: 'Path to the Linux kernel source tree (provides tools/lkl/include/lkl.h '
         + 'and the arch/lkl/include/{asm,uapi} source headers).')
+
+option('lkl_macho_dir', type: 'string',
+    value: '',
+    description: 'macOS only: directory holding liblkl-host.a and liblkl-kernel.dylib '
+        + '(scripts/macho/build_host_lib.sh, build_kernel_dylib.sh; e.g. build/macos/arm64). '
+        + 'lkl_dist/lkl_root then only supply the generated headers.')
 
 option('lkl_shared', type: 'boolean',
     value: false,

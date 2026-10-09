@@ -401,11 +401,12 @@ int anyfs_probe_meta(const char* lkl_blkdev_path, char fstype[32],
 	/* Three host shapes to hand the spool fd to libblkid:
 	 *   - Linux: /proc/self/fd/<n> is the canonical filename and the
 	 *     fastest path (libblkid will mmap the underlying file).
-	 *   - emscripten (no /proc) and Windows (no /proc, no
+	 *   - emscripten, macOS (no /proc) and Windows (no /proc, no
 	 *     blkid_new_probe_from_filename on a fd-backed path): use
 	 *     blkid_probe_set_device which takes the fd directly. */
 	blkid_probe pr;
-#if defined(__EMSCRIPTEN__) || defined(_WIN32) || defined(__CYGWIN__)
+#if defined(__EMSCRIPTEN__) || defined(_WIN32) || defined(__CYGWIN__) || \
+    defined(__APPLE__)
 	pr = blkid_new_probe();
 	if (!pr) {
 		close(hfd);

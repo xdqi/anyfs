@@ -5,7 +5,7 @@
 #
 # Options:
 #   --targets=LIST      Comma-separated subset of:
-#                         linux-amd64,mingw32,mingw64
+#                         linux-amd64,mingw32,mingw64,macos-arm64,macos-x86_64
 #                       (default: linux-amd64,mingw32,mingw64)
 #   --components=LIST   Comma-separated subset of: core,server,fuse
 #                       core   = libanyfs_core.a (with qemublk backend if avail)
@@ -31,6 +31,12 @@
 # and Makefile.conf. Build them first with the LKL scripts:
 #     scripts/gen_lkl_config.sh --targets=...
 #     scripts/build_lkl.sh      --targets=...
+# macos-<arch> cross-builds with zig (scripts/macho/<arch>-macos-cc) and links
+# build/macos/<arch>/{liblkl-host.a,liblkl-kernel.dylib}
+# (scripts/macho/build_kernel_dylib.sh + build_host_lib.sh); the ELF tree
+# lkl-linux-arm64 / lkl-linux-amd64 supplies the generated headers. QEMU and
+# the libraries come from build_qemu.sh --targets=macos-<arch> and
+# build_macos_sysroot.sh --arch=<arch>.
 #
 # Per-target dependencies auto-detected; missing optional pieces are skipped
 # with a warning rather than failing the whole build.
@@ -41,6 +47,8 @@ SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck source=lib/config.sh
 source "$SCRIPT_DIR/lib/config.sh"
+# shellcheck source=macho/llvm_tools.sh
+source "$SCRIPT_DIR/macho/llvm_tools.sh"
 
 # Meson refuses absolute paths that point inside the source tree (see NOTE
 # below), so config defaults are re-relativized against SRC_DIR when inside it.
@@ -110,7 +118,7 @@ has_comp() {
 # Layout produced by scripts/build_qemu.sh: <qemu_root>/build-anyfs-<target>/.
 qemu_build_for() {
     case "$1" in
-        linux-amd64|mingw32|mingw64) echo "$QEMU_ROOT/build-anyfs-$1" ;;
+        linux-amd64|mingw32|mingw64|macos-arm64|macos-x86_64) echo "$QEMU_ROOT/build-anyfs-$1" ;;
         *) return 1 ;;
     esac
 }
@@ -120,7 +128,7 @@ qemu_build_for() {
 # link); Linux keeps the smaller, self-contained static link.
 qemu_shared_for() {
     case "$1" in
-        linux-amd64)     echo "false" ;;
+        linux-amd64|macos-*) echo "false" ;;
         mingw32|mingw64) echo "true" ;;
     esac
 }
@@ -147,7 +155,62 @@ cross_file_for() {
         linux-amd64) echo "" ;;
         mingw32)     echo "$SCRIPT_DIR/cross-anyfs-mingw32.txt" ;;
         mingw64)     echo "$SCRIPT_DIR/cross-anyfs-mingw64.txt" ;;
+        macos-*)     macos_cross_file_for "$1" ;;
     esac
+}
+
+# macOS arch of a macos-* target, and the ELF LKL tree with its headers.
+macos_arch_for() { echo "${1#macos-}"; }
+macos_lkl_dist_for() {
+    case "$1" in
+        macos-arm64)  echo linux-arm64 ;;
+        macos-x86_64) echo linux-amd64 ;;
+    esac
+}
+
+# macos-<arch>: a meson cross file, written like the linux-amd64 native file
+# (meson re-reads it on every regen, so nothing depends on our environment).
+# The launchers carry the deployment target; pkg-config sees only the arch's
+# sysroot. Prints the file's path.
+macos_cross_file_for() {
+    local target="$1" arch cpu sys f strip
+    arch="$(macos_arch_for "$target")"
+    strip="$(llvm_tool llvm-strip)" || return 1
+    case "$arch" in arm64) cpu=aarch64 ;; x86_64) cpu=x86_64 ;; esac
+    sys="$ANYFS_PATHS_MACOS_SYSROOT/$arch"
+    if [[ ! -f "$sys/lib/pkgconfig/glib-2.0.pc" ]]; then
+        echo "ERROR: no macOS sysroot at $sys — run scripts/build_macos_sysroot.sh --arch=$arch" >&2
+        return 1
+    fi
+    f="$SRC_DIR/.toolchain/meson-cross-$target.ini"
+    mkdir -p "$(dirname "$f")"
+    cat > "$f" <<EOF
+[binaries]
+c = '$SCRIPT_DIR/macho/$arch-macos-cc'
+cpp = '$SCRIPT_DIR/macho/$arch-macos-c++'
+ar = '$SCRIPT_DIR/macho/macos-ar'
+ranlib = '$SCRIPT_DIR/macho/macos-ranlib'
+strip = '$strip'
+pkg-config = 'pkg-config'
+cmake = 'false'
+
+[built-in options]
+c_args = ['-I$sys/include']
+c_link_args = ['-L$sys/lib']
+
+[properties]
+pkg_config_libdir = ['$sys/lib/pkgconfig']
+needs_exe_wrapper = true
+
+[host_machine]
+system = 'darwin'
+subsystem = 'macos'
+kernel = 'xnu'
+cpu_family = '$cpu'
+cpu = '$cpu'
+endian = 'little'
+EOF
+    echo "$f"
 }
 
 # linux-amd64 builds with zig against the static sysroot. Everything goes in a
@@ -194,6 +257,11 @@ blkid_root_for() {
         linux-amd64)
             [[ -f "$ANYFS_PATHS_LINUX_SYSROOT/lib/libblkid.a" ]] && echo "$ANYFS_PATHS_LINUX_SYSROOT"
             ;;
+        macos-*)
+            local sys
+            sys="$ANYFS_PATHS_MACOS_SYSROOT/$(macos_arch_for "$1")"
+            [[ -f "$sys/lib/libblkid.a" ]] && echo "$sys"
+            ;;
     esac
     return 0
 }
@@ -213,7 +281,7 @@ component_target_names() {
     fi
     if has_comp fuse; then
         case "$target" in
-            linux-amd64)    out+=("anyfs-fuse") ;;
+            linux-amd64|macos-*) out+=("anyfs-fuse") ;;
         esac
     fi
     printf '%s\n' "${out[@]}"
@@ -223,7 +291,7 @@ build_one() {
     local target="$1"
     local builddir="$SRC_DIR/$OUT_PFX-$target"
     local cross_file native_file
-    cross_file="$(cross_file_for "$target")"
+    cross_file="$(cross_file_for "$target")" || return 1
     native_file="$(native_file_for "$target")" || return 1
 
     echo
@@ -239,7 +307,7 @@ build_one() {
     # (avoids IMAGE_REL_AMD64_REL32 overflow from the static .a, and keeps
     # the executables small); linux-amd64 still links the static archive.
     local lkl_root="$SRC_DIR/lkl-$target/tools/lkl"
-    local liblkl_main lkl_shared_opt
+    local liblkl_main lkl_shared_opt lkl_dist="$target" lkl_macho=""
     case "$target" in
         linux-amd64)
             liblkl_main="$lkl_root/liblkl.a"
@@ -248,6 +316,21 @@ build_one() {
         mingw32|mingw64)
             liblkl_main="$lkl_root/lib/liblkl.dll"
             lkl_shared_opt="true"
+            ;;
+        macos-*)
+            lkl_dist="$(macos_lkl_dist_for "$target")"
+            lkl_root="$SRC_DIR/lkl-$lkl_dist/tools/lkl"
+            lkl_macho="build/macos/$(macos_arch_for "$target")"
+            lkl_shared_opt="false"
+            local f
+            for f in "$lkl_root/include/lkl/asm/syscalls.h" "$SRC_DIR/$lkl_macho/liblkl-host.a"; do
+                [[ -f "$f" ]] || {
+                    echo "ERROR: $f not found. Run build_lkl.sh --targets=$lkl_dist, then" >&2
+                    echo "       scripts/macho/build_kernel_dylib.sh and build_host_lib.sh --arch=$(macos_arch_for "$target")" >&2
+                    return 1
+                }
+            done
+            liblkl_main="$SRC_DIR/$lkl_macho/liblkl-kernel.dylib"
             ;;
     esac
     if [[ ! -f "$liblkl_main" ]]; then
@@ -267,10 +350,11 @@ build_one() {
 
     # Per-target options
     local meson_opts=(
-        "-Dlkl_dist=$target"
+        "-Dlkl_dist=$lkl_dist"
         "-Dlkl_src=$LKL_SRC"
         "-Dlkl_shared=$lkl_shared_opt"
     )
+    [[ -n "$lkl_macho" ]] && meson_opts+=("-Dlkl_macho_dir=$lkl_macho")
 
     # ── core: enable QEMU backend if a usable QEMU build is on disk ─
     local qbuild qartifact qshared
@@ -338,6 +422,16 @@ build_one() {
             mingw32|mingw64)
                 meson_opts+=("-Denable_fuse=false")
                 ;;
+            macos-*)
+                # macFUSE's libfuse3 (link stub + headers), from
+                # build_macos_sysroot.sh --only=macfuse; see docs/macos.md.
+                if [[ -f "$ANYFS_PATHS_MACOS_SYSROOT/$(macos_arch_for "$target")/lib/pkgconfig/fuse3.pc" ]]; then
+                    meson_opts+=("-Denable_fuse=true")
+                else
+                    echo "  fuse:         SKIPPED (run build_macos_sysroot.sh --arch=$(macos_arch_for "$target") --only=macfuse)"
+                    meson_opts+=("-Denable_fuse=false")
+                fi
+                ;;
         esac
     else
         meson_opts+=("-Denable_fuse=false")
@@ -365,6 +459,10 @@ build_one() {
     else
         ( cd "$SRC_DIR" && meson configure "$builddir" \
               "${meson_opts[@]}" )
+        # meson configure only records the options; regenerate now, or the
+        # introspection below still describes the old build graph and a
+        # target the new options enable (e.g. anyfs-fuse) is skipped.
+        ( cd "$builddir" && ninja build.ninja )
     fi
 
     # Build only the components we care about.
@@ -527,6 +625,13 @@ stage_bin() {
         ln -sfn "$f" "$bin_dir/$(basename "$f")"
     done
 
+    # macOS: the executables find liblkl-kernel.dylib next to themselves
+    # (LC_RPATH @loader_path); everything else is linked statically.
+    if [[ "$target" == macos-* ]]; then
+        ln -sfn "$SRC_DIR/build/macos/$(macos_arch_for "$target")/liblkl-kernel.dylib" \
+            "$bin_dir/liblkl-kernel.dylib"
+    fi
+
     # For mingw targets, also stage liblkl.dll + transitive DLL closure.
     if [[ "$target" == mingw* ]]; then
         local lkl_dll="$lkl_root/lib/liblkl.dll"
@@ -559,7 +664,7 @@ stage_bin() {
 # Validate targets up front
 for T in "${TARGETS_ARR[@]}"; do
     case "$T" in
-        linux-amd64|mingw32|mingw64) ;;
+        linux-amd64|mingw32|mingw64|macos-arm64|macos-x86_64) ;;
         *) echo "Unknown target: $T" >&2; exit 1 ;;
     esac
 done
