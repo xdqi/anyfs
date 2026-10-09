@@ -315,7 +315,22 @@ macOS 15 on Apple silicon and on Intel):
 - a headless drive listing through the staged `drivelist.node`, which must report the
   runner's disks with partition filesystems and mountpoints;
 - a Playwright pass that drives the packaged GUI on the native backend, including the
-  *Open system drive* dialog.
+  *Open system drive* dialog;
+- virtual block device I/O: the job attaches the device fixture (`tests/macos/make-fixtures.sh`'s
+  `parts.img`, reference data in `tests/macos/reference/`) as a read-only disk it creates
+  itself — Linux `losetup --read-only` (and a read-only `qemu-nbd` export for the GUI, since
+  drivelist hides loop devices), Windows `Mount-DiskImage -Access ReadOnly` of a VHDX, macOS
+  `hdiutil attach -readonly -nomount` — using `scripts/ci/test-device.{sh,ps1}`, which take the
+  device only from the attach command's answer and verify it against the image. Then: the app
+  without access to the device must fail with a permission error (Linux/macOS: root-owned
+  0600 nodes; Windows: a restricted non-admin token); with access it reads the partitions and
+  hashes the reference files (macOS also through `/dev/rdiskN`); the GUI opens the device's
+  whole-disk row and its partition row in *Open system drive*; and the CLI tools
+  (`tests/device/run-cli-device-tests.sh`) list it and serve it over SMB and NFS (no NFSv4
+  client on Windows). On detach the image's SHA-256 must be unchanged.
+
+Not tested: physical external disks, and reading the runners' own disks (they are only
+listed).
 
 macOS packages are assembled on Linux and signed on the Mac runner (`sign-macos.sh`) before
 the archive is written, so the tests run on the zip a user downloads.

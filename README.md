@@ -88,6 +88,20 @@ partitions with their filesystems, labels and mountpoints (the
 [drivelist-anyfs](https://github.com/xdqi/drivelist-anyfs) addon); opening a raw device
 still needs the rights to read it (administrator, root or the `disk` group).
 
+**What CI runs on every package**, on a runner of its OS (Ubuntu 26.04, Windows Server 2025,
+macOS 15 on Apple silicon and Intel):
+
+- *Image file*: open a qcow2 test image, list its partitions, mount ext4 and hash a file.
+- *Drive enumeration*: list the runner's own disks through "Open system drive…" (listing only;
+  the runner's disks are never opened).
+- *Virtual block device I/O*: the job attaches a test image as a read-only disk of its own
+  (Linux loop and nbd, a Windows VHDX, a macOS disk image) and reads it as a device: the
+  native backend, clicking it in "Open system drive…", and the CLI tools (`anyfs-lspart`,
+  `anyfs-ksmbd`, `anyfs-nfsd`), plus a run without access to the device that must be refused.
+  The image is checked to be unchanged afterwards. Files served by `anyfs-nfsd` are read back
+  on Linux and macOS only: Windows has no NFSv4 client.
+- *Physical disks*: real external drives are not tested.
+
 Build and packaging details: [ts/examples/electron-demo/README.md](ts/examples/electron-demo/README.md).
 
 ## Features

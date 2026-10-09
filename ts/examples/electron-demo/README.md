@@ -120,6 +120,15 @@ partition fstypes and labels, file size and sha256, `kernelHalt` result). It the
 `ANYFS_DRIVES_SMOKE=1`, and `scripts/check-drives.mjs` requires the staged drivelist addon to
 list the host's disks with the fork's partition fields, at least one partition having a
 filesystem type and a mountpoint. The GUI spec also opens *Open system drive…*.
+Device tests (CI, `.github/workflows/electron.yml`): `scripts/make-device-fixture.sh` builds
+the fixture; `scripts/ci/test-device.sh attach [--nbd] <parts.img> <state>` (Linux, macOS) or
+`scripts/ci/test-device.ps1 attach <parts.vhdx> <parts.img> <state>` (Windows) attaches it
+read-only; `scripts/smoke-device.sh <pkg> <platform> <state> <fixture> deny|allow` runs the
+native smoke on the device node; `packaged/device.spec.ts` (`ANYFS_DEVICE_JSON`,
+`ANYFS_DEVICE_FIXTURE`) clicks the device and its partition in *Open system drive…*;
+`test-device.sh perm deny|allow` and `detach` (which checks the image is unchanged) finish.
+Locally on Linux this needs passwordless sudo and touches only the loop/nbd device it creates.
+
 `ts/tests/e2e/packaged/docs-screenshots.spec.ts` regenerates the screenshots in
 `docs/screenshots/` from a packaged app and a cloud image (see its header).
 
