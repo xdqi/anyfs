@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { formatSize } from '@anyfs/core';
-import type { SysDrive, ElectronDrives } from './AboutDialog';
+import type { SysDrive, SysPartition, ElectronDrives } from './AboutDialog';
 
 export function getElectronDrives(): ElectronDrives | null {
     const w = window as unknown as { electronDrives?: ElectronDrives };
@@ -11,6 +11,16 @@ export type ElectronDialog = { openImage: () => Promise<string | null> };
 export function getElectronDialog(): ElectronDialog | null {
     const w = window as unknown as { electronDialog?: ElectronDialog };
     return w.electronDialog ?? null;
+}
+
+// The path a partition row opens. On Windows drivelist names partitions by
+// volume GUID path (\\?\Volume{…}\, which opens the volume's root
+// directory, not its blocks) or a descriptive \\.\PhysicalDriveN\PartitionK
+// that no API opens; \\.\HarddiskNPartitionK is the raw partition device.
+export function partitionOpenPath(drive: SysDrive, part: SysPartition): string {
+    const m = /^\\\\\.\\PhysicalDrive(\d+)$/i.exec(drive.device);
+    if (m && part.number != null) return `\\\\.\\Harddisk${m[1]}Partition${part.number}`;
+    return part.device;
 }
 
 // Modal SystemDrives picker. Triggered from the landing "Open system drive…"
@@ -147,14 +157,15 @@ export function SystemDrivesDialog({
                                         <ul className="space-y-0.5 pl-3">
                                             {d.partitions.map((p) => {
                                                 const known = p.fstype !== null;
+                                                const openPath = partitionOpenPath(d, p);
                                                 return (
                                                     <li key={p.device}>
                                                         <button
                                                             type="button"
                                                             onClick={() => {
                                                                 void onPick(
-                                                                    p.device,
-                                                                    `${p.device}${
+                                                                    openPath,
+                                                                    `${openPath}${
                                                                         p.label
                                                                             ? ` “${p.label}”`
                                                                             : ''
@@ -170,7 +181,7 @@ export function SystemDrivesDialog({
                                                                         : 'text-zinc-500 font-mono italic'
                                                                 }
                                                             >
-                                                                {p.device}
+                                                                {openPath}
                                                             </code>
                                                             <span className="text-zinc-500">
                                                                 {formatSize(p.size ?? undefined)}
