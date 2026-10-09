@@ -91,6 +91,18 @@ jobs:
             echo "release=false" >> "$GITHUB_OUTPUT"
           fi
 
+          # workflow_run always runs the default branch's electron.yml. A
+          # commit from before macos.yml existed has no macos run and lacks
+          # the scripts this version calls: skip it, with a notice. Commits
+          # that have the workflow files get the full check below.
+          for wf in linux mingw64 wasm macos; do
+            if ! gh api "repos/$REPO/contents/.github/workflows/$wf.yml?ref=$sha" --silent 2>/dev/null; then
+              echo "::notice::$sha predates .github/workflows/$wf.yml; this version of electron.yml does not package it"
+              echo "ready=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+
           pending=() failed=()
           for wf in linux mingw64 wasm macos; do
             runs="$(gh api "repos/$REPO/actions/workflows/$wf.yml/runs?head_sha=$sha&event=push&branch=main&per_page=20" \
