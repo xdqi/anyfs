@@ -44,6 +44,11 @@ kconfig_keep_end() {
         fi
         echo "  .config unchanged: kept the build tree's config stamps"
     else
+        if [[ -f "$out/.config.keep" ]]; then
+            echo "  .config changed (kbuild resyncs); differences beyond toolchain probes:"
+            diff <(kconfig_keep_norm "$out/.config.keep") <(kconfig_keep_norm "$out/.config") |
+                head -40 | sed 's/^/    /' || true
+        fi
         rm -rf "$out/.config.keep" "$out/include/config.keep"
     fi
 }
