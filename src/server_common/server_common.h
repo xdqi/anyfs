@@ -18,13 +18,13 @@ extern "C" {
 extern volatile sig_atomic_t anyfs_server_running;
 
 /* Unbuffer stdout and route SIGINT/SIGTERM to clearing
- * anyfs_server_running. On Windows also report a crash (exception code and
+ * anyfs_server_running. On Windows also report a crash or an abort() (with a
  * module+offset stack) on stderr. */
 void anyfs_server_install_signals(void);
 
 /* Boot the LKL kernel and bring up loopback (ifindex 1, idempotent —
- * the in-kernel listeners bind to it). Returns anyfs_kernel_init()'s
- * result: 0 on success. */
+ * the in-kernel listeners bind to it). On Windows, start Winsock first.
+ * Returns anyfs_kernel_init()'s result: 0 on success. */
 int anyfs_server_boot(const AnyfsKernelOpts* opts);
 
 typedef struct AnyfsShareEntry {
