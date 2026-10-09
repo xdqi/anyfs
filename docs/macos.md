@@ -194,8 +194,8 @@ and nothing here has been tried against it. The SMB and NFS servers need no exte
 - the app, if given;
 - reference data.
 
-The fixtures are byte-for-byte reproducible (fixed UUIDs and volume ids), so their reference
-data is committed in `tests/macos/reference/`. It was computed by the Linux build, and the
+The fixtures have the same partitions, ids, labels and file contents on every run (fixed UUIDs,
+volume ids and a fixed-seed 3 MiB `payload.bin`), so their reference data is committed in `tests/macos/reference/`. It was computed by the Linux build, and the
 script re-checks it whenever a Linux build is present. Packaging therefore needs no Linux
 build, except for the Ubuntu image, whose reference is computed when it is packaged.
 `--build-dir` and `--native-dir` take the inputs from CI artifacts.

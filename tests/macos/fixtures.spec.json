@@ -8,6 +8,7 @@
           "path": "",
           "contains": [
             "hello.txt",
+            "payload.bin",
             "lost+found"
           ]
         }
@@ -15,6 +16,9 @@
       "files": [
         {
           "path": "hello.txt"
+        },
+        {
+          "path": "payload.bin"
         }
       ]
     },
@@ -26,6 +30,7 @@
           "path": "",
           "contains": [
             "hello.txt",
+            "payload.bin",
             "lost+found"
           ]
         }
@@ -33,6 +38,9 @@
       "files": [
         {
           "path": "hello.txt"
+        },
+        {
+          "path": "payload.bin"
         }
       ]
     },
@@ -44,6 +52,7 @@
           "path": "",
           "contains": [
             "hello.txt",
+            "payload.bin",
             "lost+found"
           ]
         }
@@ -51,6 +60,9 @@
       "files": [
         {
           "path": "hello.txt"
+        },
+        {
+          "path": "payload.bin"
         }
       ]
     }

@@ -24,11 +24,12 @@
 #
 # Inputs: the macOS build (build_anyfs.sh --targets=macos-<arch>, all ninja
 # targets) and the addon (ts/packages/anyfs-native/scripts/build-macos.sh).
-# The fixtures come from tests/macos/make-fixtures.sh, which makes them byte
-# for byte the same every time, so their reference data (lspart tables,
-# partition metadata, file sizes and SHA-256, computed by the Linux build) is
-# committed in tests/macos/reference/ and the Mac must reproduce it. When the
-# Linux build is present, the reference is re-checked against it first.
+# The fixtures come from tests/macos/make-fixtures.sh, which gives them the
+# same partitions, ids, labels and file contents every time, so their
+# reference data (lspart tables, partition metadata, file sizes and SHA-256,
+# computed by the Linux build) is committed in tests/macos/reference/ and the
+# Mac must reproduce it. When the Linux build is present, the reference is
+# re-checked against it first.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"

@@ -8,6 +8,7 @@
           "path": "",
           "contains": [
             "hello.txt",
+            "payload.bin",
             "lost+found"
           ]
         }
@@ -17,6 +18,11 @@
           "path": "hello.txt",
           "size": 35,
           "sha256": "322d136f6301dcdbe970b08aedf2aed7df127eb7b0ff7d99ec413bc20876a298"
+        },
+        {
+          "path": "payload.bin",
+          "size": 3145728,
+          "sha256": "16dcf1da3569ea78c70ae8ba0b721bd071ed8a4150b783e34e662b7d05057e03"
         }
       ],
       "meta": {
@@ -71,6 +77,7 @@
           "path": "",
           "contains": [
             "hello.txt",
+            "payload.bin",
             "lost+found"
           ]
         }
@@ -80,6 +87,11 @@
           "path": "hello.txt",
           "size": 35,
           "sha256": "322d136f6301dcdbe970b08aedf2aed7df127eb7b0ff7d99ec413bc20876a298"
+        },
+        {
+          "path": "payload.bin",
+          "size": 3145728,
+          "sha256": "16dcf1da3569ea78c70ae8ba0b721bd071ed8a4150b783e34e662b7d05057e03"
         }
       ],
       "meta": {
@@ -134,6 +146,7 @@
           "path": "",
           "contains": [
             "hello.txt",
+            "payload.bin",
             "lost+found"
           ]
         }
@@ -143,6 +156,11 @@
           "path": "hello.txt",
           "size": 35,
           "sha256": "322d136f6301dcdbe970b08aedf2aed7df127eb7b0ff7d99ec413bc20876a298"
+        },
+        {
+          "path": "payload.bin",
+          "size": 3145728,
+          "sha256": "16dcf1da3569ea78c70ae8ba0b721bd071ed8a4150b783e34e662b7d05057e03"
         }
       ],
       "meta": {

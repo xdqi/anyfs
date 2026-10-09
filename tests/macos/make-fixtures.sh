@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Make the macOS runtime-test fixtures, byte for byte the same partitions,
-# labels and IDs on every run, so their reference data can live in
-# tests/macos/reference/.
+# Make the runtime-test fixtures (macOS tests, and the CLI device tests on
+# every OS) with the same partitions, filesystem ids, labels and file
+# contents on every run, so their reference data can live in
+# tests/macos/reference/. The image bytes themselves may differ between runs
+# and mkfs versions (ext4 metadata such as inode times); nothing compares
+# them.
 #
 # Usage: make-fixtures.sh <outdir>
 #
@@ -10,7 +13,9 @@
 #                     #1 BIOS boot, 1 MiB, no filesystem
 #                     #2 EFI System, 33 MiB, vfat "ESP", volume id 2A2A-2A2A
 #                     #3 Linux root, 32 MiB, ext4 "fixroot", metadata_csum,
-#                        fixed UUID, holding hello.txt
+#                        fixed UUID, holding hello.txt and payload.bin
+#                        (3 MiB from a fixed seed, so reads cross many
+#                        sectors and I/O chunks)
 #   parts-zlib.dmg  parts.img as a UDZO (zlib) disk image
 #   parts-bz2.dmg   parts.img as a UDBZ (bzip2) disk image
 #
@@ -32,7 +37,11 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$out" "$tmp/root"
 echo "hello from the anyfs parts fixture" > "$tmp/root/hello.txt"
-touch -d '2026-01-01 00:00:00 UTC' "$tmp/root/hello.txt" "$tmp/root"
+python3 - "$tmp/root/payload.bin" <<'PY'
+import random, sys
+open(sys.argv[1], "wb").write(random.Random(20261009).randbytes(3 << 20))
+PY
+touch -d '2026-01-01 00:00:00 UTC' "$tmp/root/hello.txt" "$tmp/root/payload.bin" "$tmp/root"
 
 truncate -s 33M "$tmp/esp.img"
 mkfs.vfat -n ESP -i 2A2A2A2A "$tmp/esp.img" > /dev/null
