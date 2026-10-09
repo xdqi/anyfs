@@ -17,6 +17,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef __APPLE__
+#include <sys/stat.h>
+#endif
+
+#include "anyfs_u8.h"
 
 /* ── Backend registry ──────────────────────────────────────────── */
 
@@ -71,6 +76,26 @@ int anyfs_disk_add(const char* image_path, uint32_t flags)
 #endif
 	if (!ops && (flags & ANYFS_BACKEND_RAW))
 		ops = &raw_backend_ops;
+
+	/* ANYFS_BACKEND=raw|qemu picks the backend when the caller didn't,
+	 * so the CLI tools and the addon can be tested on each. */
+	const char* env = anyfs_u8_getenv("ANYFS_BACKEND");
+	if (!ops && env && strcmp(env, "raw") == 0)
+		ops = &raw_backend_ops;
+#ifdef ANYFS_HAS_QEMU
+	if (!ops && env && strcmp(env, "qemu") == 0)
+		ops = &qemu_backend_ops;
+#endif
+
+#if defined(__APPLE__) && defined(ANYFS_HAS_QEMU)
+	/* QEMU's file driver refuses anything but a regular file, and its
+	 * host_device driver needs IOKit, which the macOS build lacks: open a
+	 * disk (/dev/diskN, /dev/rdiskN) with the raw backend. */
+	struct stat st;
+	if (!ops && stat(image_path, &st) == 0 &&
+	    (S_ISBLK(st.st_mode) || S_ISCHR(st.st_mode)))
+		ops = &raw_backend_ops;
+#endif
 
 	/* Auto-detect: prefer QEMU if available, else raw */
 	if (!ops) {

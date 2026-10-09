@@ -125,6 +125,18 @@ disk0/p2    fs     27 GiB   ext4    root    ...
 `p1` alone is a shortcut for `disk0/p1` when there is exactly one image on the
 command line.
 
+When an image or device has no partition table, because it holds a filesystem directly
+(a partition's own device node such as `/dev/sdb1`, `/dev/disk4s2` or `/dev/loop0p3`, or a
+bare filesystem image), `anyfs-lspart` prints it as `disk0`. Share it with
+`--share name=disk0`.
+
+Devices work like images: `\\.\PhysicalDriveN` on Windows, `/dev/diskN` or `/dev/rdiskN`
+on macOS. Reading them needs permission on the device node (root, the `disk` group, or
+Administrator). Without it, the tools exit 1 with the OS error (Permission denied / Access
+is denied). On macOS, disks are always opened with the raw backend, because QEMU's
+host-device driver is not in the macOS build. `ANYFS_BACKEND=raw` or `ANYFS_BACKEND=qemu`
+forces a backend on any platform.
+
 ### `anyfs-nfsd` (NFSv4)
 
 ```bash

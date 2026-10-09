@@ -138,8 +138,10 @@ int main(int argc, char** argv)
 		AnyfsSession* d = NULL;
 		if (anyfs_session_open(path, ANYFS_SESSION_READONLY, &d) < 0 ||
 		    !d) {
-			fprintf(stderr, "anyfs-lspart: failed to open %s\n",
-				images[i]);
+			const char* why = anyfs_get_last_error();
+			fprintf(stderr, "anyfs-lspart: failed to open %s%s%s\n",
+				images[i], why && *why ? ": " : "",
+				why ? why : "");
 			rc = 1;
 			continue;
 		}

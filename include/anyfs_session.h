@@ -93,11 +93,13 @@ int anyfs_session_id(const AnyfsSession* d);
 /* Disk-level metadata: logical (virtual block-device) size from sysfs,
  * the outer partition-table flavour ("gpt", "dos", or "") and the
  * filesystem libblkid found on the whole device (usually "" when the
- * disk carries a partition table). */
+ * disk carries a partition table), with its label and UUID. */
 typedef struct {
 	uint64_t logical_size; /* virtual block device size, in bytes */
 	char pt_type[16];      /* "gpt", "dos", or "" if no PT detected */
 	char fstype[32];       /* whole-device filesystem, "" if none */
+	char label[64];        /* its label (raw bytes), "" if none */
+	char uuid[40];         /* its UUID, "" if none */
 } AnyfsSessionMeta;
 
 /* Populate `*out` with the disk's logical size, PT flavour and fstype.

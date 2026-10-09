@@ -11,6 +11,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <winioctl.h>
 
 struct raw_blk_ctx {
 	HANDLE hFile;
@@ -68,16 +69,38 @@ int raw_blk_open(const char* path, uint32_t flags, struct lkl_disk* disk_out)
 {
 	bool readonly = flags & ANYFS_SESSION_READONLY;
 	DWORD access = readonly ? GENERIC_READ : (GENERIC_READ | GENERIC_WRITE);
-	DWORD share = FILE_SHARE_READ;
+	/* A disk (\\.\PhysicalDriveN) is open in the system already, with
+	 * write sharing: opening it without FILE_SHARE_WRITE fails with a
+	 * sharing violation. */
+	bool device = strncmp(path, "\\\\.\\", 4) == 0;
+	DWORD share = device ? (FILE_SHARE_READ | FILE_SHARE_WRITE)
+			     : FILE_SHARE_READ;
 	HANDLE hFile = anyfs_u8_create_file(path, access, share, OPEN_EXISTING,
 					    FILE_ATTRIBUTE_NORMAL);
-	if (hFile == INVALID_HANDLE_VALUE)
+	if (hFile == INVALID_HANDLE_VALUE) {
+		DWORD e = GetLastError();
+		anyfs_set_last_error("cannot open %s: %s (Windows error %lu)",
+				     path,
+				     e == ERROR_ACCESS_DENIED ? "Access is denied"
+							      : "open failed",
+				     (unsigned long)e);
 		return -1;
+	}
 
+	/* GetFileSizeEx works for files only; a disk reports its length
+	 * through IOCTL_DISK_GET_LENGTH_INFO. */
 	LARGE_INTEGER size;
 	if (!GetFileSizeEx(hFile, &size)) {
-		CloseHandle(hFile);
-		return -1;
+		GET_LENGTH_INFORMATION len;
+		DWORD got;
+		if (!DeviceIoControl(hFile, IOCTL_DISK_GET_LENGTH_INFO, NULL, 0,
+				     &len, sizeof(len), &got, NULL)) {
+			anyfs_set_last_error("cannot size %s (Windows error %lu)",
+					     path, (unsigned long)GetLastError());
+			CloseHandle(hFile);
+			return -1;
+		}
+		size = len.Length;
 	}
 
 	struct raw_blk_ctx* ctx = calloc(1, sizeof(*ctx));
@@ -106,6 +129,7 @@ void raw_blk_destroy(struct lkl_disk* disk)
 
 #else /* POSIX */
 
+#include <errno.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
@@ -203,11 +227,14 @@ int raw_blk_open(const char* path, uint32_t flags, struct lkl_disk* disk_out)
 	bool readonly = flags & ANYFS_SESSION_READONLY;
 	int oflags = readonly ? O_RDONLY : O_RDWR;
 	int fd = open(path, oflags);
-	if (fd < 0)
+	if (fd < 0) {
+		anyfs_set_last_error("cannot open %s: %s", path, strerror(errno));
 		return -1;
+	}
 
 	struct stat st;
 	if (fstat(fd, &st) < 0) {
+		anyfs_set_last_error("cannot stat %s: %s", path, strerror(errno));
 		close(fd);
 		return -1;
 	}
@@ -215,6 +242,8 @@ int raw_blk_open(const char* path, uint32_t flags, struct lkl_disk* disk_out)
 	uint64_t capacity;
 	if (IS_DISK_NODE(st.st_mode)) {
 		if (blkdev_capacity(fd, &capacity) < 0) {
+			anyfs_set_last_error("cannot size %s: %s", path,
+					     strerror(errno));
 			close(fd);
 			return -1;
 		}

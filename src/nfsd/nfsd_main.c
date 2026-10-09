@@ -578,6 +578,10 @@ static void usage(FILE* f, const char* prog)
 	    "image\n"
 	    "                       p1              shortcut for disk0/p1 "
 	    "(single-image only)\n"
+	    "                       disk0           a filesystem on the whole "
+	    "first image\n"
+	    "                                       (a partition's own device "
+	    "node, a bare filesystem image)\n"
 	    "                     'name' is bookkeeping only — the NFSv4\n"
 	    "                     pseudoroot is currently pinned to the first\n"
 	    "                     share, so the client mount path is always "
@@ -742,6 +746,9 @@ int main(int argc, char** argv)
 	/* ── 4. Open disk images ────────────────────────────────────────────
 	 */
 	AnyfsSession* disks[ANYFS_MAX_DISKS] = {NULL};
+	/* Every goto halt below is a failure; only an interrupted serve loop
+	 * exits 0. */
+	int status = 1;
 	{
 		uint32_t dflags = read_only ? ANYFS_SESSION_READONLY : 0;
 		if (anyfs_share_open_disks(disks, disk_images, n_images,
@@ -858,6 +865,7 @@ int main(int argc, char** argv)
 	while (anyfs_server_running) {
 		usleep(100000);
 	}
+	status = 0;
 
 	printf("\nShutting down...\n");
 	host_proxy_stop();
@@ -866,5 +874,5 @@ int main(int argc, char** argv)
 halt:
 	anyfs_server_shutdown(disks, n_images);
 	printf("Done\n");
-	return 0;
+	return status;
 }

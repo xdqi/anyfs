@@ -293,6 +293,8 @@ int anyfs_session_open(const char* image_path, uint32_t flags,
 	 * (If blkid can't identify the device the hint stays empty → whole-disk
 	 * mount falls back to auto-detection.) */
 	d->whole_fstype_hint[0] = '\0';
+	d->whole_label_hint[0] = '\0';
+	d->whole_uuid_hint[0] = '\0';
 	d->whole_dev = 0;
 	uint32_t probe_dev = 0;
 	if (get_blkdev_from_sys(d->sysfs_name, 0, &probe_dev) == 0) {
@@ -303,9 +305,8 @@ int anyfs_session_open(const char* image_path, uint32_t flags,
 		snprintf(tmpdev, sizeof(tmpdev), "/dev/.anyfs_probe_%d",
 			 d->disk_id);
 		(void)lkl_sys_mknod(tmpdev, LKL_S_IFBLK | 0600, probe_dev);
-		char label[64], uuid[40];
-		(void)anyfs_probe_meta(tmpdev, d->whole_fstype_hint, label,
-				       uuid);
+		(void)anyfs_probe_meta(tmpdev, d->whole_fstype_hint,
+				       d->whole_label_hint, d->whole_uuid_hint);
 		lkl_sys_unlink(tmpdev);
 	}
 
@@ -381,6 +382,8 @@ int anyfs_session_meta(AnyfsSession* d, AnyfsSessionMeta* out)
 	out->logical_size = 0;
 	out->pt_type[0] = '\0';
 	out->fstype[0] = '\0';
+	out->label[0] = '\0';
+	out->uuid[0] = '\0';
 
 	/* Logical size: /sys/block/<vda>/size is in 512-byte sectors. */
 	char sysfs_path[128];
@@ -416,6 +419,10 @@ int anyfs_session_meta(AnyfsSession* d, AnyfsSessionMeta* out)
 	out->pt_type[sizeof(out->pt_type) - 1] = '\0';
 	memcpy(out->fstype, d->whole_fstype_hint, sizeof(out->fstype));
 	out->fstype[sizeof(out->fstype) - 1] = '\0';
+	memcpy(out->label, d->whole_label_hint, sizeof(out->label));
+	out->label[sizeof(out->label) - 1] = '\0';
+	memcpy(out->uuid, d->whole_uuid_hint, sizeof(out->uuid));
+	out->uuid[sizeof(out->uuid) - 1] = '\0';
 	return 0;
 }
 

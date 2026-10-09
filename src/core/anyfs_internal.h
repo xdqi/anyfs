@@ -59,6 +59,8 @@ struct AnyfsSession {
 	char display[256];
 	char sysfs_name[64];	    /* "vda" */
 	char whole_fstype_hint[32]; /* cached superblock probe result */
+	char whole_label_hint[64];  /* and its label and UUID */
+	char whole_uuid_hint[40];
 	uint32_t whole_dev;	    /* cached dev_t for whole-disk /dev node */
 	AnyfsPartState whole_state; /* the part 0 mount: NEW/MOUNTING/MOUNTED */
 	pthread_cond_t whole_cv;

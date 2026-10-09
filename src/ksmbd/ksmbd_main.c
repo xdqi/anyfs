@@ -15,8 +15,8 @@
  * Examples:
  *   anyfs-ksmbd disk.img --share data=disk0/p1
  *   anyfs-ksmbd boot.img data.qcow2 --share esp=disk0/p1 --share home=disk1/p1
- *   anyfs-ksmbd disk.img -P 4450          (back-compat: auto share p0
- * whole-disk) anyfs-ksmbd disk.img -p 2             (deprecated: equivalent to
+ *   anyfs-ksmbd /dev/sdb1 --share data=disk0   (a filesystem on the whole disk)
+ *   anyfs-ksmbd disk.img -p 2             (deprecated: equivalent to
  * --share disk0/p2)
  */
 
@@ -441,6 +441,10 @@ static void usage(FILE* f, const char* prog)
 	    "image\n"
 	    "                       p1              shortcut for disk0/p1 "
 	    "(single-image only)\n"
+	    "                       disk0           a filesystem on the whole "
+	    "first image\n"
+	    "                                       (a partition's own device "
+	    "node, a bare filesystem image)\n"
 	    "                     'name' is the SMB share name (default: "
 	    "auto-derived from path).\n"
 	    "  -c FILE            Use FILE as ksmbd.conf (overrides built-in "
@@ -750,6 +754,9 @@ int main(int argc, char** argv)
 	/* ── 4. Open disk images ────────────────────────────────────────────
 	 */
 	AnyfsSession* disks[ANYFS_MAX_DISKS] = {NULL};
+	/* Every goto halt/cleanup below is a failure; only a serve loop that
+	 * stops on SIGINT/SIGTERM exits 0. */
+	int status = 1;
 
 	if (anyfs_share_open_disks(disks, disk_images, n_images,
 				   ANYFS_SESSION_READONLY) < 0)
@@ -811,6 +818,9 @@ int main(int argc, char** argv)
 		if (ret < 0)
 			break;
 	}
+	/* An IPC error while nobody asked to stop is a failure. */
+	if (!(ret < 0 && anyfs_server_running))
+		status = 0;
 
 	pr_info("Shutting down...\n");
 	host_proxy_stop();
@@ -826,5 +836,5 @@ cleanup:
 halt:
 	anyfs_server_shutdown(disks, n_images);
 	pr_info("Done\n");
-	return 0;
+	return status;
 }

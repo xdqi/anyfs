@@ -3,6 +3,7 @@
  */
 #define _GNU_SOURCE
 #include "anyfs_share.h"
+#include "anyfs_kernel.h"
 
 #include <ctype.h>
 #include <lkl.h>
@@ -98,10 +99,16 @@ int anyfs_share_resolve(const char* spec, AnyfsSession** disks, int n_disks,
 		path_arg = prefixed;
 	}
 
-	/* 4. Parse via path DSL */
+	/* 4. Parse via path DSL. A bare disk<N> (no partition) is not DSL; it
+	 *    names a filesystem on the whole disk (step 7). */
 	AnyfsPath ap;
 	memset(&ap, 0, sizeof(ap));
-	if (anyfs_path_parse(path_arg, &ap) < 0) {
+	unsigned whole_idx;
+	char tail;
+	if (sscanf(path_arg, "disk%u%c", &whole_idx, &tail) == 1) {
+		ap.disk_idx = (int)whole_idx;
+		ap.disk_idx_set = 1;
+	} else if (anyfs_path_parse(path_arg, &ap) < 0) {
 		fprintf(stderr,
 			"error: --share path '%s' is not a valid path DSL "
 			"string.\n",
@@ -131,36 +138,47 @@ int anyfs_share_resolve(const char* spec, AnyfsSession** disks, int n_disks,
 		return -1;
 	}
 
-	/* 7. Must have at least one path component */
-	if (ap.n_comp == 0) {
-		fprintf(
-		    stderr,
-		    "error: --share path '%s' has no partition component.\n",
-		    path_arg);
-		anyfs_path_free(&ap);
-		return -1;
-	}
-
-	/* 8. Warn about literal 'key=...' credentials */
-	anyfs_share_warn_literal_key(&ap, name_arg ? name_arg : path_arg);
-
-	/* 9. Enter the partition chain */
+	/* 7. A path without a partition component (disk<N>) is a filesystem
+	 *    on the whole disk: a partition's own device node, a bare
+	 *    filesystem image. anyfs-lspart lists it as disk<N>. */
 	char lkl_path[ANYFS_LKL_PATH_MAX];
-	int ret = anyfs_session_enter_path(disks[disk_idx], ap.comp, ap.n_comp,
-					   enter_flags, lkl_path);
-	if (ret < 0) {
-		const char* reason =
-		    anyfs_session_fail_reason(disks[disk_idx], ap.comp[0].p);
-		fprintf(
-		    stderr,
-		    "error: cannot enter %s: %s\n"
-		    "Containers (LVM_PV, LUKS, nested partition table) "
-		    "require\n"
-		    "either a credential (`?keyref=`) or v3 support.\n"
-		    "Use 'anyfs-lspart' to discover the canonical leaf path.\n",
-		    path_arg, reason ? reason : lkl_strerror(ret));
-		anyfs_path_free(&ap);
-		return -1;
+	if (ap.n_comp == 0) {
+		int ret = anyfs_session_enter(disks[disk_idx], 0, enter_flags,
+					      lkl_path);
+		if (ret < 0) {
+			fprintf(stderr,
+				"error: cannot mount %s as a whole-disk "
+				"filesystem: %s\n"
+				"Use 'anyfs-lspart' to see whether it has "
+				"partitions (disk%d/p<N>).\n",
+				path_arg, lkl_strerror(ret), disk_idx);
+			anyfs_path_free(&ap);
+			return -1;
+		}
+	} else {
+		/* 8. Warn about literal 'key=...' credentials */
+		anyfs_share_warn_literal_key(&ap,
+					     name_arg ? name_arg : path_arg);
+
+		/* 9. Enter the partition chain */
+		int ret = anyfs_session_enter_path(disks[disk_idx], ap.comp,
+						   ap.n_comp, enter_flags,
+						   lkl_path);
+		if (ret < 0) {
+			const char* reason = anyfs_session_fail_reason(
+			    disks[disk_idx], ap.comp[0].p);
+			fprintf(stderr,
+				"error: cannot enter %s: %s\n"
+				"Containers (LVM_PV, LUKS, nested partition "
+				"table) require\n"
+				"either a credential (`?keyref=`) or v3 "
+				"support.\n"
+				"Use 'anyfs-lspart' to discover the canonical "
+				"leaf path.\n",
+				path_arg, reason ? reason : lkl_strerror(ret));
+			anyfs_path_free(&ap);
+			return -1;
+		}
 	}
 
 	/* 10. Build canonical name for auto-name fallback */
@@ -208,9 +226,11 @@ int anyfs_share_open_disks(AnyfsSession** disks_out, const char** images,
 		AnyfsSession* d = NULL;
 		int rc = anyfs_session_open(img, flags, &d);
 		if (rc < 0 || !d) {
+			const char* why = anyfs_get_last_error();
 			fprintf(stderr,
-				"Failed to open disk image '%s' (rc=%d)\n",
-				images[i], rc);
+				"Failed to open disk image '%s' (rc=%d)%s%s\n",
+				images[i], rc, why && *why ? ": " : "",
+				why ? why : "");
 			for (int j = 0; j < i; j++) {
 				anyfs_session_close(disks_out[j]);
 				disks_out[j] = NULL;

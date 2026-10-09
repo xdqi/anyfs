@@ -40,8 +40,28 @@ void anyfs_format_disk(AnyfsStrbuf* sb, AnyfsSession* d, int disk_idx)
 	AnyfsPartInfo parts[MAX_PARTS];
 	size_t got = 0;
 	int n = anyfs_session_list(d, -1, parts, MAX_PARTS, &got);
-	if (n <= 0)
+	if (n < 0)
 		return;
+	if (n == 0) {
+		/* No partition table: a filesystem on the whole disk (a
+		 * partition's own device node, a bare filesystem image) is
+		 * one row, disk<N>. The servers share it when no --share is
+		 * given. */
+		AnyfsSessionMeta m;
+		if (anyfs_session_meta(d, &m) != 0 || !m.fstype[0])
+			return;
+		char path[32], sz[24];
+		snprintf(path, sizeof(path), "disk%d", disk_idx);
+		human_size(m.logical_size, sz, sizeof(sz));
+		char label[sizeof(m.label) * 4 + 1];
+		if (!m.label[0] ||
+		    anyfs_legacy_decode(m.label, label, sizeof(label)) < 0)
+			snprintf(label, sizeof(label), "?");
+		anyfs_strbuf_printf(sb, "%-18s %-10s %-7s %-7s %-12s %-12s\n",
+				    path, sz, "FS", m.fstype, label,
+				    m.uuid[0] ? m.uuid : "?");
+		return;
+	}
 
 	for (int i = 0; i < n; i++) {
 		char path[32];
