@@ -1,9 +1,10 @@
-import { test, expect, _electron, type Page } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as dom from '../drivers/dom-actions';
+import { launchPackaged } from './launch';
 import { ElectronDriver } from '../drivers/electron-driver';
 
 // GUI test of a PACKAGED app against the read-only test device attached by
@@ -83,11 +84,7 @@ test('packaged app reads the test device: whole disk and partition node', async 
     delete env.ELECTRON_RUN_AS_NODE;
     delete env.ELECTRON_DEV;
     delete env.ANYFS_DISABLE_NATIVE;
-    const app = await _electron.launch({
-        executablePath: exe!,
-        args: process.platform === 'linux' ? ['--no-sandbox'] : [],
-        env,
-    });
+    const app = await launchPackaged(exe!, env);
     const driver = new ElectronDriver(app, downloadDir);
     try {
         await driver.start();

@@ -1,8 +1,9 @@
-import { test, expect, _electron } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import * as dom from '../drivers/dom-actions';
+import { launchPackaged } from './launch';
 
 // GUI smoke for a PACKAGED desktop app (electron-demo/scripts/package.sh
 // output), on the smoke fixture from make-smoke-fixture.sh:
@@ -39,11 +40,7 @@ test('packaged app opens an image natively and browses a partition', async () =>
     delete env.ELECTRON_DEV;
     delete env.ANYFS_DISABLE_NATIVE;
 
-    const app = await _electron.launch({
-        executablePath: exe!,
-        args: process.platform === 'linux' ? ['--no-sandbox'] : [],
-        env,
-    });
+    const app = await launchPackaged(exe!, env);
     try {
         const page = await app.firstWindow();
         await app.evaluate(({ BrowserWindow }) => {

@@ -1,8 +1,9 @@
-import { test, expect, _electron } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as dom from '../drivers/dom-actions';
+import { launchPackaged } from './launch';
 
 // Regenerates the desktop screenshots in docs/screenshots/ from a packaged
 // app. Skipped unless ANYFS_DOCS_IMAGE is set:
@@ -29,11 +30,7 @@ test('docs screenshots', async () => {
     delete env.ELECTRON_RUN_AS_NODE;
     delete env.ELECTRON_DEV;
     delete env.ANYFS_DISABLE_NATIVE;
-    const app = await _electron.launch({
-        executablePath: exe!,
-        args: process.platform === 'linux' ? ['--no-sandbox'] : [],
-        env,
-    });
+    const app = await launchPackaged(exe!, env);
     try {
         const page = await app.firstWindow();
         await app.evaluate(({ BrowserWindow }) => {

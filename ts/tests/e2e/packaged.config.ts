@@ -6,7 +6,10 @@ export default defineConfig({
     testDir: 'packaged',
     fullyParallel: false,
     workers: 1,
-    timeout: 180_000,
+    timeout: 240_000,
+    // One retry, for electron.launch timeouts seen on windows-2025 (see
+    // packaged/launch.ts); a test that passes only on retry is reported flaky.
+    retries: 1,
     expect: { timeout: 30_000 },
     reporter: [['list']],
 });
