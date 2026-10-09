@@ -26,6 +26,8 @@ set -e
 
 # shellcheck source=lib/config.sh
 source "$(dirname "$0")/lib/config.sh"
+# shellcheck source=lib/kconfig_keep.sh
+source "$(dirname "$0")/lib/kconfig_keep.sh"
 
 # CLI --linux=/--out=/--emsdk= win; config.sh provides the defaults.
 LINUX_DIR="${LINUX_DIR:-$ANYFS_PATHS_LINUX_SRC}"
@@ -73,9 +75,9 @@ echo "=============================================================="
 
 mkdir -p "$OUT" "$LKL_OUT/include" "$OUT/scripts/mod"
 
-# Start fresh — but only inside the out-of-tree build dir.
-rm -f "$DOTCONFIG" "$DOTCONFIG.old"
-rm -rf "$OUT/include/config"
+# Start fresh — but only inside the out-of-tree build dir. An unchanged
+# config is put back by kconfig_keep_end, so a cached tree stays incremental.
+kconfig_keep_begin "$OUT"
 
 # defconfig — Kconfig's cc-objdump-file-format.sh would probe the host CC and
 # default OUTPUT_FORMAT to elf64-x86-64. We override OUTPUT_FORMAT below, so
@@ -367,6 +369,7 @@ echo "#define KERNEL_ELFCLASS ELFCLASS32" > "$OUT/scripts/mod/elfconfig.h"
 # Bump Makefile.conf's mtime so tools/lkl/Makefile.autoconf doesn't re-fire
 # and wipe kernel.config (the autoconf rule truncates it).
 touch "$CONF"
+kconfig_keep_end "$OUT"
 
 echo
 echo "=== wasm config ready at $OUT ==="

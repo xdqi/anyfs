@@ -27,6 +27,7 @@ scripts/check_linux_abi.sh
 scripts/lib/zig-cc.sh
 scripts/lib/zig-cc
 scripts/lib/zig-c++
+scripts/lib/kconfig_keep.sh
 scripts/lib/lkl-linux-cc.sh
 scripts/sync_wasm_bundle.sh
 scripts/lib/wasm_exports.sh
@@ -43,6 +44,7 @@ ts/examples/electron-demo/scripts/package.sh
 ts/examples/electron-demo/scripts/sign-macos.sh
 ts/examples/electron-demo/scripts/smoke-device.sh
 ts/examples/electron-demo/scripts/smoke-package.sh
+scripts/ci/prune-caches.sh
 scripts/ci/run-restricted-win.sh
 scripts/ci/test-device.sh
 ts/examples/electron-demo/scripts/stage-native-win64.sh

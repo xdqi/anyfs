@@ -31,6 +31,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  # A running build is never cancelled; a newer push replaces a queued one.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # Ephemeral sccache-dist compile farm. Workers serve the coordinator
   # (the build job) and exit when it goes offline. Skipped on PRs —
@@ -156,7 +161,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/sccache
-          key: sccache-mingw64-${{ github.sha }}
+          key: sccache-mingw64-${{ hashFiles('peru.yaml', 'patches/**', 'scripts/**', 'src/**', 'include/**', 'meson.build', 'meson_options.txt', 'tests/**/*.c', 'ts/native/**', 'ts/packages/anyfs-native/src/**') }}
           restore-keys: |
             sccache-mingw64-
 
@@ -203,7 +208,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: lkl-mingw64
-          key: lkl-mingw64-${{ hashFiles('peru.yaml', 'scripts/gen_lkl_config.sh', 'scripts/build_lkl.sh', 'scripts/oot_fs.sh', '.github/workflows/mingw64.yml') }}
+          key: lkl-mingw64-${{ hashFiles('peru.yaml', 'scripts/gen_lkl_config.sh', 'scripts/build_lkl.sh', 'scripts/lib/kconfig_keep.sh', 'scripts/lib/lkl-mingw-cc.sh', 'scripts/oot_fs.sh') }}
           restore-keys: |
             lkl-mingw64-
 
@@ -393,3 +398,21 @@ jobs:
             ${{ steps.farm.outputs.log-file }}
             ${{ runner.temp }}/sccache-daemon.log
           retention-days: 14
+
+  # Keep the newest cache per prefix (sccache: two); see scripts/ci/prune-caches.sh.
+  prune-caches:
+    needs: build
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prune superseded caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/ci/prune-caches.sh 2 sccache-mingw64-
+          scripts/ci/prune-caches.sh 1 lkl-mingw64- qemu-mingw64- msys-cross-mingw64-

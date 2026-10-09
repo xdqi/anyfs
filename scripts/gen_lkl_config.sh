@@ -24,6 +24,8 @@ set -e
 
 # shellcheck source=lib/config.sh
 source "$(dirname "$0")/lib/config.sh"
+# shellcheck source=lib/kconfig_keep.sh
+source "$(dirname "$0")/lib/kconfig_keep.sh"
 
 # LINUX_DIR: CLI --linux= wins; config.sh provides the default.
 LINUX_DIR="${LINUX_DIR:-$ANYFS_PATHS_LINUX_SRC}"
@@ -314,9 +316,9 @@ configure_target() {
 
     mkdir -p "$OUT" "$LKL_OUT/include" "$OUT/scripts/mod"
 
-    # Start fresh — but only inside the out-of-tree build dir.
-    rm -f "$DOTCONFIG" "$DOTCONFIG.old"
-    rm -rf "$OUT/include/config"
+    # Start fresh — but only inside the out-of-tree build dir. An unchanged
+    # config is put back by kconfig_keep_end, so a cached tree stays incremental.
+    kconfig_keep_begin "$OUT"
 
     # defconfig — kconfig itself doesn't need CROSS_COMPILE, but Kconfig's
     # default for OUTPUT_FORMAT shells out to cc-objdump-file-format.sh which
@@ -505,6 +507,7 @@ EOF
     # Bump Makefile.conf's mtime so the autoconf rule (which would wipe
     # kernel.config back to empty) does not re-fire on subsequent builds.
     touch "$LKL_OUT/Makefile.conf"
+    kconfig_keep_end "$OUT"
 }
 
 # Map name → cross prefix

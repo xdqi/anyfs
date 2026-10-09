@@ -33,6 +33,11 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # A running build is never cancelled; a newer push replaces a queued one.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: macos-${{ matrix.arch }}
@@ -107,7 +112,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: lkl-${{ matrix.lkl }}
-          key: macos-lkl-${{ matrix.lkl }}-${{ hashFiles('peru.yaml', 'scripts/gen_lkl_config.sh', 'scripts/build_lkl.sh', 'scripts/lib/lkl-linux-cc.sh', 'scripts/lib/zig-cc.sh', 'scripts/oot_fs.sh', 'patches/linux/macho/**', '.github/workflows/macos.yml') }}
+          key: macos-lkl-${{ matrix.lkl }}-${{ hashFiles('peru.yaml', 'scripts/gen_lkl_config.sh', 'scripts/build_lkl.sh', 'scripts/lib/lkl-linux-cc.sh', 'scripts/lib/zig-cc.sh', 'scripts/lib/kconfig_keep.sh', 'scripts/oot_fs.sh', 'patches/linux/macho/**') }}
           restore-keys: |
             macos-lkl-${{ matrix.lkl }}-
       - name: Cache macOS sysroot (${{ matrix.arch }})
@@ -269,3 +274,20 @@ jobs:
           path: ${{ runner.temp }}/out/x64/drivelist.node
           if-no-files-found: error
           retention-days: 14
+
+  # Keep the newest cache per prefix (sccache: two); see scripts/ci/prune-caches.sh.
+  prune-caches:
+    needs: build
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prune superseded caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/ci/prune-caches.sh 1 macos-lkl-linux-arm64- macos-lkl-linux-amd64- macos-qemu-arm64- macos-qemu-x86_64- macos-sysroot-arm64- macos-sysroot-x86_64-

@@ -35,6 +35,15 @@ OUT_PARENT="${OUT_PARENT:-$(cd "$(dirname "$0")/.." && pwd)}"
 TARGETS_REQ=""
 DO_CLEAN=0
 JOBS="$(nproc)"
+
+# Fixed kbuild identity: utsversion.h and compile.h otherwise carry the
+# build time, user and host, so every build recompiled init/version.o and
+# relinked vmlinux (three kallsyms passes) even when nothing changed. A
+# caller's own values win.
+export KBUILD_BUILD_TIMESTAMP="${KBUILD_BUILD_TIMESTAMP:-1970-01-01 00:00:00 UTC}"
+export KBUILD_BUILD_VERSION="${KBUILD_BUILD_VERSION:-1}"
+export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-anyfs}"
+export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-anyfs}"
 CC_OVERRIDE=""
 USE_SCCACHE=0
 

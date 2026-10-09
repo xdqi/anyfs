@@ -65,7 +65,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: lkl-wasm
-          key: lkl-wasm-v2-${{ hashFiles('peru.yaml', 'scripts/gen_lkl_config_wasm.sh', 'scripts/build_lkl_wasm.sh', 'scripts/oot_fs.sh', 'patches/linux/wasm/**', '.github/workflows/wasm.yml') }}
+          key: lkl-wasm-v2-${{ hashFiles('peru.yaml', 'scripts/gen_lkl_config_wasm.sh', 'scripts/build_lkl_wasm.sh', 'scripts/lib/kconfig_keep.sh', 'scripts/oot_fs.sh', 'patches/linux/wasm/**') }}
           restore-keys: |
             lkl-wasm-v2-
 
@@ -154,7 +154,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/sccache
-          key: sccache-wasm-${{ github.sha }}
+          key: sccache-wasm-${{ hashFiles('peru.yaml', 'patches/**', 'scripts/**', 'src/**', 'include/**', 'meson.build', 'meson_options.txt', 'tests/**/*.c', 'ts/native/**', 'ts/packages/anyfs-native/src/**') }}
           restore-keys: |
             sccache-wasm-
 
@@ -328,3 +328,20 @@ jobs:
           curl -sI http://localhost:4173/ | grep -i 'cache-control: no-cache'
           docker stop anyfs-web-smoke
 
+  # Keep the newest cache per prefix (sccache: two); see scripts/ci/prune-caches.sh.
+  prune-caches:
+    needs: wasm-build
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prune superseded caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/ci/prune-caches.sh 2 sccache-wasm-
+          scripts/ci/prune-caches.sh 1 lkl-wasm-v2- qemu-wasm-v2-

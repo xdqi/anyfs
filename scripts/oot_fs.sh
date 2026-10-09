@@ -56,6 +56,18 @@ NTFSPLUS_REV="5893a4b30e4a821348ab158f594f2c3c9409694e"
 die()  { echo "oot_fs: $*" >&2; exit 1; }
 log()  { echo "oot_fs: $*"; }
 
+# Write stdin to $1, or copy $1 to $2, only when the content differs, so a
+# restaged tree keeps its mtimes and a cached kernel build stays incremental
+# (rewriting zfs_config.h recompiled all of ZFS and relinked vmlinux on every
+# CI run).
+write_if_changed() {
+    local dst="$1" tmp
+    tmp="$(mktemp "$dst.XXXXXX")"
+    cat > "$tmp"
+    if cmp -s "$tmp" "$dst"; then rm -f "$tmp"; else mv -f "$tmp" "$dst"; fi
+}
+copy_if_changed() { write_if_changed "$2" < "$1"; }
+
 # ── helpers ─────────────────────────────────────────────────────────────────
 
 ensure_linux() {
@@ -349,18 +361,25 @@ stage_apfs() {
     # 1. Generate version.h (super.c includes it; the upstream Makefile
     #    runs genver.sh in its default target — we skip that target so do it
     #    here). Idempotent: re-running just refreshes the header.
+    # Keep the old file (and its mtime) when the regenerated one is the same.
+    [[ -f "$src/version.h" ]] && cp -p "$src/version.h" "$src/version.h.keep"
     (cd "$src" && ./genver.sh) >/dev/null 2>&1 || \
         echo '#define GIT_COMMIT "anyfs-reader-staged"' > "$src/version.h"
+    if [[ -f "$src/version.h.keep" ]] && cmp -s "$src/version.h" "$src/version.h.keep"; then
+        mv -f "$src/version.h.keep" "$src/version.h"
+    else
+        rm -f "$src/version.h.keep"
+    fi
 
     # 2. Drop in our hand-authored Kconfig (no upstream Kconfig ships).
-    cp "$REPO_DIR/scripts/oot_fs/apfs.Kconfig" "$src/Kconfig"
+    copy_if_changed "$REPO_DIR/scripts/oot_fs/apfs.Kconfig" "$src/Kconfig"
 
     # 3. Replace the upstream `obj-m = apfs.o` Makefile with a clean
     #    Kbuild fragment driven by CONFIG_APFS_FS. The upstream file
     #    mixes OOT-build helpers (default/install/clean targets) with
     #    Kbuild syntax — fine for `make -C`, but we want a pure in-tree
     #    module here.
-    cp "$REPO_DIR/scripts/oot_fs/apfs.Makefile" "$src/Makefile"
+    copy_if_changed "$REPO_DIR/scripts/oot_fs/apfs.Makefile" "$src/Makefile"
 
     # 4. Symlink into the kernel tree (replace any stale entry first).
     rm -f "$LINUX_DIR/fs/apfs"
@@ -438,13 +457,14 @@ stage_zfs() {
     #    resolves to $(srctree)/include/zfs (which we symlink to OOT include/).
     #    The generated zfs_config.h lives at the OOT top level — copy it
     #    into include/ so the symlinked path picks it up.
-    cp -f "$src/zfs_config.h" "$src/include/zfs_config.h"
+    {
+    cat "$src/zfs_config.h"
     # Append LKL carve-outs. zfs_config.h was generated against a "normal"
     # x86_64 kernel (the .zfs-configure-build prep dir) so it sets
     # HAVE_KERNEL_OBJTOOL/HAVE_KERNEL_OBJTOOL_HEADER — both pull in
     # <asm/frame.h>, which doesn't exist under arch/lkl/. Disable on
     # LKL builds via autoconf-provided CONFIG_LKL.
-    cat >> "$src/include/zfs_config.h" <<'EOF'
+    cat <<'EOF'
 
 /* anyfs-reader LKL carve-out — appended by scripts/oot_fs.sh stage_zfs.
  *
@@ -488,6 +508,7 @@ stage_zfs() {
 # undef HAVE_VFS_MIGRATE_FOLIO
 #endif
 EOF
+    } | write_if_changed "$src/include/zfs_config.h"
 
     # 3. Generate the Kconfig stanza (copy-builtin writes this inline; we
     #    write it into module/ so the symlink target has it). Match the
@@ -495,7 +516,7 @@ EOF
     #    `depends on EFI_PARTITION` line — LKL builds EFI_PARTITION=y too,
     #    but stating it explicitly here lets us drop the dep if we ever
     #    need to enable ZFS on a config without GPT support.
-    cat > "$src/module/Kconfig" <<'EOF'
+    write_if_changed "$src/module/Kconfig" <<'EOF'
 config ZFS
 	tristate "ZFS filesystem support"
 	depends on BLOCK

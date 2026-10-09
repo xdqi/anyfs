@@ -137,6 +137,15 @@ echo "=============================================================="
 # the kernel tree.
 export CLANG_TARGET_FLAGS_lkl="wasm32-unknown-emscripten"
 
+# Fixed kbuild identity: utsversion.h and compile.h otherwise carry the
+# build time, user and host, so every build recompiled init/version.o and
+# relinked vmlinux (three kallsyms passes) even when nothing changed. A
+# caller's own values win.
+export KBUILD_BUILD_TIMESTAMP="${KBUILD_BUILD_TIMESTAMP:-1970-01-01 00:00:00 UTC}"
+export KBUILD_BUILD_VERSION="${KBUILD_BUILD_VERSION:-1}"
+export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-anyfs}"
+export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-anyfs}"
+
 # wasm-ld dispatch:
 #   1. --start-group/--end-group around $(KBUILD_VMLINUX_LIBS) — LLD already
 #      does iterative archive resolution and rejects the flags. Strip them.
