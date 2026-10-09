@@ -1,12 +1,13 @@
 name: wasm
 
-# Builds the wasm bundle (LKL + QEMU block layer via emscripten), packages
-# the vite-demo web app as a deployable tarball, and packages the electron
-# demo (wasm mode only) for linux-x64 + win32-x64.
+# Builds the wasm bundle (LKL + QEMU block layer via emscripten) and
+# packages the vite-demo web app as a deployable tarball and container.
 # Design: docs/superpowers/specs/2026-06-11-wasm-web-electron-ci-design.md
 #
-# Chain:     wasm-build → web-package → electron-package (matrix)
-# Artifacts: anyfs-wasm-bundle, anyfs-web-dist, anyfs-electron-{linux,win32}-x64
+# Chain:     wasm-build → web-package → ghcr-image
+# Artifacts: anyfs-wasm-bundle, anyfs-web-dist
+# electron.yml packages the desktop app from anyfs-web-dist plus the native
+# addons of linux.yml and mingw64.yml.
 #
 # sccache: local disk cache, persisted via actions/cache on
 # ~/.cache/sccache (the build is ~15 min — an S3 backend isn't worth the
@@ -327,90 +328,3 @@ jobs:
           curl -sI http://localhost:4173/ | grep -i 'cache-control: no-cache'
           docker stop anyfs-web-smoke
 
-  electron-package:
-    needs: web-package
-    runs-on: ubuntu-26.04
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux
-            script: package:wasm
-            outdir: anyfs-demo-linux-x64
-          - platform: win32
-            script: package:win:wasm
-            outdir: anyfs-demo-win32-x64
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11
-          package_json_file: ts/package.json
-      # Pinned: node 24.16.0 breaks electron-packager's zip extraction
-      # (yauzl event loop drains → silent exit 0 on CI / hang locally,
-      # out/ never written; runs 27338704662..27391081970). 24.15.0 is
-      # verified good. Re-test before unpinning.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24.15.0
-          cache: pnpm
-          cache-dependency-path: ts/pnpm-lock.yaml
-      - name: Cache electron binaries
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/electron
-          key: electron-${{ matrix.platform }}-${{ hashFiles('ts/pnpm-lock.yaml') }}
-      # Includes electron-demo this time. drivelist/@anyfs/native are
-      # optionalDependencies: the missing sibling drivelist checkout is
-      # skipped, and the @anyfs/native filter keeps node-gyp from running.
-      - name: Install
-        working-directory: ts
-        run: pnpm install --frozen-lockfile --filter '!@anyfs/native'
-      - name: Download web dist
-        uses: actions/download-artifact@v4
-        with:
-          name: anyfs-web-dist
-          path: .
-      - name: Unpack renderer
-        run: |
-          mkdir -p ts/examples/vite-demo/dist
-          tar -xzf anyfs-web-dist.tar.gz -C ts/examples/vite-demo/dist
-      # DEBUG tracing stays on permanently: electron-packager has exited 0
-      # without writing out/ on CI (runs 27338704662, 27345017292) while
-      # every local reproduction succeeds; the @electron/get trace is the
-      # evidence when it recurs. The explicit out/ assertion converts the
-      # silent failure into a loud one at the step that owns it.
-      - name: Package (${{ matrix.platform }}, wasm-only)
-        working-directory: ts/examples/electron-demo
-        env:
-          DEBUG: 'electron-packager,@electron/get:*'
-        run: |
-          pnpm run ${{ matrix.script }}
-          test -x "out/${{ matrix.outdir }}/anyfs-demo" -o -f "out/${{ matrix.outdir }}/anyfs-demo.exe" || {
-            echo "::error::electron-packager exited 0 but out/${{ matrix.outdir }} is missing"
-            ls -la out/ 2>/dev/null || true
-            exit 1
-          }
-      - name: Smoke test packaged app (linux)
-        if: matrix.platform == 'linux'
-        run: |
-          sudo apt-get install -y --no-install-recommends xvfb libnss3 libgbm1
-          xvfb-run -a ts/examples/electron-demo/out/anyfs-demo-linux-x64/anyfs-demo \
-            --no-sandbox --disable-gpu &
-          APP=$!
-          sleep 30
-          kill -0 "$APP"   # still alive after 30s = launch smoke passes
-          kill "$APP" || true
-          pkill -f anyfs-demo || true
-      - name: Zip package
-        run: |
-          cd ts/examples/electron-demo/out
-          zip -qry "$GITHUB_WORKSPACE/anyfs-electron-${{ matrix.platform }}-x64.zip" \
-            '${{ matrix.outdir }}'
-      - name: Upload electron package
-        uses: actions/upload-artifact@v4
-        with:
-          name: anyfs-electron-${{ matrix.platform }}-x64
-          path: anyfs-electron-${{ matrix.platform }}-x64.zip
-          if-no-files-found: error

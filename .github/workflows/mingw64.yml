@@ -334,6 +334,48 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # ── Electron native addon ───────────────────────────────────────────────
+      # anyfs_native.node is cross-linked against the core, liblkl.dll and
+      # libanyfs-qemublk.dll built above, with ld.lld --delayload=node.exe
+      # (build-win64.sh). collect-native.sh adds its DLL closure. electron.yml
+      # packages the desktop app from this artifact.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+          package_json_file: ts/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
+
+      - name: Build Electron native addon (win64)
+        env:
+          LINUX_SRC: ${{ github.workspace }}/deps/linux
+          QEMU_SRC: ${{ github.workspace }}/deps/qemu
+          QEMU_BLD_MINGW64: ${{ github.workspace }}/deps/qemu/build-anyfs-mingw64
+          LKL_MINGW64: ${{ github.workspace }}/lkl-mingw64
+          HEADER_CACHE: ${{ runner.temp }}/electron-headers
+          LLD_FAKEBIN: ${{ runner.temp }}/lld-bin
+        run: |
+          sudo apt-get install -y --no-install-recommends lld
+          mkdir -p "$LLD_FAKEBIN"
+          ln -sf "$(command -v ld.lld)" "$LLD_FAKEBIN/ld.lld"
+          (cd ts && pnpm install --frozen-lockfile --filter @anyfs/native --ignore-scripts)
+          ELECTRON_VERSION="$(node ts/examples/electron-demo/scripts/electron-version.mjs)"
+          export ELECTRON_VERSION
+          bash ts/packages/anyfs-native/scripts/build-win64.sh
+          bash ts/examples/electron-demo/scripts/collect-native.sh win32 \
+            "$RUNNER_TEMP/anyfs-native-win32-x64"
+
+      - name: Upload Electron native addon
+        uses: actions/upload-artifact@v4
+        with:
+          name: anyfs-native-win32-x64
+          path: ${{ runner.temp }}/anyfs-native-win32-x64/
+          if-no-files-found: error
+          retention-days: 14
+
       # The farm's forwarder outlives its setup step, and the runner stops
       # printing its output (and the scheduler's) once that step ends; the
       # action keeps a copy in log-file. Uploaded with the daemon's warnings.

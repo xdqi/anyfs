@@ -19,7 +19,8 @@
 # (resolved from its package.json); override via env when bumping electron.
 #
 # Output: build/Release/anyfs_native.node  (loaded by electron-demo in dev via
-#         native-loader.ts, and staged into packaged apps by stage-native.sh).
+#         native-loader.ts, and staged into packaged apps by electron-demo's
+#         scripts/collect-native.sh + package.sh).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

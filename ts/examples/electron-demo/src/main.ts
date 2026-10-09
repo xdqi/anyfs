@@ -22,7 +22,12 @@ import { homedir } from 'node:os';
 import { join, extname, normalize, resolve } from 'node:path';
 import type { Drive } from 'drivelist';
 import { Worker } from 'node:worker_threads';
-import { loadAnyfsNativeAddon, loadDrivelistModule } from './native-loader';
+import {
+    loadAnyfsNativeAddon,
+    loadDrivelistModule,
+    resolveAnyfsNativeAddon,
+} from './native-loader';
+import { runNativeSmoke } from './native-smoke';
 
 // Opt-in dev mode (set by `pnpm dev`). Packaged builds are always prod.
 // Bare `electron .` defaults to prod so we don't accidentally try to load
@@ -634,38 +639,28 @@ void app.whenReady().then(async () => {
         return;
     }
 
-    // Same headless pattern for the native addon: init kernel, open the image
-    // passed in $ANYFS_NATIVE_IMAGE, dump diskListJson, exit. Lets us confirm
-    // the addon loads under Electron's vendored Node ABI before the renderer
-    // ever touches it.
+    // Same headless pattern for the native addon: open $ANYFS_NATIVE_IMAGE,
+    // list partitions, mount one, read a file, halt, exit with the result.
+    // CI runs it against every packaged app (see native-smoke.ts).
     if (process.env.ANYFS_NATIVE_SMOKE === '1') {
-        (async () => {
-            try {
-                const m = loadNativeAddon();
-                if (!m) throw new Error('addon not loadable');
-                const rc = await m.kernelInit(512, 4);
-                if (rc !== 0) throw new Error(`init rc=${rc}`);
-                nativeInitDone = true;
-                const img =
-                    process.env.ANYFS_NATIVE_IMAGE ||
-                    resolve(__dirname, '../../vite-demo/public/disks/multi.img');
-                const h = await m.sessionOpen(img, 0);
-                if (h < 0) throw new Error(`diskOpen rc=${h}`);
-                const list = await m.sessionListJson(h);
-                const out = process.env.ANYFS_NATIVE_OUT || '/tmp/anyfs-native-smoke.json';
-                const fs = await import('node:fs/promises');
-                await fs.writeFile(out, list);
-                console.log(`[native:smoke] wrote disk list for ${img} to ${out}`);
-                await m.sessionClose(h);
-            } catch (e) {
-                console.error('[native:smoke] failed:', e);
+        runNativeSmoke({
+            addonPath: resolveAnyfsNativeAddon(),
+            load: loadNativeAddon,
+            rendererDir: RENDERER_DIR,
+            resourcesPath: process.resourcesPath,
+            packaged: app.isPackaged,
+            versions: {
+                app: app.getVersion(),
+                electron: process.versions.electron,
+                node: process.versions.node,
+            },
+            defaultImage: resolve(__dirname, '../../vite-demo/public/disks/multi.img'),
+        })
+            .then((rc) => app.exit(rc))
+            .catch((e: Error) => {
+                console.error('[native:smoke] unhandled:', e);
                 app.exit(1);
-            }
-            app.exit(0);
-        })().catch((e: Error) => {
-            console.error('[native:smoke] unhandled:', e);
-            app.exit(1);
-        });
+            });
         return;
     }
 

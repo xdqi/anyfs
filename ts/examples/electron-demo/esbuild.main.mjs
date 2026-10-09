@@ -6,7 +6,7 @@
  * (electron/forge#4188, electron/packager#1213). By bundling everything
  * into a single main.cjs / preload.cjs, the packaged app has no runtime
  * dependency on node_modules at all — we only need to stage the two
- * native `.node` files at known paths (scripts/stage-native.sh).
+ * native `.node` files at known paths (scripts/package.sh).
  */
 import { build } from 'esbuild';
 import { rmSync } from 'node:fs';

@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
 # Cross-build anyfs_native.node for win64. The artifact stays in
-# $package/build-win64/; packaging picks it up via
-# stage-native-win64-package.sh.
+# $package/build-win64/; collect-native.sh win32 picks it up together with
+# its DLL closure (liblkl.dll, libanyfs-qemublk.dll, glib, ...), which
+# package.sh stages next to it in resources/native/.
 #
 # No node.exe shim is needed anymore — build-win64.sh links with
 # ld.lld --delayload=node.exe and binding.cc registers a delay-load
 # hook that routes napi_* resolution through GetModuleHandle(NULL)
-# (the host EXE). See [[mingw-delayload-lld]] in memory.
-#
-# Transitive DLLs (liblkl.dll, libanyfs-qemublk.dll, glib, …) still get
-# dropped next to anyfs-demo.exe by copy-win64-dlls.sh — Windows DLL
-# search resolves regular imports against the loader exe's dir.
+# (the host EXE).
 set -euo pipefail
 
 cd "$(dirname "$0")/../../../packages/anyfs-native"

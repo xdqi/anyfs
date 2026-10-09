@@ -1,0 +1,358 @@
+name: electron
+
+# Desktop (Electron) distribution. Packages the GUI with its native addon
+# from the artifacts the per-platform build workflows already produced for
+# one commit, smoke-tests every package on a runner of its own OS, and
+# attaches the archives to the GitHub release of a v* tag. Nothing here
+# rebuilds LKL, QEMU or the wasm bundle.
+#
+# Inputs, downloaded by run id from the same commit's main-branch runs:
+#   wasm.yml     anyfs-web-dist          renderer + hashed wasm fallback
+#   linux.yml    anyfs-native-linux-x64  anyfs_native.node (glibc 2.25)
+#   mingw64.yml  anyfs-native-win32-x64  anyfs_native.node + its DLL closure
+#
+# Chain:     resolve → fixture + package (matrix) → smoke (matrix) → release
+# Artifacts: anyfs-electron-<version>-<os>-<arch>  (archive + .sha256)
+#            <version> is sha-<short sha>, or the tag without its "v"
+#
+# Triggers:
+#   workflow_run       linux, mingw64 or wasm finished on main. Each commit
+#                      triggers this three times; only the run that finds all
+#                      three finished goes past `resolve`, and it fails if one
+#                      of them failed.
+#   push (v* tag)      packages the tagged commit and publishes a release.
+#                      The commit must have been the head of a push to main,
+#                      so the three build runs exist; re-run when they finish.
+#   workflow_dispatch  packages a main commit again (no release).
+#
+# macOS packages are not built yet: the Darwin native addon is still being
+# integrated (docs/distribution.md, "Desktop app").
+
+on:
+  workflow_run:
+    workflows: [linux, mingw64, wasm]
+    types: [completed]
+    branches: [main]
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Commit to package (default: the head of the selected ref)'
+        required: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: electron-${{ github.event.workflow_run.head_sha || inputs.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    # Only pushes to this repository: a fork PR from a branch named main
+    # also reports head_branch main.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      ready: ${{ steps.find.outputs.ready }}
+      sha: ${{ steps.find.outputs.sha }}
+      version: ${{ steps.find.outputs.version }}
+      release: ${{ steps.find.outputs.release }}
+      linux_run: ${{ steps.find.outputs.linux_run }}
+      mingw64_run: ${{ steps.find.outputs.mingw64_run }}
+      wasm_run: ${{ steps.find.outputs.wasm_run }}
+    steps:
+      - name: Find the build runs of the commit
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.event.workflow_run.head_sha || inputs.sha || github.sha }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          sha="$(gh api "repos/$REPO/commits/$SHA" --jq .sha)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          if [[ "$EVENT" == push && "$REF_TYPE" == tag ]]; then
+            echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=sha-${sha:0:7}" >> "$GITHUB_OUTPUT"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          pending=() failed=()
+          for wf in linux mingw64 wasm; do
+            runs="$(gh api "repos/$REPO/actions/workflows/$wf.yml/runs?head_sha=$sha&event=push&branch=main&per_page=20" \
+                      --jq '.workflow_runs | sort_by(.created_at) | reverse')"
+            ok="$(jq -r '[.[] | select(.conclusion == "success")][0].id // empty' <<<"$runs")"
+            if [[ -n "$ok" ]]; then
+              echo "$wf: run $ok succeeded"
+              echo "${wf}_run=$ok" >> "$GITHUB_OUTPUT"
+            elif [[ -n "$(jq -r '[.[] | select(.status != "completed")][0].id // empty' <<<"$runs")" ]]; then
+              echo "$wf: still running"
+              pending+=("$wf")
+            else
+              echo "$wf: $(jq -r '.[0] | "run \(.id) \(.conclusion)" // "no run"' <<<"$runs")"
+              failed+=("$wf")
+            fi
+          done
+
+          if [[ ${#pending[@]} -eq 0 && ${#failed[@]} -eq 0 ]]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$EVENT" == workflow_run && ${#pending[@]} -gt 0 ]]; then
+            # A later completion of ${pending[*]} triggers the run that packages.
+            echo "waiting for: ${pending[*]}"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::no desktop packages for $sha: failed or missing: ${failed[*]:-none}; still running: ${pending[*]:-none}"
+            exit 1
+          fi
+
+  fixture:
+    needs: resolve
+    if: needs.resolve.outputs.ready == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - name: Build smoke fixture
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-utils e2fsprogs dosfstools fdisk
+          bash ts/examples/electron-demo/scripts/make-smoke-fixture.sh "$RUNNER_TEMP/fixture"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: electron-smoke-fixture
+          path: ${{ runner.temp }}/fixture/
+          if-no-files-found: error
+          retention-days: 3
+
+  package:
+    needs: resolve
+    if: needs.resolve.outputs.ready == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: linux
+            arch: x64
+            native: anyfs-native-linux-x64
+            native_run: linux_run
+          - platform: win32
+            os: windows
+            arch: x64
+            native: anyfs-native-win32-x64
+            native_run: mingw64_run
+    env:
+      NAME: anyfs-electron-${{ needs.resolve.outputs.version }}-${{ matrix.os }}-${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+          package_json_file: ts/package.json
+      # Pinned: node 24.16.0 breaks electron-packager's zip extraction
+      # (yauzl event loop drains → silent exit 0 on CI / hang locally,
+      # out/ never written; runs 27338704662..27391081970). 24.15.0 is
+      # verified good. Re-test before unpinning.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.15.0
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
+      - name: Cache electron binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ matrix.platform }}-${{ hashFiles('ts/pnpm-lock.yaml') }}
+      # drivelist/@anyfs/native are optionalDependencies: the sibling
+      # drivelist-anyfs checkout is absent here and skipped, and the
+      # @anyfs/native filter keeps node-gyp from running (its .node comes
+      # from the artifact).
+      - name: Install
+        working-directory: ts
+        run: pnpm install --frozen-lockfile --filter '!@anyfs/native'
+      - name: Download renderer (wasm run ${{ needs.resolve.outputs.wasm_run }})
+        uses: actions/download-artifact@v4
+        with:
+          name: anyfs-web-dist
+          path: ${{ runner.temp }}/web
+          run-id: ${{ needs.resolve.outputs.wasm_run }}
+          github-token: ${{ github.token }}
+      - name: Download native addon
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.native }}
+          path: ${{ runner.temp }}/native
+          run-id: ${{ needs.resolve.outputs[matrix.native_run] }}
+          github-token: ${{ github.token }}
+      - name: Build main process and stage renderer
+        working-directory: ts/examples/electron-demo
+        run: |
+          mkdir -p ../vite-demo/dist
+          tar -xzf "$RUNNER_TEMP/web/anyfs-web-dist.tar.gz" -C ../vite-demo/dist
+          pnpm build:main
+          pnpm stage:renderer
+      # DEBUG tracing stays on: electron-packager has exited 0 without
+      # writing out/ on CI (runs 27338704662, 27345017292); the
+      # @electron/get trace is the evidence when it recurs. package.sh
+      # fails loudly if the output is missing.
+      - name: Package ${{ env.NAME }}
+        working-directory: ts/examples/electron-demo
+        env:
+          DEBUG: 'electron-packager,@electron/get:*'
+        run: |
+          bash scripts/package.sh --platform=${{ matrix.platform }} --arch=${{ matrix.arch }} \
+            --native-dir="$RUNNER_TEMP/native" \
+            --version=${{ needs.resolve.outputs.version }} \
+            --commit=${{ needs.resolve.outputs.sha }} \
+            --out="$RUNNER_TEMP/out"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.NAME }}
+          path: |
+            ${{ runner.temp }}/out/${{ env.NAME }}.*
+          if-no-files-found: error
+          retention-days: 14
+
+  smoke:
+    needs: [resolve, fixture, package]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: linux
+            arch: x64
+            runner: ubuntu-26.04
+            ext: tar.gz
+          - platform: win32
+            os: windows
+            arch: x64
+            runner: windows-2025
+            ext: zip
+    defaults:
+      run:
+        shell: bash
+    env:
+      NAME: anyfs-electron-${{ needs.resolve.outputs.version }}-${{ matrix.os }}-${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+          package_json_file: ts/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.NAME }}
+          path: ${{ runner.temp }}/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: electron-smoke-fixture
+          path: ${{ runner.temp }}/fixture
+      - name: Verify checksum and unpack
+        working-directory: ${{ runner.temp }}/pkg
+        run: |
+          sha256sum -c "$NAME.${{ matrix.ext }}.sha256"
+          if [[ "${{ matrix.ext }}" == zip ]]; then 7z x -y -bd "$NAME.zip" >/dev/null; else tar -xzf "$NAME.tar.gz"; fi
+          ls "$NAME"
+      - name: Install Electron runtime libraries (linux)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb libnss3 libgbm1
+      # Headless: load the staged addon, open the qcow2 fixture (QEMU block
+      # layer), list partitions, mount fixroot, hash payload.bin, halt, exit 0.
+      - name: Native smoke (packaged app)
+        run: |
+          run=()
+          [[ "${{ matrix.platform }}" == linux ]] && run=(xvfb-run -a)
+          "${run[@]}" bash ts/examples/electron-demo/scripts/smoke-package.sh \
+            "$RUNNER_TEMP/pkg/$NAME" ${{ matrix.platform }} "$RUNNER_TEMP/fixture" \
+            "$RUNNER_TEMP/smoke-report.json"
+      # The GUI path: the packaged renderer must come up on the native
+      # backend, show the fixture's partitions with fstypes and labels, and
+      # list the mounted partition's files.
+      - name: GUI smoke (packaged app, Playwright)
+        working-directory: ts/tests/e2e
+        env:
+          ANYFS_PACKAGED_FIXTURE: ${{ runner.temp }}/fixture
+          ANYFS_SCREENSHOT_DIR: ${{ runner.temp }}/screenshots
+        run: |
+          (cd ../.. && pnpm install --frozen-lockfile --filter @anyfs/e2e)
+          mkdir -p "$ANYFS_SCREENSHOT_DIR"
+          if [[ "${{ matrix.platform }}" == win32 ]]; then
+            export ANYFS_PACKAGED_EXE="$RUNNER_TEMP/pkg/$NAME/anyfs-demo.exe"
+            npx playwright test -c packaged.config.ts
+          else
+            export ANYFS_PACKAGED_EXE="$RUNNER_TEMP/pkg/$NAME/anyfs-demo"
+            xvfb-run -a npx playwright test -c packaged.config.ts
+          fi
+      - name: Upload smoke report and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-smoke-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/smoke-report.json
+            ${{ runner.temp }}/screenshots/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  release:
+    needs: [resolve, smoke]
+    if: needs.resolve.outputs.release == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: anyfs-electron-${{ needs.resolve.outputs.version }}-*
+          path: dist
+          merge-multiple: true
+      - name: Publish to the ${{ github.ref_name }} release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          cd dist
+          cat ./*.sha256 > SHA256SUMS
+          cat SHA256SUMS
+          files=(./*.tar.gz ./*.zip SHA256SUMS)
+          if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" -R "$REPO" --clobber "${files[@]}"
+          else
+            prerelease=()
+            [[ "$TAG" == *-* ]] && prerelease=(--prerelease)
+            gh release create "$TAG" -R "$REPO" --verify-tag --title "anyfs $TAG" "${prerelease[@]}" \
+              --notes "Desktop app (Electron) packages for Linux x64 and Windows x64, built from ${SHA:0:7}. Unsigned; see docs/distribution.md for installation and verification." \
+              "${files[@]}"
+          fi

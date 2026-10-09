@@ -333,6 +333,43 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # ── Electron native addon ───────────────────────────────────────────────
+      # anyfs_native.node links the core, LKL, QEMU and sysroot archives built
+      # above (zig, glibc 2.25 = Electron's own floor). electron.yml packages
+      # the desktop app from this artifact; it never rebuilds the kernel.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+          package_json_file: ts/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
+
+      - name: Build Electron native addon
+        env:
+          LINUX_SRC: ${{ github.workspace }}/deps/linux
+          QEMU_SRC: ${{ github.workspace }}/deps/qemu
+          QEMU_BLD_LINUX: ${{ github.workspace }}/deps/qemu/build-anyfs-linux-amd64
+        run: |
+          # --ignore-scripts: the gypfile install hook would run a bare
+          # node-gyp rebuild with the host compiler.
+          (cd ts && pnpm install --frozen-lockfile --filter @anyfs/native --ignore-scripts)
+          ELECTRON_TARGET="$(node ts/examples/electron-demo/scripts/electron-version.mjs)"
+          export ELECTRON_TARGET
+          bash ts/packages/anyfs-native/scripts/build-linux-electron.sh
+          bash ts/examples/electron-demo/scripts/collect-native.sh linux \
+            "$RUNNER_TEMP/anyfs-native-linux-x64"
+
+      - name: Upload Electron native addon
+        uses: actions/upload-artifact@v4
+        with:
+          name: anyfs-native-linux-x64
+          path: ${{ runner.temp }}/anyfs-native-linux-x64/
+          if-no-files-found: error
+          retention-days: 14
+
       # The farm's forwarder outlives its setup step, and the runner stops
       # printing its output (and the scheduler's) once that step ends; the
       # action keeps a copy in log-file. Uploaded with the daemon's warnings.
