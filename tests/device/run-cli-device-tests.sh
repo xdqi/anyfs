@@ -310,7 +310,9 @@ nfs_fetch() {
     fi
     if ! case $os in
         linux) sudo timeout 150 mount -t nfs4 -o "port=$port,ro,soft,timeo=100,retrans=2" 127.0.0.1:/ "$mnt" ;;
-        macos) sudo mount -t nfs -o "vers=4,port=$port,ro,nobrowse,soft" 127.0.0.1:/ "$mnt" ;;
+        # macOS: soft + ro makes mount_nfs default to local locks, which the
+        # kernel refuses for NFSv4 (EINVAL); "locks" keeps the v4 lock mode.
+        macos) sudo mount -t nfs -o "vers=4,port=$port,ro,nobrowse,soft,locks" 127.0.0.1:/ "$mnt" ;;
     esac >> "$dir.client.log" 2>&1; then
         # What the client saw, and whether the connection to the server's
         # TCP proxy is stuck with data queued.
