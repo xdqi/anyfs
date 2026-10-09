@@ -304,21 +304,29 @@ jobs:
             arch: x64
             runner: ubuntu-26.04
             ext: tar.gz
+            cli: anyfs-reader-linux-amd64
+            cli_run: linux_run
           - platform: win32
             os: windows
             arch: x64
             runner: windows-2025
             ext: zip
+            cli: anyfs-reader-win64
+            cli_run: mingw64_run
           - platform: darwin
             os: macos
             arch: arm64
             runner: macos-15
             ext: zip
+            cli: anyfs-reader-macos-arm64
+            cli_run: macos_run
           - platform: darwin
             os: macos
             arch: x64
             runner: macos-15-intel
             ext: zip
+            cli: anyfs-reader-macos-x86_64
+            cli_run: macos_run
     defaults:
       run:
         shell: bash
@@ -435,6 +443,27 @@ jobs:
         with:
           name: electron-device-fixture
           path: ${{ runner.temp }}/device-fixture
+      # The CLI distribution of the same commit (linux.yml, mingw64.yml,
+      # macos.yml), for tests/device/run-cli-device-tests.sh.
+      - name: Download CLI tools (${{ matrix.cli }})
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.cli }}
+          path: ${{ runner.temp }}/cli
+          run-id: ${{ needs.resolve.outputs[matrix.cli_run] }}
+          github-token: ${{ github.token }}
+      - name: Unpack CLI tools and install protocol clients
+        run: |
+          cd "$RUNNER_TEMP/cli"
+          tar -xzf ./*.tar.gz
+          lspart="$(find "$RUNNER_TEMP/cli" -type f \( -name anyfs-lspart -o -name anyfs-lspart.exe \) | head -1)"
+          [[ -n "$lspart" ]] || { echo "::error::no anyfs-lspart in ${{ matrix.cli }}"; exit 1; }
+          echo "ANYFS_CLI_TOOLS=$(dirname "$lspart")" >> "$GITHUB_ENV"
+          case "${{ matrix.platform }}" in
+          linux) sudo apt-get install -y --no-install-recommends smbclient nfs-common ;;
+          win32) python -m pip install --quiet smbprotocol ;;
+          esac
+          { command -v python3 && python3 --version; } || echo "python3 not on PATH"
       - name: Device I/O - attach (loop / hdiutil)
         if: matrix.platform != 'win32'
         run: bash scripts/ci/test-device.sh attach "$RUNNER_TEMP/device-fixture/parts.img" "$RUNNER_TEMP/dev"
@@ -454,6 +483,16 @@ jobs:
           "${run[@]}" bash ts/examples/electron-demo/scripts/smoke-device.sh "$RUNNER_TEMP/pkg/$NAME" \
             ${{ matrix.platform }} "$RUNNER_TEMP/dev" "$RUNNER_TEMP/device-fixture" deny \
             "$RUNNER_TEMP/device-report-deny.json"
+      - name: Device I/O - CLI without access is denied
+        run: |
+          cli=(bash tests/device/run-cli-device-tests.sh --tools="$ANYFS_CLI_TOOLS"
+               --device-env="$RUNNER_TEMP/dev/device.env" --expect-denied
+               --logdir="$RUNNER_TEMP/cli-device-logs/denied")
+          if [[ "${{ matrix.platform }}" == win32 ]]; then
+            bash scripts/ci/run-restricted-win.sh "$RUNNER_TEMP/cli-device-denied.log" -- "${cli[@]}"
+          else
+            "${cli[@]}"
+          fi
       - name: Device I/O - app reads the device
         run: |
           run=()
@@ -468,6 +507,10 @@ jobs:
               "$RUNNER_TEMP/pkg/$NAME" darwin "$RUNNER_TEMP/dev" "$RUNNER_TEMP/device-fixture" allow \
               "$RUNNER_TEMP/device-report-allow-raw.json"
           fi
+      - name: Device I/O - CLI reads the device
+        run: |
+          bash tests/device/run-cli-device-tests.sh --tools="$ANYFS_CLI_TOOLS" \
+            --device-env="$RUNNER_TEMP/dev/device.env" --logdir="$RUNNER_TEMP/cli-device-logs/allowed"
       - name: Device I/O - GUI picks the device (macOS, Windows)
         if: matrix.platform != 'linux'
         working-directory: ts/tests/e2e
@@ -513,6 +556,8 @@ jobs:
             ${{ runner.temp }}/smoke-report*.json
             ${{ runner.temp }}/device-report*.json
             ${{ runner.temp }}/dev*/device.json
+            ${{ runner.temp }}/cli-device-logs/
+            ${{ runner.temp }}/cli-device-denied.log
             ${{ runner.temp }}/screenshots/
           if-no-files-found: ignore
           retention-days: 14
