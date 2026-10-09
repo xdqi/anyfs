@@ -362,7 +362,16 @@ echo "#define KERNEL_ELFCLASS ELFCLASS32" > "$OUT/scripts/mod/elfconfig.h"
 	comm -13 \
 	  <(sort "$DOTCONFIG") \
 	  <(sort "$OUT/.config.our") \
-	  > "$LKL_OUT/kernel.config"
+	  > "$LKL_OUT/kernel.config.new"
+	# Replace kernel.config only when it changes: tools/lkl's Makefile
+	# regenerates .config (defconfig + kernel.config + olddefconfig) whenever
+	# kernel.config is newer, with host-compiler probes on mingw64, which
+	# flipped LKL_HOST_MEM* and recompiled the whole kernel on every build.
+	if cmp -s "$LKL_OUT/kernel.config.new" "$LKL_OUT/kernel.config"; then
+	    rm -f "$LKL_OUT/kernel.config.new"
+	else
+	    mv -f "$LKL_OUT/kernel.config.new" "$LKL_OUT/kernel.config"
+	fi
 	mv "$OUT/.config.our" "$DOTCONFIG"
 	echo "  kernel.config: $(wc -l < "$LKL_OUT/kernel.config") lines"
 

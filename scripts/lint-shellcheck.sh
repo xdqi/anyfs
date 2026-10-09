@@ -44,6 +44,7 @@ ts/examples/electron-demo/scripts/package.sh
 ts/examples/electron-demo/scripts/sign-macos.sh
 ts/examples/electron-demo/scripts/smoke-device.sh
 ts/examples/electron-demo/scripts/smoke-package.sh
+scripts/ci/apt-install.sh
 scripts/ci/prune-caches.sh
 scripts/ci/run-restricted-win.sh
 scripts/ci/test-device.sh

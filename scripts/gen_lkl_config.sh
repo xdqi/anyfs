@@ -477,6 +477,11 @@ EOF
             probe_cc=(CC="$lib/lkl-linux-cc.sh $(command -v gcc) $lib/zig-cc")
         fi
         rm -f "$CONF" "$LKL_OUT/include/lkl_autoconf.h"
+        # The autoconf rule truncates kernel.config; keep the old one (and its
+        # mtime) to compare against below.
+        if [[ -f "$LKL_OUT/kernel.config" ]]; then
+            cp -p "$LKL_OUT/kernel.config" "$LKL_OUT/kernel.config.prev"
+        fi
         OUTPUT="$OUT" make -C "$LINUX_DIR/tools/lkl" ARCH=lkl "${probe_cc[@]}" \
              "$LKL_OUT/Makefile.conf" >/dev/null 2>&1 || true
     fi
@@ -500,7 +505,19 @@ EOF
     comm -13 \
       <(sort "$DOTCONFIG") \
       <(sort "$OUT/.config.our") \
-      > "$LKL_OUT/kernel.config"
+      > "$LKL_OUT/kernel.config.new"
+    # Replace kernel.config only when it changes: tools/lkl's Makefile
+    # regenerates .config (defconfig + kernel.config + olddefconfig) whenever
+    # kernel.config is newer, with host-compiler probes on mingw64, which
+    # flipped LKL_HOST_MEM* and recompiled the whole kernel on every build.
+    if [[ -f "$LKL_OUT/kernel.config.prev" ]]; then
+        mv -f "$LKL_OUT/kernel.config.prev" "$LKL_OUT/kernel.config"
+    fi
+    if cmp -s "$LKL_OUT/kernel.config.new" "$LKL_OUT/kernel.config"; then
+        rm -f "$LKL_OUT/kernel.config.new"
+    else
+        mv -f "$LKL_OUT/kernel.config.new" "$LKL_OUT/kernel.config"
+    fi
     # Restore our full config for the actual build.
     mv "$OUT/.config.our" "$DOTCONFIG"
     echo "  kernel.config: $(wc -l < "$LKL_OUT/kernel.config") lines"

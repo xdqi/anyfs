@@ -62,10 +62,18 @@ jobs:
       # and tools/lkl), LLVM 19 for elf2dylib (ld64.lld 20 orders __TEXT
       # sections differently and fails its layout check; 19.1.7 is the
       # verified one) and LLVM 20 for the Mach-O gate (llvm_tools.sh).
+      # .deb archive cached across runs; downloads are retried under a
+      # timeout (scripts/ci/apt-install.sh).
+      - name: Cache apt archives
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/apt-archives
+          key: apt-macos-build-${{ hashFiles('.github/workflows/macos.yml') }}
+          restore-keys: |
+            apt-macos-build-
       - name: Install build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          scripts/ci/apt-install.sh \
             build-essential meson ninja-build pkg-config python3 pipx \
             flex bison bc rsync libelf-dev libssl-dev perl xz-utils \
             ca-certificates curl \
@@ -290,4 +298,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          scripts/ci/prune-caches.sh 1 macos-lkl-linux-arm64- macos-lkl-linux-amd64- macos-qemu-arm64- macos-qemu-x86_64- macos-sysroot-arm64- macos-sysroot-x86_64-
+          scripts/ci/prune-caches.sh 1 apt-macos-build- macos-lkl-linux-arm64- macos-lkl-linux-amd64- macos-qemu-arm64- macos-qemu-x86_64- macos-sysroot-arm64- macos-sysroot-x86_64-

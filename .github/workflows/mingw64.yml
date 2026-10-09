@@ -81,10 +81,18 @@ jobs:
       - name: Checkout anyfs-reader
         uses: actions/checkout@v4
 
+      # .deb archive cached across runs; downloads are retried under a
+      # timeout (scripts/ci/apt-install.sh).
+      - name: Cache apt archives
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/apt-archives
+          key: apt-mingw64-${{ hashFiles('.github/workflows/mingw64.yml') }}
+          restore-keys: |
+            apt-mingw64-
       - name: Install host build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          scripts/ci/apt-install.sh \
             build-essential meson ninja-build pkg-config python3 pipx \
             flex bison bc rsync libelf-dev libssl-dev \
             fakeroot xz-utils ca-certificates curl
@@ -415,4 +423,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           scripts/ci/prune-caches.sh 2 sccache-mingw64-
-          scripts/ci/prune-caches.sh 1 lkl-mingw64- qemu-mingw64- msys-cross-mingw64-
+          scripts/ci/prune-caches.sh 1 apt-mingw64- lkl-mingw64- qemu-mingw64- msys-cross-mingw64-
