@@ -41,6 +41,18 @@ ts/examples/electron-demo/scripts/package.sh
 ts/examples/electron-demo/scripts/smoke-package.sh
 ts/examples/electron-demo/scripts/stage-native-win64.sh
 ts/examples/electron-demo/scripts/verify-package.sh
+scripts/build_macos_sysroot.sh
+scripts/package_macos.sh
+scripts/macho/zig-macos.sh
+scripts/macho/macos-ar
+scripts/macho/macos-ranlib
+scripts/macho/check_macho.sh
+scripts/macho/package_macos_tests.sh
+scripts/macho/build_host_lib.sh
+scripts/macho/build_smoke.sh
+ts/packages/anyfs-native/scripts/build-macos.sh
+ts/examples/electron-demo/scripts/stage-native-macos.sh
+tests/macos/run-tests.sh
 '
 # shellcheck disable=SC2046,SC2086
 # SC2046/SC2086: word-splitting on $checked and $(printf ...) is intentional —

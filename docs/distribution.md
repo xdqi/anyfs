@@ -7,6 +7,7 @@
 | Linux    | amd64         | `zig cc` 0.16.0, target `x86_64-linux-gnu.2.11` (glibc ≥ 2.11, x86-64 baseline); LKL kernel half on the host `gcc` |
 | Windows  | i386 (Win32)  | `i686-w64-mingw32-` cross (MSYS2 headers/libs + binutils-2.46 patches) |
 | Windows  | x86_64 (Win64)| `x86_64-w64-mingw32-` cross (MSYS2 headers/libs + binutils-2.46 patches)|
+| macOS    | arm64, x86_64 | `zig cc` 0.16.0, `aarch64-macos.11.0` / `x86_64-macos.10.13`; LKL kernel = the ELF kernel converted to `liblkl-kernel.dylib` (see [macos.md](macos.md)) |
 
 The mingw targets need the patched binutils-2.46 (LKL weak-symbol fixes) installed
 into `$BINUTILS_DIR` (default `$HOME/binutils-gdb/build-combined/install/bin`). The
@@ -91,6 +92,22 @@ anyfs-win{32,64}/
 
 `libslirp-*.dll` is **not** shipped: `anyfs-ksmbd` and `anyfs-nfsd` use the
 `host_proxy` TCP splice, and no other distributed binary imports slirp.
+
+### macOS (`anyfs-reader-<version>-macos-<arm64|x86_64>.tar.gz`)
+
+```
+anyfs-reader-<version>-macos-<arch>/
+├── bin/anyfs-ksmbd
+├── bin/anyfs-nfsd
+├── bin/anyfs-lspart
+├── bin/anyfs-fuse          (when built; needs macFUSE installed by the user)
+└── lib/liblkl-kernel.dylib
+```
+
+Everything else is linked statically. The tools find the kernel through
+`LC_RPATH @loader_path/../lib`. `scripts/package_macos.sh` writes the tarball after
+`scripts/macho/check_macho.sh` passes on every file. Build steps, the toolchain rules and
+the runtime test bundle are in [macos.md](macos.md).
 
 ## Build Configuration
 

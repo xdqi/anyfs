@@ -421,7 +421,8 @@ are recorded in a comment next to the export list in `scripts/macho/kernel_expor
 ## Out of scope
 
 - anyfs core, QEMU, the native addon and Electron on macOS. That is the next
-  sub-project.
+  sub-project. (Done 2026-10-09: `docs/macos.md`. It raised the x86_64 deployment target
+  to 10.13, because GLib 2.88 requires it.)
 - Developer ID signing, notarization and the Mac App Store.
 - Chained fixups, DWARF debug info for the kernel, `__unwind_info`.
 - Running macOS tests in CI.
