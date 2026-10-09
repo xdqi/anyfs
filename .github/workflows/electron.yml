@@ -24,7 +24,8 @@ name: electron
 #   workflow_run       linux, mingw64, wasm or macos finished on main. Each
 #                      commit triggers this four times; only the run that
 #                      finds all four finished goes past `resolve`, and it
-#                      fails if one of them failed.
+#                      fails if one of them failed (a cancelled run, as
+#                      wasm.yml's superseded ones, only gives a notice).
 #   push (v* tag)      packages the tagged commit and publishes a release.
 #                      The commit must have been the head of a push to main,
 #                      so the build runs exist; re-run when they finish.
@@ -103,7 +104,7 @@ jobs:
             fi
           done
 
-          pending=() failed=()
+          pending=() failed=() cancelled=()
           for wf in linux mingw64 wasm macos; do
             runs="$(gh api "repos/$REPO/actions/workflows/$wf.yml/runs?head_sha=$sha&event=push&branch=main&per_page=20" \
                       --jq '.workflow_runs | sort_by(.created_at) | reverse')"
@@ -114,13 +115,20 @@ jobs:
             elif [[ -n "$(jq -r '[.[] | select(.status != "completed")][0].id // empty' <<<"$runs")" ]]; then
               echo "$wf: still running"
               pending+=("$wf")
+            elif [[ "$(jq -r '.[0].conclusion // empty' <<<"$runs")" == cancelled ]]; then
+              # wasm.yml cancels a commit's run when a newer push arrives.
+              echo "$wf: run $(jq -r '.[0].id' <<<"$runs") cancelled"
+              cancelled+=("$wf")
             else
               echo "$wf: $(jq -r '.[0] | "run \(.id) \(.conclusion)" // "no run"' <<<"$runs")"
               failed+=("$wf")
             fi
           done
 
-          if [[ ${#pending[@]} -eq 0 && ${#failed[@]} -eq 0 ]]; then
+          if [[ ${#pending[@]} -eq 0 && ${#failed[@]} -eq 0 && ${#cancelled[@]} -gt 0 ]]; then
+            echo "::notice::no desktop packages for $sha: ${cancelled[*]} cancelled (superseded by a newer push?)"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          elif [[ ${#pending[@]} -eq 0 && ${#failed[@]} -eq 0 ]]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           elif [[ "$EVENT" == workflow_run && ${#pending[@]} -gt 0 ]]; then
             # A later completion of ${pending[*]} triggers the run that packages.

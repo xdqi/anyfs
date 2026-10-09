@@ -97,8 +97,9 @@ Known footguns (from working on this UI):
 
 A Node N-API addon that links against the native `liblkl.so` /
 `libanyfs-qemublk.so` instead of the wasm build. Same JS surface as
-`@anyfs/core`, ~10× the throughput. Linux (`node-gyp`, zig at glibc 2.25) and
-Windows (cross-built with mingw, `scripts/build-win64.sh`); macOS is in progress.
+`@anyfs/core`, ~10× the throughput. Linux (`node-gyp`, zig at glibc 2.25), Windows
+(cross-built with mingw, `scripts/build-win64.sh`) and macOS (cross-built with zig,
+`scripts/build-macos.sh`).
 
 ```bash
 pnpm -C ts -F @anyfs/native build   # node-gyp rebuild
@@ -128,8 +129,8 @@ the stale wasm.
 
 The desktop app: Electron around the vite-demo build, on the native addon with the wasm
 engine as fallback. The renderer is loaded through a custom `anyfs://` protocol — `file://`
-can't carry the COOP/COEP headers Atomics needs. CI packages Linux x64 and Windows x64
-(`.github/workflows/electron.yml`); macOS is not packaged yet.
+can't carry the COOP/COEP headers Atomics needs. CI packages Linux x64, Windows x64 and
+macOS arm64/x64 (`.github/workflows/electron.yml`).
 
 ```bash
 pnpm -C ts -F electron-demo dev          # vite + electron, live reload

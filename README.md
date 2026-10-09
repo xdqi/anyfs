@@ -9,11 +9,8 @@ Uses [LKL](https://github.com/lkl/linux) (Linux Kernel Library) to run actual ke
 | Edition | Where | Engine |
 | ------- | ----- | ------ |
 | Web | <https://anyfs.kosaka.moe>: open a local image or an HTTP(S) URL; the image is read in the browser, not uploaded | wasm (LKL + QEMU block layer built with emscripten) in a Web Worker |
-| Desktop, Linux x64 and Windows x64 | Electron app, see [Desktop app](#desktop-app) | native addon (`anyfs_native.node`); the wasm engine is the fallback |
-| CLI servers and tools | `anyfs-ksmbd`, `anyfs-nfsd`, `anyfs-lspart`, `anyfs-fuse`: tarballs from the `linux` and `mingw64` CI workflows, see [docs/distribution.md](docs/distribution.md) | native |
-
-macOS builds of the desktop app are not available yet; the Darwin native addon is still
-being ported.
+| Desktop: Linux x64, Windows x64, macOS (Apple silicon and Intel) | Electron app, see [Desktop app](#desktop-app) | native addon (`anyfs_native.node`); the wasm engine is the fallback |
+| CLI servers and tools | `anyfs-ksmbd`, `anyfs-nfsd`, `anyfs-lspart`, `anyfs-fuse`: tarballs from the `linux`, `mingw64` and `macos` CI workflows, see [docs/distribution.md](docs/distribution.md) and [docs/macos.md](docs/macos.md) | native |
 
 ## Desktop app
 
@@ -41,12 +38,14 @@ The screenshots show the Linux x64 package built by CI (`sha-d11d371`), captured
 Playwright (`ts/tests/e2e/packaged/docs-screenshots.spec.ts`).
 
 **Download.** Tagged releases (`vX.Y.Z`) attach `anyfs-electron-X.Y.Z-linux-x64.tar.gz`,
-`anyfs-electron-X.Y.Z-windows-x64.zip` and `SHA256SUMS` to
+`anyfs-electron-X.Y.Z-windows-x64.zip`, `anyfs-electron-X.Y.Z-macos-arm64.zip`,
+`anyfs-electron-X.Y.Z-macos-x64.zip` and `SHA256SUMS` to
 [GitHub Releases](https://github.com/xdqi/anyfs/releases); no desktop release has been
 tagged yet. Every commit on `main` is also packaged by the
 [electron workflow](https://github.com/xdqi/anyfs/actions/workflows/electron.yml): open a
-run and download the `anyfs-electron-sha-<commit>-linux-x64` or `-windows-x64` artifact
-(GitHub sign-in required, kept 14 days). Each artifact holds the archive and its `.sha256`.
+run and download the `anyfs-electron-sha-<commit>-<linux|windows|macos>-<x64|arm64>`
+artifact (GitHub sign-in required, kept 14 days). Each artifact holds the archive and its
+`.sha256`.
 
 **Run.**
 
@@ -57,9 +56,20 @@ tar -xzf anyfs-electron-<version>-linux-x64.tar.gz
 ./anyfs-electron-<version>-linux-x64/anyfs-demo
 ```
 
+```bash
+# macOS (arm64 for Apple silicon, x64 for Intel)
+shasum -a 256 -c anyfs-electron-<version>-macos-arm64.zip.sha256
+ditto -x -k anyfs-electron-<version>-macos-arm64.zip .
+xattr -dr com.apple.quarantine anyfs-electron-<version>-macos-arm64/anyfs-demo.app
+open anyfs-electron-<version>-macos-arm64/anyfs-demo.app
+```
+
 On Windows, check the hash with `Get-FileHash anyfs-electron-<version>-windows-x64.zip`,
 extract the zip and start `anyfs-demo.exe`. The packages are not code-signed: Windows
 SmartScreen may show "Windows protected your PC" (choose *More info*, then *Run anyway*).
+The macOS app is signed ad hoc only, not with a Developer ID and not notarized, so macOS
+refuses to open a downloaded copy until the quarantine attribute is removed as above (or
+*System Settings → Privacy & Security → Open Anyway* is used after the first attempt).
 On Linux distributions that restrict unprivileged user namespaces (Ubuntu 24.04 and later),
 Chromium's sandbox cannot start from an unpacked archive; run `anyfs-demo --no-sandbox`, or
 make `chrome-sandbox` owned by root with mode 4755.
@@ -68,13 +78,15 @@ make `chrome-sandbox` owned by root with mode 4755.
 | -- | ---- | ----------- | --------------- |
 | Linux | x64 | glibc 2.25 or later and Chromium's usual desktop libraries (GTK 3, NSS, libgbm) | Ubuntu 26.04 |
 | Windows | x64 | Windows 10 or later | Windows Server 2025 |
-| macOS | arm64, x64 | not available yet; when it is, Electron 42 needs macOS 12 or later | — |
+| macOS | arm64, x64 | macOS 12 or later (Electron 42's floor; the native libraries alone would go lower) | macOS 15 on Apple silicon and on Intel |
 
 **Native and wasm.** The start screen says "Native bridge active" when the native addon is
 loaded. If it cannot load, the app falls back to the wasm engine the web edition uses;
 *Settings → Disable native module* switches to it on purpose. CI checks that every package
-starts on the native backend. "Open system drive…" needs the `drivelist` addon, which the CI
-packages do not include yet, so it reports that drive listing is unavailable.
+starts on the native backend. "Open system drive…" lists the computer's disks and
+partitions with their filesystems, labels and mountpoints (the
+[drivelist-anyfs](https://github.com/xdqi/drivelist-anyfs) addon); opening a raw device
+still needs the rights to read it (administrator, root or the `disk` group).
 
 Build and packaging details: [ts/examples/electron-demo/README.md](ts/examples/electron-demo/README.md).
 
@@ -203,7 +215,7 @@ wrappers, so disk images can be inspected entirely client-side:
 | `@anyfs/core`    | wasm kernel (LKL + QEMU block layer) + JS bindings; runs in a Web Worker      |
 | `@anyfs/react`   | React 18/19 hooks (`useDir`, `useFile`) over `@anyfs/core`                    |
 | `@anyfs/trees`   | `<AnyfsFileBrowser>` — Chonky-based file UI                                   |
-| `@anyfs/native`  | Node N-API addon, links the native libs instead of wasm (Linux, Windows)      |
+| `@anyfs/native`  | Node N-API addon, links the native libs instead of wasm (Linux, Windows, macOS) |
 
 A live build of the browser demo (`ts/examples/vite-demo`) is hosted at
 **<https://anyfs.kosaka.moe>** — drop a disk image onto the page or paste an

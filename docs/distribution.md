@@ -277,34 +277,51 @@ running `anyfs-winfsp.exe`.
 ## Desktop app (Electron)
 
 The desktop app (`ts/examples/electron-demo`) ships as one archive per platform,
-built by `.github/workflows/electron.yml` from the artifacts of `linux.yml`
-(`anyfs-native-linux-x64`), `mingw64.yml` (`anyfs-native-win32-x64`) and `wasm.yml`
-(`anyfs-web-dist`) for the same commit. No kernel or wasm build runs in that workflow.
+built by `.github/workflows/electron.yml` from the artifacts that `linux.yml`
+(`anyfs-native-linux-x64`), `mingw64.yml` (`anyfs-native-win32-x64`), `macos.yml`
+(`anyfs-native-darwin-<arch>`, `drivelist-darwin-<arch>`) and `wasm.yml` (`anyfs-web-dist`)
+produced for the same commit. No kernel or wasm build runs in that workflow.
 
 | Archive | Contents |
 | ------- | -------- |
-| `anyfs-electron-<version>-linux-x64.tar.gz` | Electron 42 runtime, `resources/app/` (bundled main process), `resources/renderer/` (web UI + wasm fallback), `resources/native/anyfs_native.node` (LKL, QEMU block layer, glib, libblkid, curl/OpenSSL, zstd/bzip2/zlib linked statically; glibc 2.25 floor) |
-| `anyfs-electron-<version>-windows-x64.zip` | the same, with `resources/native/` holding `anyfs_native.node`, `liblkl.dll`, `libanyfs-qemublk.dll` and the MSYS2 DLLs they import |
+| `anyfs-electron-<version>-linux-x64.tar.gz` | Electron 42 runtime, `resources/app/` (bundled main process), `resources/renderer/` (web UI + wasm fallback), `resources/native/`: `anyfs_native.node` (LKL, QEMU block layer, glib, libblkid, curl/OpenSSL, zstd/bzip2/zlib linked statically; glibc 2.25 floor) and `drivelist.node` |
+| `anyfs-electron-<version>-windows-x64.zip` | the same, with `resources/native/` holding `anyfs_native.node`, `drivelist.node`, `liblkl.dll`, `libanyfs-qemublk.dll` and the MSYS2 DLLs they import |
+| `anyfs-electron-<version>-macos-<arm64\|x64>.zip` | `anyfs-demo.app`, with `Contents/Resources/native/` holding `anyfs_native.node`, `liblkl-kernel.dylib` (see [macos.md](macos.md)) and `drivelist.node`; signed ad hoc |
 
 `<version>` is `sha-<short commit>` for builds of `main` and `X.Y.Z` for a `vX.Y.Z` tag.
 Each archive has a `.sha256` next to it; a release also carries `SHA256SUMS` for all of
-them. The packages are unsigned (no Authenticode signature, no notarization).
+them. Nothing is signed with a publisher identity: no Authenticode signature on Windows; on
+macOS an ad hoc signature (needed to run at all on Apple silicon) and no notarization.
+
+`drivelist.node` comes from [xdqi/drivelist-anyfs](https://github.com/xdqi/drivelist-anyfs)
+(a fork of balena's drivelist that adds partition details), pinned to one commit in
+`ts/examples/electron-demo/scripts/fetch-drivelist.sh`. Linux and Windows build it next to
+the anyfs addon; macOS builds it on a macOS runner, because it links Apple's Disk Arbitration
+framework.
 
 Runtime floors are Electron's, not the C libraries': Linux x64 with glibc 2.25 and the
-desktop libraries Chromium needs (GTK 3, NSS, libgbm); Windows 10 x64. The CLI tarballs keep
-their lower glibc 2.11 floor. macOS packages are not built yet; Electron 42 itself requires
-macOS 12, whatever deployment target the native libraries use.
+desktop libraries Chromium needs (GTK 3, NSS, libgbm); Windows 10 x64; macOS 12. The CLI
+tarballs keep their lower floors (glibc 2.11; macOS 11.0 arm64 and 10.13 x86_64).
 
-Every package is checked before it is uploaded (`scripts/verify-package.sh`: addon present,
-binary format and architecture, glibc gate on Linux, complete DLL closure on Windows) and
-then run on a runner of its own OS: a headless pass that loads the staged addon, opens a
-qcow2 GPT fixture, checks partition types, filesystems and labels, mounts the ext4
-partition, hashes a 3 MiB file and halts the kernel; and a Playwright pass that drives the
-packaged GUI on the native backend.
+Every package is checked before it is uploaded (`scripts/verify-package.sh`: both addons
+present, binary format and architecture, glibc gate on Linux, complete DLL closure on
+Windows, the Mach-O gate of `stage-native-macos.sh` on macOS, drivelist bundled into the
+main process) and then run on a runner of its own OS (Ubuntu 26.04, Windows Server 2025,
+macOS 15 on Apple silicon and on Intel):
+
+- a headless pass that loads the staged addon, opens a qcow2 GPT fixture, checks partition
+  types, filesystems and labels, mounts the ext4 partition, hashes a 3 MiB file and halts
+  the kernel;
+- a headless drive listing through the staged `drivelist.node`, which must report the
+  runner's disks with partition filesystems and mountpoints;
+- a Playwright pass that drives the packaged GUI on the native backend, including the
+  *Open system drive* dialog.
+
+macOS packages are assembled on Linux and signed on the Mac runner (`sign-macos.sh`) before
+the archive is written, so the tests run on the zip a user downloads.
 
 **Releases.** Tag a commit that was the head of a push to `main` (so its `linux`,
-`mingw64` and `wasm` runs exist) with `vX.Y.Z` and push the tag; `electron.yml` packages
-that commit and attaches the archives and `SHA256SUMS` to the `vX.Y.Z` GitHub release,
-creating it if needed (a tag containing `-` makes a prerelease). If the tag is pushed while
-those runs are still going, re-run the workflow once they finish.
-
+`mingw64`, `wasm` and `macos` runs exist) with `vX.Y.Z` and push the tag; `electron.yml`
+packages that commit and attaches the archives and `SHA256SUMS` to the `vX.Y.Z` GitHub
+release, creating it if needed (a tag containing `-` makes a prerelease). If the tag is
+pushed while those runs are still going, re-run the workflow once they finish.

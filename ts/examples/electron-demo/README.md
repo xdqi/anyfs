@@ -20,16 +20,23 @@ top-level [README](../../../README.md#desktop-app)).*
   loadable`), when `ANYFS_DISABLE_NATIVE=1` is set, or after *Settings → Disable native
   module*. Local files are read through `anyfs-url://` (main.ts streams them).
 
-`drivelist.node` (the *Open system drive…* list) is optional. It is built from a separate
-`drivelist-anyfs` checkout next to this repository and is not part of the CI packages yet.
+`drivelist.node` lists the computer's disks and partitions for *Open system drive…*. It is
+[xdqi/drivelist-anyfs](https://github.com/xdqi/drivelist-anyfs), a fork of balena's
+drivelist with partition details, checked out next to this repository
+(`drivelist: file:../../../../drivelist-anyfs` in package.json) at the commit pinned in
+`scripts/fetch-drivelist.sh`. esbuild bundles its JavaScript into `dist/main.cjs`;
+`src/bindings-shim.cjs` points its `bindings` lookup at the staged `.node`.
 
 ## Platforms
 
 | Package | Native addon | CI |
 | ------- | ------------ | -- |
-| linux x64 | built by `linux.yml` with zig at glibc 2.25 (`packages/anyfs-native/scripts/build-linux-electron.sh`); LKL, QEMU and all libraries linked statically | packaged and smoke-tested |
-| windows x64 | cross-built by `mingw64.yml` (`packages/anyfs-native/scripts/build-win64.sh`, ld.lld `--delayload=node.exe`); ships with `liblkl.dll`, `libanyfs-qemublk.dll` and their DLL closure | packaged and smoke-tested |
-| macOS arm64, x64 | Darwin addon in progress | not packaged |
+| linux x64 | built by `linux.yml` with zig at glibc 2.25 (`packages/anyfs-native/scripts/build-linux-electron.sh`); LKL, QEMU and all libraries linked statically | packaged, tested on Ubuntu 26.04 |
+| windows x64 | cross-built by `mingw64.yml` (`packages/anyfs-native/scripts/build-win64.sh`, ld.lld `--delayload=node.exe`); ships with `liblkl.dll`, `libanyfs-qemublk.dll` and their DLL closure | packaged, tested on Windows Server 2025 |
+| macOS arm64, x64 | cross-built by `macos.yml` with zig (`packages/anyfs-native/scripts/build-macos.sh`, [docs/macos.md](../../../docs/macos.md)); ships with `liblkl-kernel.dylib` | packaged, signed ad hoc and tested on macOS 15 (Apple silicon, Intel) |
+
+drivelist.node is built by the same workflows (Linux: zig; Windows: mingw; macOS: node-gyp on
+a macOS runner, since it links Disk Arbitration).
 
 Electron 42 needs glibc 2.25 on Linux, Windows 10, and macOS 12.
 
@@ -64,17 +71,25 @@ out/*.sha256
 ```
 
 `<version>` defaults to `sha-<short commit>`; releases pass the tag. The native payload comes
-from `scripts/collect-native.sh <linux|win32> <dir>` (the addon, `drivelist.node` when
-built, and on Windows the DLL closure found by walking the import tables with
-`scripts/collect-win64-dlls.sh`). Everything native lives in `resources/native/`;
-`src/native-loader.ts` resolves the addon there and, on Windows, puts that directory on
-`PATH` before loading it.
+from `scripts/collect-native.sh <linux|win32> <dir>` (the addon, `drivelist.node`, and on
+Windows the DLL closure found by walking the import tables with
+`scripts/collect-win64-dlls.sh`). Everything native lives in `resources/native/`
+(`Contents/Resources/native/` on macOS); `src/native-loader.ts` resolves the addon there
+and, on Windows, puts that directory on `PATH` before loading it.
+
+For macOS, `package.sh --platform=darwin --arch=<arm64|x64> --native-dir=<dir>` stages the
+addon and `liblkl-kernel.dylib` with `scripts/stage-native-macos.sh` (arch check and Mach-O
+gate; needs LLVM 19 or 20 tools), adds `drivelist.node`, and writes
+`<name>.unsigned.tar.gz`: electron-packager's rewrite of Info.plist breaks Electron's own
+signature. On a Mac, `scripts/sign-macos.sh <name>.unsigned.tar.gz <out>` signs every native
+Mach-O and the bundle ad hoc, verifies the signature, and writes `<name>.zip` + `.sha256`.
 
 ```sh
 pnpm --filter electron-demo package           # Linux x64, from the local addon build
 pnpm --filter electron-demo package:win       # Windows x64 (cross-builds the addon first)
 pnpm --filter electron-demo package:wasm      # Linux x64 without the native addon
 pnpm --filter electron-demo package:win:wasm  # Windows x64 without the native addon
+pnpm --filter electron-demo package:mac:wasm  # macOS arm64 without the native addon
 ```
 
 `verify-package.sh` fails a package that would silently run on wasm: the addon must be
@@ -101,19 +116,24 @@ ANYFS_PACKAGED_FIXTURE=~/.cache/anyfs-smoke \
 `smoke-package.sh` sets `ANYFS_NATIVE_SMOKE=1`, which makes `src/native-smoke.ts` run
 instead of opening a window and write a JSON report; `scripts/check-smoke.mjs` compares it
 with the fixture's `expected.json` (staged addon path, renderer and wasm fallback present,
-partition fstypes and labels, file size and sha256, `kernelHalt` result).
+partition fstypes and labels, file size and sha256, `kernelHalt` result). It then runs
+`ANYFS_DRIVES_SMOKE=1`, and `scripts/check-drives.mjs` requires the staged drivelist addon to
+list the host's disks with the fork's partition fields, at least one partition having a
+filesystem type and a mountpoint. The GUI spec also opens *Open system drive…*.
 `ts/tests/e2e/packaged/docs-screenshots.spec.ts` regenerates the screenshots in
 `docs/screenshots/` from a packaged app and a cloud image (see its header).
 
 ## CI and releases
 
-`.github/workflows/electron.yml` runs when `linux`, `mingw64` and `wasm` have all finished
-for a commit on `main`. It downloads their artifacts (`anyfs-native-linux-x64`,
-`anyfs-native-win32-x64`, `anyfs-web-dist`), packages both platforms on Linux, then runs the
-headless and GUI smoke tests on `ubuntu-26.04` and `windows-2025`. Artifacts are named
-`anyfs-electron-sha-<commit>-<os>-x64`. Pushing a `vX.Y.Z` tag on a commit that was the head
-of a push to `main` packages it as `X.Y.Z` and attaches the archives and `SHA256SUMS` to the
-GitHub release. The packages are unsigned.
+`.github/workflows/electron.yml` runs when `linux`, `mingw64`, `wasm` and `macos` have all
+finished for a commit on `main`. It downloads their artifacts (`anyfs-native-linux-x64`,
+`anyfs-native-win32-x64`, `anyfs-native-darwin-<arch>`, `drivelist-darwin-<arch>`,
+`anyfs-web-dist`), packages every platform on Linux, then runs the headless and GUI smoke
+tests on `ubuntu-26.04`, `windows-2025`, `macos-15` and `macos-15-intel` (signing the macOS
+apps there first). Artifacts are named `anyfs-electron-sha-<commit>-<os>-<arch>`. Pushing a
+`vX.Y.Z` tag on a commit that was the head of a push to `main` packages it as `X.Y.Z` and
+attaches the archives and `SHA256SUMS` to the GitHub release. Nothing is signed with a
+publisher identity (macOS: ad hoc only).
 
 ## Why a custom protocol
 
@@ -134,7 +154,8 @@ electron-demo/
 │   ├── native-smoke.ts    # ANYFS_NATIVE_SMOKE=1 headless check
 │   ├── bindings-shim.cjs  # replaces drivelist's `bindings` lookup in the bundle
 │   └── http-proxy-worker.ts
-├── scripts/               # collect-native, package, verify-package, smoke tooling
+├── scripts/               # fetch-drivelist, collect-native, package, verify-package,
+│                          # stage-native-macos, sign-macos, smoke tooling
 ├── esbuild.main.mjs       # bundles main/preload/worker into dist/*.cjs
 └── package.json
 ```
