@@ -103,9 +103,11 @@ used() {
     if [ "$1" = default ]; then echo "default=$b"; else echo "$b"; fi
 }
 
-# Reference files of parts.img: "<partition> <path> <size> <sha256>" lines.
+# Reference files of parts.img: "<partition> <path> <size> <sha256>" lines,
+# without the CRs Windows' python writes (else every hash compared has a
+# trailing CR, invisible in the output).
 refs="$logdir/reference-files.txt"
-"$py" - "$(pypath "$reference")" > "$refs" <<'PY'
+"$py" - "$(pypath "$reference")" <<'PY' | tr -d '\r' > "$refs"
 import json, sys
 for img in json.load(open(sys.argv[1]))["images"]:
     if img["file"] == "parts.img":
@@ -189,7 +191,8 @@ check_files() {
         if [ "$got" = "$want" ]; then
             ok "$what: /$path ($size bytes) sha256 matches"
         else
-            bad "$what: /$path sha256 ${got:-missing}, want $want"
+            # %q shows stray bytes (a CR) that would print invisibly.
+            bad "$what: /$path sha256 $(printf %q "${got:-missing}"), want $(printf %q "$want")"
         fi
     done < "$refs"
 }
@@ -240,10 +243,18 @@ nfs_fetch() {
         done
         { echo "/proc/fs/nfsfs/servers after $((i * 100)) ms:"; cat /proc/fs/nfsfs/servers; } >> "$dir.client.log" 2>&1
     fi
-    case $os in
+    if ! case $os in
         linux) sudo mount -t nfs4 -o "port=$port,ro" 127.0.0.1:/ "$mnt" ;;
         macos) sudo mount -t nfs -o "vers=4,port=$port,ro,nobrowse" 127.0.0.1:/ "$mnt" ;;
-    esac >> "$dir.client.log" 2>&1 || return 1
+    esac >> "$dir.client.log" 2>&1; then
+        # What the client saw, and whether the connection to the server's
+        # TCP proxy is stuck with data queued.
+        if [ $os = linux ]; then
+            { echo "--- dmesg"; sudo dmesg | tail -30
+              echo "--- ss port $port"; ss -tni "( dport = :$port or sport = :$port )"; } >> "$dir.client.log" 2>&1
+        fi
+        return 1
+    fi
     while read -r _ path size want; do
         mkdir -p "$dir/$(dirname "$path")"
         cp "$mnt/$path" "$dir/$path" 2>> "$dir.client.log"
