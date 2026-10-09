@@ -334,11 +334,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # ── Electron native addon ───────────────────────────────────────────────
+      # ── Electron native addons ──────────────────────────────────────────────
       # anyfs_native.node is cross-linked against the core, liblkl.dll and
       # libanyfs-qemublk.dll built above, with ld.lld --delayload=node.exe
-      # (build-win64.sh). collect-native.sh adds its DLL closure. electron.yml
-      # packages the desktop app from this artifact.
+      # (build-win64.sh); drivelist.node comes from the pinned drivelist-anyfs
+      # fork (fetch-drivelist.sh), same recipe. collect-native.sh adds their
+      # DLL closure. electron.yml packages the desktop app from this artifact.
       - uses: pnpm/action-setup@v4
         with:
           version: 11
@@ -349,7 +350,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: ts/pnpm-lock.yaml
 
-      - name: Build Electron native addon (win64)
+      - name: Build Electron native addons (anyfs, drivelist; win64)
         env:
           LINUX_SRC: ${{ github.workspace }}/deps/linux
           QEMU_SRC: ${{ github.workspace }}/deps/qemu
@@ -365,10 +366,14 @@ jobs:
           ELECTRON_VERSION="$(node ts/examples/electron-demo/scripts/electron-version.mjs)"
           export ELECTRON_VERSION
           bash ts/packages/anyfs-native/scripts/build-win64.sh
-          bash ts/examples/electron-demo/scripts/collect-native.sh win32 \
+          bash ts/examples/electron-demo/scripts/fetch-drivelist.sh "$RUNNER_TEMP/drivelist-anyfs"
+          HEADER_CACHE="$RUNNER_TEMP/electron-headers-drivelist" \
+            bash "$RUNNER_TEMP/drivelist-anyfs/scripts/build-win64-mingw.sh"
+          DRIVELIST_NODE="$RUNNER_TEMP/drivelist-anyfs/build-win64/drivelist.node" \
+            bash ts/examples/electron-demo/scripts/collect-native.sh win32 \
             "$RUNNER_TEMP/anyfs-native-win32-x64"
 
-      - name: Upload Electron native addon
+      - name: Upload Electron native addons
         uses: actions/upload-artifact@v4
         with:
           name: anyfs-native-win32-x64

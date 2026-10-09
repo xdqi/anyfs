@@ -28,7 +28,7 @@ const common = {
     // Replace the `bindings` npm package (used by drivelist) with our own
     // tiny shim that resolves to the staged .node path.
     alias: {
-        bindings: resolve('src/bindings-shim.ts'),
+        bindings: resolve('src/bindings-shim.cjs'),
     },
     logLevel: 'info',
 };

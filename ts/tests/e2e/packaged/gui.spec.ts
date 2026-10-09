@@ -52,6 +52,16 @@ test('packaged app opens an image natively and browses a partition', async () =>
         await dom.waitForBridge(page);
         expect(await page.evaluate(() => !!(window as any).anyfsNative)).toBe(true);
 
+        // System drives: main's drives:list (staged drivelist addon) through
+        // the preload bridge into the dialog. Every runner has a system disk.
+        await page.getByText('Open system drive…').click();
+        const drives = page.getByRole('dialog', { name: 'System drives' });
+        await expect(drives.locator('code').first()).toBeVisible();
+        expect(await drives.innerText()).not.toContain('not available');
+        if (shotDir) await page.screenshot({ path: join(shotDir, 'packaged-drives.png') });
+        await page.keyboard.press('Escape');
+        await expect(drives).toBeHidden();
+
         await page.evaluate((p) => (window as any).__anyfsTest.openPath(p), image);
         await dom.waitForReadyOrError(page, 120_000);
         const st = await dom.getState(page);

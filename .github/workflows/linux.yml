@@ -333,10 +333,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # ── Electron native addon ───────────────────────────────────────────────
+      # ── Electron native addons ──────────────────────────────────────────────
       # anyfs_native.node links the core, LKL, QEMU and sysroot archives built
-      # above (zig, glibc 2.25 = Electron's own floor). electron.yml packages
-      # the desktop app from this artifact; it never rebuilds the kernel.
+      # above (zig, glibc 2.25 = Electron's own floor); drivelist.node comes
+      # from the pinned drivelist-anyfs fork (fetch-drivelist.sh), same
+      # toolchain. electron.yml packages the desktop app from this artifact;
+      # it never rebuilds the kernel.
       - uses: pnpm/action-setup@v4
         with:
           version: 11
@@ -347,7 +349,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: ts/pnpm-lock.yaml
 
-      - name: Build Electron native addon
+      - name: Build Electron native addons (anyfs, drivelist)
         env:
           LINUX_SRC: ${{ github.workspace }}/deps/linux
           QEMU_SRC: ${{ github.workspace }}/deps/qemu
@@ -359,10 +361,14 @@ jobs:
           ELECTRON_TARGET="$(node ts/examples/electron-demo/scripts/electron-version.mjs)"
           export ELECTRON_TARGET
           bash ts/packages/anyfs-native/scripts/build-linux-electron.sh
-          bash ts/examples/electron-demo/scripts/collect-native.sh linux \
+          bash ts/examples/electron-demo/scripts/fetch-drivelist.sh "$RUNNER_TEMP/drivelist-anyfs"
+          ANYFS_READER="$GITHUB_WORKSPACE" \
+            bash "$RUNNER_TEMP/drivelist-anyfs/scripts/build-linux-electron.sh"
+          DRIVELIST_NODE="$RUNNER_TEMP/drivelist-anyfs/build/Release/drivelist.node" \
+            bash ts/examples/electron-demo/scripts/collect-native.sh linux \
             "$RUNNER_TEMP/anyfs-native-linux-x64"
 
-      - name: Upload Electron native addon
+      - name: Upload Electron native addons
         uses: actions/upload-artifact@v4
         with:
           name: anyfs-native-linux-x64

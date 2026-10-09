@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Run the headless native smoke (src/native-smoke.ts) in a packaged app and
-# check the report against the fixture (make-smoke-fixture.sh output).
+# Run the headless smokes of a packaged app: the native smoke
+# (src/native-smoke.ts), checked against the fixture (make-smoke-fixture.sh
+# output), and the drives smoke (ANYFS_DRIVES_SMOKE), which lists the host's
+# disks through the staged drivelist addon.
 # Works on Linux (wrap in xvfb-run when there is no display), macOS, and
 # Windows under Git Bash.
 #
@@ -45,7 +47,7 @@ set +e
 env -u ELECTRON_RUN_AS_NODE \
     ANYFS_NATIVE_SMOKE=1 ANYFS_NATIVE_IMAGE="$image" ANYFS_NATIVE_PART="$part" \
     ANYFS_NATIVE_READ="$read_file" ANYFS_NATIVE_OUT="$out" \
-    "$exe" "${args[@]}"
+    "$exe" ${args[@]+"${args[@]}"}
 rc=$?
 set -e
 echo "smoke-package: app exited rc=$rc after $((SECONDS - start))s"
@@ -53,3 +55,15 @@ echo "smoke-package: app exited rc=$rc after $((SECONDS - start))s"
 [[ $rc -eq 0 ]] || { echo "smoke-package: app exit code $rc" >&2; exit 1; }
 [[ -f "$report" ]] || { echo "smoke-package: no report written" >&2; exit 1; }
 node "$script_dir/check-smoke.mjs" "$out" "$(native_path "$fixture/expected.json")"
+
+drives_report="${report%.json}-drives.json"
+rm -f "$drives_report"
+set +e
+env -u ELECTRON_RUN_AS_NODE ANYFS_DRIVES_SMOKE=1 ANYFS_DRIVES_OUT="$(native_path "$drives_report")" \
+    "$exe" ${args[@]+"${args[@]}"}
+rc=$?
+set -e
+echo "smoke-package: drives smoke exited rc=$rc"
+[[ -f "$drives_report" ]] || { echo "smoke-package: no drives report written" >&2; exit 1; }
+node "$script_dir/check-drives.mjs" "$(native_path "$drives_report")"
+[[ $rc -eq 0 ]] || { echo "smoke-package: drives smoke exit code $rc" >&2; exit 1; }

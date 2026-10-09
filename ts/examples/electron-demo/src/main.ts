@@ -18,7 +18,7 @@ import {
     type WriteStream,
 } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, extname, normalize, resolve } from 'node:path';
 import type { Drive } from 'drivelist';
 import { Worker } from 'node:worker_threads';
@@ -26,6 +26,7 @@ import {
     loadAnyfsNativeAddon,
     loadDrivelistModule,
     resolveAnyfsNativeAddon,
+    resolveDrivelistNode,
 } from './native-loader';
 import { runNativeSmoke } from './native-smoke';
 
@@ -622,20 +623,30 @@ function installAnyfsNativeIpc() {
 }
 
 void app.whenReady().then(async () => {
-    // Headless smoke path: dump drives to a file and exit. Lets CI/devs
-    // confirm the drivelist binding is callable from this electron build
-    // without the GUI/wasm prewarm path.
+    // Headless smoke path: list drives, write a report, exit non-zero on
+    // failure. Lets CI/devs confirm the drivelist binding loads and
+    // enumerates from this electron build without the GUI/wasm prewarm path.
     if (process.env.ANYFS_DRIVES_SMOKE === '1') {
+        const out = process.env.ANYFS_DRIVES_OUT || join(tmpdir(), 'anyfs-drives-smoke.json');
+        const report: Record<string, unknown> = {
+            platform: process.platform,
+            arch: process.arch,
+            drivelistPath: resolveDrivelistNode(),
+            resourcesPath: process.resourcesPath,
+        };
+        let rc = 1;
         try {
             const drives = await loadDrivelistModule().list();
-            const out = process.env.ANYFS_DRIVES_OUT || '/tmp/anyfs-drives-smoke.json';
-            const fs = await import('node:fs/promises');
-            await fs.writeFile(out, JSON.stringify(drives, null, 2));
-            console.log(`[drives:smoke] wrote ${drives.length} drives to ${out}`);
+            Object.assign(report, { ok: true, drives });
+            console.log(`[drives:smoke] ${drives.length} drives`);
+            rc = 0;
         } catch (e) {
+            Object.assign(report, { ok: false, error: e instanceof Error ? e.message : String(e) });
             console.error('[drives:smoke] failed:', e);
         }
-        app.exit(0);
+        const fs = await import('node:fs/promises');
+        await fs.writeFile(out, JSON.stringify(report, null, 2));
+        app.exit(rc);
         return;
     }
 

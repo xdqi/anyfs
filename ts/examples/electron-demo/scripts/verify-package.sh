@@ -31,7 +31,7 @@ win32)
     ;;
 darwin)
     exe="$pkg/anyfs-demo.app/Contents/MacOS/anyfs-demo"; res="$pkg/anyfs-demo.app/Contents/Resources"
-    node_fmt='Mach-O 64-bit (bundle|dynamically linked shared library)'
+    node_fmt='Mach-O 64-bit .*(bundle|dynamically linked shared library)'
     ;;
 *) echo "verify-package: unknown platform $platform" >&2; exit 2 ;;
 esac
@@ -66,6 +66,13 @@ fi
 if [[ $no_native -eq 0 ]]; then
     addon="$res/native/anyfs_native.node"
     need "$addon"
+    # Drive listing: the drivelist addon plus its JS, which esbuild inlines
+    # into main.cjs only when drivelist was installed at build time.
+    need "$res/native/drivelist.node"
+    [[ "$platform" != darwin ]] || need "$res/native/liblkl-kernel.dylib"
+    if grep -q 'require("drivelist")' "$res/app/dist/main.cjs"; then
+        err "main.cjs does not bundle drivelist (it was not installed when build:main ran)"
+    fi
     for f in "$res/native/"*.node; do
         [[ -f "$f" ]] || continue
         desc="$(file -b "$f")"

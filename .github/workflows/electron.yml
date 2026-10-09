@@ -7,30 +7,32 @@ name: electron
 # rebuilds LKL, QEMU or the wasm bundle.
 #
 # Inputs, downloaded by run id from the same commit's main-branch runs:
-#   wasm.yml     anyfs-web-dist          renderer + hashed wasm fallback
-#   linux.yml    anyfs-native-linux-x64  anyfs_native.node (glibc 2.25)
-#   mingw64.yml  anyfs-native-win32-x64  anyfs_native.node + its DLL closure
+#   wasm.yml     anyfs-web-dist            renderer + hashed wasm fallback
+#   linux.yml    anyfs-native-linux-x64    anyfs_native.node, drivelist.node
+#   mingw64.yml  anyfs-native-win32-x64    the same + their DLL closure
+#   macos.yml    anyfs-native-darwin-<a>   anyfs_native.node, liblkl-kernel.dylib
+#                drivelist-darwin-<a>      drivelist.node (built on a Mac)
+# drivelist's JavaScript comes from the pinned fork (fetch-drivelist.sh).
 #
-# Chain:     resolve → fixture + package (matrix) → smoke (matrix) → release
+# Chain:     resolve → fixture + package (matrix, on Linux) → smoke (matrix,
+#            on a runner of each OS; macOS packages are ad-hoc signed there)
+#            → release
 # Artifacts: anyfs-electron-<version>-<os>-<arch>  (archive + .sha256)
 #            <version> is sha-<short sha>, or the tag without its "v"
 #
 # Triggers:
-#   workflow_run       linux, mingw64 or wasm finished on main. Each commit
-#                      triggers this three times; only the run that finds all
-#                      three finished goes past `resolve`, and it fails if one
-#                      of them failed.
+#   workflow_run       linux, mingw64, wasm or macos finished on main. Each
+#                      commit triggers this four times; only the run that
+#                      finds all four finished goes past `resolve`, and it
+#                      fails if one of them failed.
 #   push (v* tag)      packages the tagged commit and publishes a release.
 #                      The commit must have been the head of a push to main,
-#                      so the three build runs exist; re-run when they finish.
+#                      so the build runs exist; re-run when they finish.
 #   workflow_dispatch  packages a main commit again (no release).
-#
-# macOS packages are not built yet: the Darwin native addon is still being
-# integrated (docs/distribution.md, "Desktop app").
 
 on:
   workflow_run:
-    workflows: [linux, mingw64, wasm]
+    workflows: [linux, mingw64, wasm, macos]
     types: [completed]
     branches: [main]
   push:
@@ -67,6 +69,7 @@ jobs:
       linux_run: ${{ steps.find.outputs.linux_run }}
       mingw64_run: ${{ steps.find.outputs.mingw64_run }}
       wasm_run: ${{ steps.find.outputs.wasm_run }}
+      macos_run: ${{ steps.find.outputs.macos_run }}
     steps:
       - name: Find the build runs of the commit
         id: find
@@ -89,7 +92,7 @@ jobs:
           fi
 
           pending=() failed=()
-          for wf in linux mingw64 wasm; do
+          for wf in linux mingw64 wasm macos; do
             runs="$(gh api "repos/$REPO/actions/workflows/$wf.yml/runs?head_sha=$sha&event=push&branch=main&per_page=20" \
                       --jq '.workflow_runs | sort_by(.created_at) | reverse')"
             ok="$(jq -r '[.[] | select(.conclusion == "success")][0].id // empty' <<<"$runs")"
@@ -156,6 +159,16 @@ jobs:
             arch: x64
             native: anyfs-native-win32-x64
             native_run: mingw64_run
+          - platform: darwin
+            os: macos
+            arch: arm64
+            native: anyfs-native-darwin-arm64
+            native_run: macos_run
+          - platform: darwin
+            os: macos
+            arch: x64
+            native: anyfs-native-darwin-x64
+            native_run: macos_run
     env:
       NAME: anyfs-electron-${{ needs.resolve.outputs.version }}-${{ matrix.os }}-${{ matrix.arch }}
     steps:
@@ -180,13 +193,20 @@ jobs:
         with:
           path: ~/.cache/electron
           key: electron-${{ matrix.platform }}-${{ hashFiles('ts/pnpm-lock.yaml') }}
-      # drivelist/@anyfs/native are optionalDependencies: the sibling
-      # drivelist-anyfs checkout is absent here and skipped, and the
-      # @anyfs/native filter keeps node-gyp from running (its .node comes
-      # from the artifact).
+      # drivelist is a file: dependency on ../drivelist-anyfs; build:main
+      # bundles its JavaScript (verify-package.sh fails if it did not). The
+      # @anyfs/native filter keeps node-gyp from running for the addon,
+      # whose .node comes from the artifact.
+      - name: Fetch drivelist
+        run: bash ts/examples/electron-demo/scripts/fetch-drivelist.sh
       - name: Install
         working-directory: ts
         run: pnpm install --frozen-lockfile --filter '!@anyfs/native'
+      - name: Install LLVM (Mach-O gate of stage-native-macos.sh)
+        if: matrix.platform == 'darwin'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends llvm-20
       - name: Download renderer (wasm run ${{ needs.resolve.outputs.wasm_run }})
         uses: actions/download-artifact@v4
         with:
@@ -200,6 +220,14 @@ jobs:
           name: ${{ matrix.native }}
           path: ${{ runner.temp }}/native
           run-id: ${{ needs.resolve.outputs[matrix.native_run] }}
+          github-token: ${{ github.token }}
+      - name: Download drivelist (macOS)
+        if: matrix.platform == 'darwin'
+        uses: actions/download-artifact@v4
+        with:
+          name: drivelist-darwin-${{ matrix.arch }}
+          path: ${{ runner.temp }}/native
+          run-id: ${{ needs.resolve.outputs.macos_run }}
           github-token: ${{ github.token }}
       - name: Build main process and stage renderer
         working-directory: ts/examples/electron-demo
@@ -222,13 +250,15 @@ jobs:
             --version=${{ needs.resolve.outputs.version }} \
             --commit=${{ needs.resolve.outputs.sha }} \
             --out="$RUNNER_TEMP/out"
+      # macOS: an unsigned intermediate; the smoke job signs it on a Mac and
+      # uploads the release zip under ${{ env.NAME }}.
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.NAME }}
+          name: ${{ matrix.platform == 'darwin' && format('unsigned-{0}', env.NAME) || env.NAME }}
           path: |
             ${{ runner.temp }}/out/${{ env.NAME }}.*
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ matrix.platform == 'darwin' && 3 || 14 }}
 
   smoke:
     needs: [resolve, fixture, package]
@@ -247,6 +277,16 @@ jobs:
             os: windows
             arch: x64
             runner: windows-2025
+            ext: zip
+          - platform: darwin
+            os: macos
+            arch: arm64
+            runner: macos-15
+            ext: zip
+          - platform: darwin
+            os: macos
+            arch: x64
+            runner: macos-15-intel
             ext: zip
     defaults:
       run:
@@ -268,17 +308,49 @@ jobs:
           cache-dependency-path: ts/pnpm-lock.yaml
       - uses: actions/download-artifact@v4
         with:
-          name: ${{ env.NAME }}
+          name: ${{ matrix.platform == 'darwin' && format('unsigned-{0}', env.NAME) || env.NAME }}
           path: ${{ runner.temp }}/pkg
       - uses: actions/download-artifact@v4
         with:
           name: electron-smoke-fixture
           path: ${{ runner.temp }}/fixture
+      # Ad hoc (no certificate): the app runs, Gatekeeper still treats a
+      # downloaded copy as unidentified (docs/distribution.md).
+      - name: Sign and archive (macOS)
+        if: matrix.platform == 'darwin'
+        run: |
+          bash ts/examples/electron-demo/scripts/sign-macos.sh \
+            "$RUNNER_TEMP/pkg/$NAME.unsigned.tar.gz" "$RUNNER_TEMP/pkg"
+          rm -rf "$RUNNER_TEMP/pkg/$NAME" "$RUNNER_TEMP/pkg/$NAME".unsigned.tar.gz*
+      - name: Upload signed package (macOS)
+        if: matrix.platform == 'darwin'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.NAME }}
+          path: |
+            ${{ runner.temp }}/pkg/${{ env.NAME }}.zip
+            ${{ runner.temp }}/pkg/${{ env.NAME }}.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+      # The smoke tests run on what a user downloads: the archive, unpacked.
       - name: Verify checksum and unpack
         working-directory: ${{ runner.temp }}/pkg
         run: |
-          sha256sum -c "$NAME.${{ matrix.ext }}.sha256"
-          if [[ "${{ matrix.ext }}" == zip ]]; then 7z x -y -bd "$NAME.zip" >/dev/null; else tar -xzf "$NAME.tar.gz"; fi
+          case "${{ matrix.platform }}" in
+          darwin)
+            shasum -a 256 -c "$NAME.zip.sha256"
+            ditto -x -k "$NAME.zip" .
+            codesign --verify --deep --strict "$NAME/anyfs-demo.app"
+            ;;
+          win32)
+            sha256sum -c "$NAME.zip.sha256"
+            7z x -y -bd "$NAME.zip" >/dev/null
+            ;;
+          linux)
+            sha256sum -c "$NAME.tar.gz.sha256"
+            tar -xzf "$NAME.tar.gz"
+            ;;
+          esac
           ls "$NAME"
       - name: Install Electron runtime libraries (linux)
         if: matrix.platform == 'linux'
@@ -286,8 +358,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends xvfb libnss3 libgbm1
       # Headless: load the staged addon, open the qcow2 fixture (QEMU block
-      # layer), list partitions, mount fixroot, hash payload.bin, halt, exit 0.
-      - name: Native smoke (packaged app)
+      # layer), list partitions, mount fixroot, hash payload.bin, halt, exit 0;
+      # then list the runner's disks through the staged drivelist addon.
+      - name: Native and drives smoke (packaged app)
         run: |
           run=()
           [[ "${{ matrix.platform }}" == linux ]] && run=(xvfb-run -a)
@@ -305,20 +378,27 @@ jobs:
         run: |
           (cd ../.. && pnpm install --frozen-lockfile --filter @anyfs/e2e)
           mkdir -p "$ANYFS_SCREENSHOT_DIR"
-          if [[ "${{ matrix.platform }}" == win32 ]]; then
+          case "${{ matrix.platform }}" in
+          win32)
             export ANYFS_PACKAGED_EXE="$RUNNER_TEMP/pkg/$NAME/anyfs-demo.exe"
             npx playwright test -c packaged.config.ts
-          else
+            ;;
+          darwin)
+            export ANYFS_PACKAGED_EXE="$RUNNER_TEMP/pkg/$NAME/anyfs-demo.app/Contents/MacOS/anyfs-demo"
+            npx playwright test -c packaged.config.ts
+            ;;
+          linux)
             export ANYFS_PACKAGED_EXE="$RUNNER_TEMP/pkg/$NAME/anyfs-demo"
             xvfb-run -a npx playwright test -c packaged.config.ts
-          fi
+            ;;
+          esac
       - name: Upload smoke report and screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: electron-smoke-${{ matrix.os }}-${{ matrix.arch }}
           path: |
-            ${{ runner.temp }}/smoke-report.json
+            ${{ runner.temp }}/smoke-report*.json
             ${{ runner.temp }}/screenshots/
           if-no-files-found: ignore
           retention-days: 14
@@ -353,6 +433,6 @@ jobs:
             prerelease=()
             [[ "$TAG" == *-* ]] && prerelease=(--prerelease)
             gh release create "$TAG" -R "$REPO" --verify-tag --title "anyfs $TAG" "${prerelease[@]}" \
-              --notes "Desktop app (Electron) packages for Linux x64 and Windows x64, built from ${SHA:0:7}. Unsigned; see docs/distribution.md for installation and verification." \
+              --notes "Desktop app (Electron) packages for Linux x64, Windows x64 and macOS arm64/x64, built from ${SHA:0:7}. Not code-signed (macOS: ad hoc); see docs/distribution.md for installation and verification." \
               "${files[@]}"
           fi

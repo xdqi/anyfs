@@ -13,8 +13,9 @@
 #
 # Output: <out>/anyfs-electron-<version>-<os>-<arch>.{tar.gz|zip} (+ .sha256)
 # where os is linux|windows|macos. Linux ships a tar.gz (keeps modes and
-# symlinks); Windows and macOS ship a zip. The unpacked tree stays in
-# <out>/anyfs-electron-<version>-<os>-<arch>/ for smoke tests.
+# symlinks), Windows a zip. macOS gets <name>.unsigned.tar.gz, which
+# sign-macos.sh turns into the signed release zip on a Mac. The unpacked
+# tree stays in <out>/anyfs-electron-<version>-<os>-<arch>/ for smoke tests.
 #
 # Usage:
 #   package.sh --platform=linux|win32|darwin --arch=x64|arm64
@@ -87,7 +88,15 @@ else
     resources="$pkg/resources"
 fi
 
-if [[ $no_native -eq 0 ]]; then
+if [[ $no_native -eq 1 ]]; then
+    :
+elif [[ "$platform" == darwin ]]; then
+    # The macOS owner's helper: arch check against the app + Mach-O gate.
+    mac_arch="$arch"
+    [[ "$arch" == x64 ]] && mac_arch=x86_64
+    bash "$app_dir/scripts/stage-native-macos.sh" "$pkg" "$mac_arch" "$native_dir"
+    cp -- "$native_dir/drivelist.node" "$resources/native/"
+else
     mkdir -p "$resources/native"
     cp -R "$native_dir"/. "$resources/native/"
 fi
@@ -113,13 +122,10 @@ linux)
     tar -czf "$archive" "$name"
     ;;
 darwin)
-    archive="$name.zip"
-    rm -f "$archive"
-    if command -v ditto >/dev/null; then
-        ditto -c -k --keepParent "$name" "$archive"
-    else
-        zip -qry "$archive" "$name"
-    fi
+    # Packaging rewrote Info.plist, so Electron's signature no longer holds.
+    # sign-macos.sh re-signs ad hoc on a Mac and writes the release zip.
+    archive="$name.unsigned.tar.gz"
+    tar -czf "$archive" "$name"
     ;;
 win32)
     archive="$name.zip"

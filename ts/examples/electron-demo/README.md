@@ -132,7 +132,7 @@ electron-demo/
 │   ├── preload.ts         # contextBridge: anyfsNative, electronDrives, dialogs, downloads, settings
 │   ├── native-loader.ts   # resolves resources/native/ (packaged) or the workspace builds (dev)
 │   ├── native-smoke.ts    # ANYFS_NATIVE_SMOKE=1 headless check
-│   ├── bindings-shim.ts   # replaces drivelist's `bindings` lookup in the bundle
+│   ├── bindings-shim.cjs  # replaces drivelist's `bindings` lookup in the bundle
 │   └── http-proxy-worker.ts
 ├── scripts/               # collect-native, package, verify-package, smoke tooling
 ├── esbuild.main.mjs       # bundles main/preload/worker into dist/*.cjs

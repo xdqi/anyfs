@@ -1,0 +1,203 @@
+name: macos
+
+# macOS native builds for the desktop app and the CLI, arm64 and x86_64.
+#
+# build (ubuntu, per arch): everything is cross-built with zig on Linux, no
+#   Mac and no Apple SDK (docs/macos.md): the ELF LKL kernel (linux-arm64 or
+#   linux-amd64) converted to liblkl-kernel.dylib, the LKL host library, the
+#   static dependency sysroot, QEMU's block layer, the anyfs core and CLI
+#   tools, and the Electron addon. check_macho.sh gates every Mach-O.
+# drivelist (macos-15): drivelist.node needs Apple's frameworks (Disk
+#   Arbitration), so it is built on a Mac with node-gyp for both arches.
+#
+# Artifacts: anyfs-native-darwin-{arm64,x64}   anyfs_native.node + liblkl-kernel.dylib
+#            drivelist-darwin-{arm64,x64}      drivelist.node
+#            anyfs-reader-macos-{arm64,x86_64} CLI tarball (scripts/package_macos.sh)
+# electron.yml packages the app from them and runs it on real Macs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: macos-${{ matrix.arch }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            lkl: linux-arm64
+            electron_arch: arm64
+          - arch: x86_64
+            lkl: linux-amd64
+            electron_arch: x64
+    env:
+      LINUX_DIR: ${{ github.workspace }}/deps/linux
+    steps:
+      - uses: actions/checkout@v4
+
+      # As linux.yml, plus the arm64 kernel cross gcc and LLVM 20 for
+      # elf2dylib (clang, ld64.lld) and the Mach-O gate (llvm-otool/-nm/-objdump).
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential meson ninja-build pkg-config python3 pipx \
+            flex bison bc rsync libelf-dev libssl-dev perl xz-utils \
+            ca-certificates curl \
+            gcc-aarch64-linux-gnu llvm-20 lld-20 clang-20
+
+      # Restore only: `oot_fs.sh stage --macho` patches deps/linux below, and
+      # the deps cache is shared with linux.yml, mingw64.yml and wasm.yml.
+      - name: Restore peru-synced deps
+        id: cache-deps
+        uses: actions/cache/restore@v4
+        with:
+          path: deps
+          key: deps-${{ hashFiles('peru.yaml') }}
+      - name: Restore OOT FS sources
+        id: cache-oot
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/oot-fs
+          key: oot-fs-${{ hashFiles('scripts/oot_fs.sh') }}
+          restore-keys: |
+            oot-fs-
+      - name: Install peru
+        run: |
+          pipx install peru
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Sync pinned dependencies
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: peru sync
+      - name: Fetch OOT FS sources
+        if: steps.cache-oot.outputs.cache-hit != 'true'
+        run: ./scripts/oot_fs.sh fetch --update
+
+      - name: Cache zig
+        uses: actions/cache@v4
+        with:
+          path: ~/zig-0.16.0
+          key: zig-0.16.0-x86_64-linux
+      - name: Install zig
+        run: ./scripts/fetch_zig.sh
+
+      - name: Cache LKL build (${{ matrix.lkl }}, macOS flavor)
+        uses: actions/cache@v4
+        with:
+          path: lkl-${{ matrix.lkl }}
+          key: macos-lkl-${{ matrix.lkl }}-${{ hashFiles('peru.yaml', 'scripts/gen_lkl_config.sh', 'scripts/build_lkl.sh', 'scripts/lib/lkl-linux-cc.sh', 'scripts/lib/zig-cc.sh', 'scripts/oot_fs.sh', 'patches/linux/macho/**', '.github/workflows/macos.yml') }}
+          restore-keys: |
+            macos-lkl-${{ matrix.lkl }}-
+      - name: Cache macOS sysroot (${{ matrix.arch }})
+        id: cache-sysroot
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/anyfs-macos-sysroot/${{ matrix.arch }}
+          key: macos-sysroot-${{ matrix.arch }}-${{ hashFiles('scripts/build_macos_sysroot.sh', 'scripts/lib/sysroot_sources.sh', 'scripts/lib/macos_sysroot.manifest', 'patches/sysroot/**', 'scripts/lib/zig-cc.sh', 'scripts/macho/zig-macos.sh', 'scripts/macho/macos_target.sh', 'scripts/macho/sdk-stubs/**', 'build.config.toml') }}
+      - name: Cache QEMU build (macos-${{ matrix.arch }})
+        uses: actions/cache@v4
+        with:
+          path: deps/qemu/build-anyfs-macos-${{ matrix.arch }}
+          key: macos-qemu-${{ matrix.arch }}-${{ hashFiles('peru.yaml', 'scripts/build_qemu.sh', 'scripts/lib/qemu_patches.sh', 'patches/qemu/*.patch', 'patches/qemu/series.native', 'scripts/build_macos_sysroot.sh', 'scripts/lib/sysroot_sources.sh', 'scripts/lib/macos_sysroot.manifest', 'patches/sysroot/**', 'scripts/lib/zig-cc.sh', 'scripts/macho/zig-macos.sh', 'scripts/macho/macos_target.sh', 'scripts/macho/sdk-stubs/**', 'build.config.toml') }}
+          restore-keys: |
+            macos-qemu-${{ matrix.arch }}-
+
+      # ── Build chain (docs/macos.md, "How it fits together") ─────────────────
+      - name: Stage OOT filesystems and the Darwin host patches
+        run: ./scripts/oot_fs.sh stage --macho
+      - name: LKL kernel (${{ matrix.lkl }}, ELF)
+        run: |
+          ./scripts/gen_lkl_config.sh --linux="$LINUX_DIR" --out="$GITHUB_WORKSPACE" --targets=${{ matrix.lkl }}
+          ./scripts/build_lkl.sh --linux="$LINUX_DIR" --out="$GITHUB_WORKSPACE" --targets=${{ matrix.lkl }} -j"$(nproc)"
+      - name: LKL kernel dylib and host library
+        run: |
+          ./scripts/macho/build_kernel_dylib.sh --arch=${{ matrix.arch }}
+          ./scripts/macho/build_host_lib.sh --arch=${{ matrix.arch }}
+      - name: macOS dependency sysroot
+        if: steps.cache-sysroot.outputs.cache-hit != 'true'
+        run: ./scripts/build_macos_sysroot.sh --arch=${{ matrix.arch }}
+      - name: QEMU block layer
+        run: ./scripts/build_qemu.sh --qemu-src=deps/qemu --targets=macos-${{ matrix.arch }} -j"$(nproc)"
+      - name: anyfs core and CLI tools
+        run: |
+          ./scripts/build_anyfs.sh --targets=macos-${{ matrix.arch }} --components=core,server \
+            --lkl-src=deps/linux --qemu-root=deps/qemu --ksmbd-root=deps/ksmbd-tools -j"$(nproc)"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+          package_json_file: ts/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
+      - name: Electron addon
+        run: |
+          (cd ts && pnpm install --frozen-lockfile --filter @anyfs/native --ignore-scripts)
+          ELECTRON_TARGET="$(node ts/examples/electron-demo/scripts/electron-version.mjs)"
+          export ELECTRON_TARGET
+          ts/packages/anyfs-native/scripts/build-macos.sh --arch=${{ matrix.arch }}
+      - name: CLI tarball
+        run: ./scripts/package_macos.sh --arch=${{ matrix.arch }} --out="$RUNNER_TEMP/cli"
+
+      - name: Upload Electron addon
+        uses: actions/upload-artifact@v4
+        with:
+          name: anyfs-native-darwin-${{ matrix.electron_arch }}
+          path: |
+            ts/packages/anyfs-native/build-macos-${{ matrix.arch }}/anyfs_native.node
+            ts/packages/anyfs-native/build-macos-${{ matrix.arch }}/liblkl-kernel.dylib
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload CLI tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: anyfs-reader-macos-${{ matrix.arch }}
+          path: ${{ runner.temp }}/cli/anyfs-reader-*-macos-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  drivelist:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build drivelist.node (arm64, x64)
+        run: |
+          bash ts/examples/electron-demo/scripts/fetch-drivelist.sh "$RUNNER_TEMP/drivelist-anyfs"
+          electron="$(node ts/examples/electron-demo/scripts/electron-version.mjs)"
+          cd "$RUNNER_TEMP/drivelist-anyfs"
+          for arch in arm64 x64; do
+            npx node-gyp rebuild --target="$electron" --dist-url=https://electronjs.org/headers \
+              --runtime=electron --arch="$arch"
+            mkdir -p "$RUNNER_TEMP/out/$arch"
+            cp build/Release/drivelist.node "$RUNNER_TEMP/out/$arch/"
+            file "$RUNNER_TEMP/out/$arch/drivelist.node"
+            lipo -archs "$RUNNER_TEMP/out/$arch/drivelist.node" | grep -qx "${arch/x64/x86_64}"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drivelist-darwin-arm64
+          path: ${{ runner.temp }}/out/arm64/drivelist.node
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drivelist-darwin-x64
+          path: ${{ runner.temp }}/out/x64/drivelist.node
+          if-no-files-found: error
+          retention-days: 14

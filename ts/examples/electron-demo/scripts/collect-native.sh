@@ -2,8 +2,8 @@
 # Assemble the native payload of a packaged app into one directory:
 #
 #   <dest>/anyfs_native.node     the N-API addon (required)
-#   <dest>/drivelist.node        drive enumeration (optional; sibling
-#                                drivelist-anyfs checkout, not built in CI)
+#   <dest>/drivelist.node        drive enumeration, from the drivelist-anyfs
+#                                checkout next to this repository
 #   <dest>/*.dll                 win32: the addon's runtime DLL closure
 #
 # package.sh copies the directory as-is into resources/native/. CI uploads
@@ -16,7 +16,7 @@
 # Usage: collect-native.sh <linux|win32> <dest-dir>
 # Inputs (environment, defaults match the local build layout):
 #   ANYFS_NATIVE_NODE  addon to ship
-#   DRIVELIST_NODE     drivelist addon; shipped when the file exists
+#   DRIVELIST_NODE     drivelist addon
 #   win32 only: LKL_MINGW64, QEMU_BLD_MINGW64, MINGW_SYSROOT (DLL search dirs)
 set -euo pipefail
 
@@ -49,13 +49,9 @@ esac
 
 [[ -f "$node" ]] || { echo "collect-native: missing $node" >&2; exit 1; }
 cp -- "$node" "$dest/anyfs_native.node"
-roots=("$dest/anyfs_native.node")
-if [[ -f "$drivelist" ]]; then
-    cp -- "$drivelist" "$dest/drivelist.node"
-    roots+=("$dest/drivelist.node")
-else
-    echo "collect-native: no drivelist.node at $drivelist; the drives panel will be unavailable"
-fi
+[[ -f "$drivelist" ]] || { echo "collect-native: missing $drivelist (drivelist-anyfs build)" >&2; exit 1; }
+cp -- "$drivelist" "$dest/drivelist.node"
+roots=("$dest/anyfs_native.node" "$dest/drivelist.node")
 
 if [[ "$platform" == win32 ]]; then
     mingw="${MINGW_SYSROOT:-/opt/msys2-cross/mingw64}"
