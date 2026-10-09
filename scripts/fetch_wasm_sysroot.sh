@@ -6,18 +6,23 @@
 # See docs/wasm-sysroot.md.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
-WASM_SYSROOT_TAG="${WASM_SYSROOT_TAG:-wasm-sysroot-r1}"
+# r2: libblkid's crc32c renamed (r1 predates it; ext4 probed as unknown).
+WASM_SYSROOT_TAG="${WASM_SYSROOT_TAG:-wasm-sysroot-r2}"
 dest="$root/.toolchain/wasm-sysroot"
 manifest="$root/scripts/lib/wasm_sysroot.manifest"
+# Records which release $dest holds, so bumping the pin replaces an
+# older sysroot instead of reusing it just because its libs are present.
+stamp="$dest/.release-tag"
 complete() {
     while IFS= read -r lib; do
         case "$lib" in ''|'#'*) continue ;; esac
         [[ -f "$dest/lib/$lib" ]] || return 1
     done < "$manifest"
 }
-if complete; then
-    echo "wasm sysroot already present: $dest"; exit 0
+if complete && [[ "$(cat "$stamp" 2>/dev/null)" == "$WASM_SYSROOT_TAG" ]]; then
+    echo "wasm sysroot $WASM_SYSROOT_TAG already present: $dest"; exit 0
 fi
+rm -rf "$dest"
 mkdir -p "$dest"
 url="https://github.com/xdqi/anyfs/releases/download/$WASM_SYSROOT_TAG/wasm-sysroot-linux.tar.xz"
 echo "fetching $url"
@@ -42,4 +47,5 @@ for pc in "$dest"/lib/pkgconfig/*.pc; do
     sed -i "s|$old_prefix|$dest|g" "$pc"
 done
 echo "relocated $(ls "$dest"/lib/pkgconfig/*.pc 2>/dev/null | wc -l) .pc files to $dest"
-echo "OK: $dest"
+echo "$WASM_SYSROOT_TAG" > "$stamp"
+echo "OK: $dest ($WASM_SYSROOT_TAG)"

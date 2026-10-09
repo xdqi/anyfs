@@ -238,6 +238,7 @@ static int parse_mbr(const unsigned char* buf, size_t len, AnyfsInnerPart* out,
 		out[n].index = (unsigned int)(i + 1);
 		out[n].start_bytes = (uint64_t)first_lba * 512u;
 		out[n].size_bytes = (uint64_t)sectors * 512u;
+		snprintf(out[n].ptype, sizeof(out[n].ptype), "0x%02x", type);
 		n++;
 	}
 	return n;
@@ -283,6 +284,12 @@ static int parse_gpt(const unsigned char* buf, size_t len, AnyfsInnerPart* out,
 		out[n].index = (unsigned int)(i + 1);
 		out[n].start_bytes = first_lba * 512u;
 		out[n].size_bytes = (last_lba - first_lba + 1) * 512u;
+		/* Type GUID: the first three fields are little-endian. */
+		snprintf(out[n].ptype, sizeof(out[n].ptype),
+			 "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+			 le32(e), (unsigned)(e[4] | e[5] << 8),
+			 (unsigned)(e[6] | e[7] << 8), e[8], e[9], e[10], e[11],
+			 e[12], e[13], e[14], e[15]);
 		n++;
 	}
 	return n;

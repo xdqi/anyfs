@@ -177,6 +177,18 @@ for f in \
     "$SYS/lib/libblkid.a" "$SYS/lib/libbz2.a" "$SYS/lib/libzstd.a"; do
     [[ -f "$f" ]] || { echo "missing sysroot lib: $f" >&2; exit 1; }
 done
+# libblkid must carry its own crc32c under the anyfs_blkid_ name (see
+# build_wasm_sysroot.sh): with --allow-multiple-definition an unrenamed
+# libblkid binds to QEMU's XOR'd crc32c, every metadata_csum ext4 superblock
+# fails its checksum, and ext partitions list with no fstype/label/uuid —
+# a stale sysroot (wasm-sysroot-r1) shipped exactly that.
+blkid_syms="$(emnm "$SYS/lib/libblkid.a" 2>/dev/null)"
+if ! grep -q ' T anyfs_blkid_crc32c$' <<<"$blkid_syms" ||
+    grep -q ' T crc32c$' <<<"$blkid_syms"; then
+    echo "$SYS/lib/libblkid.a defines an unrenamed crc32c (stale sysroot);" \
+        "rebuild it with build_wasm_sysroot.sh or fetch_wasm_sysroot.sh" >&2
+    exit 1
+fi
 
 # anyfs_kernel.c (qemu_backend_ops registration) and anyfs_backend.c
 # (auto-detect that PREFERS the QEMU backend) are already compiled with

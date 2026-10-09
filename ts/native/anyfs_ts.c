@@ -225,7 +225,8 @@ int anyfs_ts_session_meta_json(int h, char* buf, size_t cap)
 	jw_init(&w, buf, cap);
 	jw_putc(&w, '{');
 	jw_kv_uint(&w, "logical_size", (unsigned long long)m.logical_size, 1);
-	jw_kv_name(&w, "pt_type", m.pt_type, 0);
+	jw_kv_name(&w, "pt_type", m.pt_type, 1);
+	jw_kv_name(&w, "fstype", m.fstype, 0);
 	jw_putc(&w, '}');
 	return jw_finish(&w, buf, cap);
 }

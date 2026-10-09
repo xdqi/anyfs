@@ -30,7 +30,8 @@ static void usage(FILE* f, const char* prog)
 	    "\n"
 	    "v1 limitations:\n"
 	    "  --json is reserved (not yet implemented).\n"
-	    "  FSTYPE/LABEL/UUID columns show '?' (v2 adds libblkid).\n",
+	    "  FSTYPE/LABEL/UUID columns show '?' when libblkid finds no\n"
+	    "  filesystem.\n",
 	    prog);
 }
 

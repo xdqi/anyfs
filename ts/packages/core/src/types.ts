@@ -70,6 +70,9 @@ export interface SessionMeta {
     logical_size: number;
     /** Outer partition-table flavour: "gpt", "dos", or "" if no PT detected. */
     pt_type: string;
+    /** Filesystem libblkid found on the whole device ("" if none — the usual
+     *  case for a partitioned disk). Optional: older engine builds omit it. */
+    fstype?: string;
 }
 
 /** What the session can attach to. TS-specific — C has a single

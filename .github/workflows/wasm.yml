@@ -41,7 +41,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential meson ninja-build pkg-config python3 pipx \
-            flex bison bc rsync e2fsprogs libelf-dev \
+            flex bison bc rsync e2fsprogs dosfstools fdisk libelf-dev \
             curl ca-certificates xz-utils \
             shellcheck
 
@@ -202,11 +202,17 @@ jobs:
       - name: Wasm export drift gate
         run: ./tests/test_wasm_exports.sh
 
-      - name: Smoke test (node bundle, generated ext4 image)
+      # `parts` asserts the partition picker's data — GPT type GUIDs, ext4
+      # (metadata_csum) and vfat fstype/label, no fstype on BIOS boot.
+      - name: Smoke test (node bundle, generated ext4 + GPT images)
         run: |
           bash ts/packages/core/test/make-single-image.sh \
             ts/examples/vite-demo/public/disks/single.img
-          cd ts/packages/core && node test/smoke.node.mjs single
+          bash ts/packages/core/test/make-parts-image.sh \
+            ts/examples/vite-demo/public/disks/parts.img
+          cd ts/packages/core
+          node test/smoke.node.mjs single
+          node test/smoke.node.mjs parts
 
       - name: Upload wasm bundle
         uses: actions/upload-artifact@v4

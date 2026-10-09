@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { applyUrlProxy, displayName, fatCodepageFlag, formatSize } from '@anyfs/core';
+import {
+    applyUrlProxy,
+    displayName,
+    fatCodepageFlag,
+    formatSize,
+    partitionRole,
+} from '@anyfs/core';
 import { useAnyfsDisk } from '@anyfs/react';
 import { AnyfsFileBrowser } from '@anyfs/trees';
 import type { NativeSession, SessionPartInfo, SessionMeta, SessionSource } from '@anyfs/core';
@@ -7,6 +13,7 @@ import { SupportedFormats } from './SupportedFormats';
 import { DiskSummary } from './DiskSummary';
 import { DownloadingFileTree } from './DownloadingFileTree';
 import { resolveLegacyEncoding, useSettings } from '../Settings';
+import { ptLabel } from '../utils';
 
 export function DiskView({
     source,
@@ -160,15 +167,37 @@ export function DiskView({
                             <span className="ml-2 text-zinc-800 dark:text-zinc-300">
                                 Whole disk
                             </span>
+                            {/* A filesystem spanning the device (no partition
+                                table), and/or the table the disk carries. A
+                                partitioned disk has no whole-device fstype. */}
+                            {meta?.fstype && (
+                                <span
+                                    className="ml-2 text-sm text-zinc-500"
+                                    data-testid="partition-fstype"
+                                >
+                                    {meta.fstype}
+                                </span>
+                            )}
+                            {meta?.pt_type && (
+                                <span
+                                    className="ml-2 text-sm text-zinc-400"
+                                    data-testid="partition-table"
+                                >
+                                    {ptLabel(meta.pt_type)} partition table
+                                </span>
+                            )}
                         </button>
                     </li>
                     {parts.map((p) => {
+                        const role = partitionRole(p.ptype);
                         // Container slots (an MBR extended-partition EBR, an LVM
                         // physical volume, a LUKS volume) are not directly
                         // mountable filesystems — entering one just fails. Render
                         // them as a non-interactive, muted row instead of a
                         // clickable partition so the disk layout stays visible
                         // without offering a guaranteed-to-fail mount.
+                        // A BIOS boot partition holds GRUB's core image, never a
+                        // filesystem — same treatment.
                         const containerLabel =
                             p.kind === 'NESTED'
                                 ? 'extended partition · contains logical volumes'
@@ -176,11 +205,16 @@ export function DiskView({
                                   ? 'LVM physical volume'
                                   : p.kind === 'LUKS'
                                     ? 'LUKS encrypted volume'
-                                    : null;
+                                    : role === 'BIOS boot' && !p.fstype
+                                      ? 'BIOS boot · bootloader, no filesystem'
+                                      : null;
                         if (containerLabel) {
                             return (
                                 <li key={p.slot_id}>
-                                    <div className="w-full text-left text-base px-4 py-3 rounded-lg border border-dashed border-zinc-300 dark:border-zinc-700 text-zinc-400 dark:text-zinc-500 cursor-default">
+                                    <div
+                                        className="w-full text-left text-base px-4 py-3 rounded-lg border border-dashed border-zinc-300 dark:border-zinc-700 text-zinc-400 dark:text-zinc-500 cursor-default"
+                                        data-testid={`partition-${p.index}`}
+                                    >
                                         <span className="font-mono">#{p.index}</span>
                                         {'  '}
                                         <span>{formatSize(p.size)}</span>
@@ -212,8 +246,19 @@ export function DiskView({
                                         </span>
                                     )}
                                     {p.fstype && (
-                                        <span className="ml-2 text-sm text-zinc-500">
+                                        <span
+                                            className="ml-2 text-sm text-zinc-500"
+                                            data-testid="partition-fstype"
+                                        >
                                             {p.fstype}
+                                        </span>
+                                    )}
+                                    {role && (
+                                        <span
+                                            className="ml-2 text-sm text-zinc-400"
+                                            data-testid="partition-role"
+                                        >
+                                            {role}
                                         </span>
                                     )}
                                 </button>

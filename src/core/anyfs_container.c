@@ -276,6 +276,8 @@ fail_locked:
 			}
 			strncpy(d->parts[cid].dm_name, cname,
 				sizeof(d->parts[cid].dm_name) - 1);
+			memcpy(d->parts[cid].ptype, inners[i].ptype,
+			       sizeof(d->parts[cid].ptype));
 			pthread_mutex_unlock(&d->lock);
 			/* Probe outside the lock — pread + libblkid on a host
 			 * tmpfile. */

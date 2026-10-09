@@ -40,11 +40,13 @@ int anyfs_probe_meta(const char* lkl_blkdev_path, char fstype[32],
 
 /* Inner partition descriptor exposed to anyfs_disk's container walker.
  * `index` is 1-based; `start_bytes`/`size_bytes` are relative to the
- * parent block device. */
+ * parent block device. `ptype` uses the AnyfsPartInfo.ptype format:
+ * MBR "0x83" or the lowercase GPT type GUID. */
 typedef struct AnyfsInnerPart {
 	unsigned int index;
 	uint64_t start_bytes;
 	uint64_t size_bytes;
+	char ptype[40];
 } AnyfsInnerPart;
 
 /* Parse an MBR or GPT partition table from the start-of-device snapshot

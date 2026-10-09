@@ -28,7 +28,15 @@ export type { SessionBaseOpts } from './session-base.js';
 export { applyUrlProxy, getUrlProxyPrefix } from './electron-proxy.js';
 export { createSession } from './dispatch.js';
 export type { WasmCaps, SessionEnv, SessionBackend, DispatchResult } from './dispatch.js';
-export { fmtBytes, fmtMode, fmtTime, fmtDev, formatSize, splitExt } from './format.js';
+export {
+    fmtBytes,
+    fmtMode,
+    fmtTime,
+    fmtDev,
+    formatSize,
+    splitExt,
+    partitionRole,
+} from './format.js';
 export {
     hasEscapedBytes,
     nameToBytes,

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fmtBytes, fmtMode, splitExt, formatSize } from '../dist/index.js';
+import { fmtBytes, fmtMode, splitExt, formatSize, partitionRole } from '../dist/index.js';
 
 test('fmtBytes tiers', () => {
     assert.equal(fmtBytes(512), '512 B');
@@ -32,4 +32,19 @@ test('formatSize adaptive units', () => {
     assert.equal(formatSize(0), '0 B');
     assert.equal(formatSize(1536), '1.5 KiB');
     assert.equal(formatSize(10 * 1024 * 1024), '10 MiB');
+});
+
+test('partitionRole — GPT GUIDs and MBR type bytes', () => {
+    // The Ubuntu cloud image layout: root, XBOOTLDR, BIOS boot, ESP.
+    assert.equal(partitionRole('4f68bce3-e8cd-4db1-96e7-fbcaf984b709'), 'Linux root (x86-64)');
+    assert.equal(partitionRole('bc13c2ff-59e6-4262-a352-b275fd6f7172'), 'Linux extended boot');
+    assert.equal(partitionRole('21686148-6449-6e6f-744e-656564454649'), 'BIOS boot');
+    assert.equal(partitionRole('C12A7328-F81F-11D2-BA4B-00A0C93EC93B'), 'EFI System');
+    assert.equal(partitionRole('0x83'), 'Linux');
+    assert.equal(partitionRole('0x0c'), 'FAT32');
+    assert.equal(partitionRole('0xef'), 'EFI System');
+    assert.equal(partitionRole('?'), ''); // engine's "unknown" sentinel
+    assert.equal(partitionRole(''), '');
+    assert.equal(partitionRole('0x42'), '');
+    assert.equal(partitionRole('00000000-1111-2222-3333-444444444444'), '');
 });

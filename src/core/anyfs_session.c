@@ -176,6 +176,25 @@ static int load_top_parts_locked(AnyfsSession* d)
 	if ((size_t)n > MAX_PARTS)
 		n = MAX_PARTS;
 
+	/* Partition-table entries of the whole disk, for each partition's
+	 * type (sysfs has the geometry but not the GPT GUID / MBR byte). The
+	 * kernel numbers GPT partitions by entry slot and MBR primaries 1..4,
+	 * the same `index` anyfs_probe_pt_buf reports. */
+	AnyfsInnerPart pt[MAX_PARTS];
+	int n_pt = 0;
+	if (n > 0) {
+		char disk_dev[80];
+		uint32_t whole = 0;
+		snprintf(disk_dev, sizeof(disk_dev), "/dev/%s", d->sysfs_name);
+		if (get_blkdev_from_sys(d->sysfs_name, 0, &whole) == 0) {
+			if (lkl_sys_access("/dev", 0) < 0)
+				(void)lkl_sys_mkdir("/dev", 0700);
+			(void)lkl_sys_mknod(disk_dev, LKL_S_IFBLK | 0600,
+					    whole);
+		}
+		n_pt = anyfs_probe_pt_blkdev(disk_dev, pt, MAX_PARTS);
+	}
+
 	for (int i = 0; i < n; i++) {
 		char blkdev[80];
 		snprintf(blkdev, sizeof(blkdev), "/dev/%s", sbuf[i].name);
@@ -184,6 +203,13 @@ static int load_top_parts_locked(AnyfsSession* d)
 		    sbuf[i].size_bytes, blkdev, ANYFS_PART_KIND_FS);
 		if (sid < 0)
 			break;
+		for (int j = 0; j < n_pt; j++) {
+			if (pt[j].index == sbuf[i].index) {
+				memcpy(d->parts[sid].ptype, pt[j].ptype,
+				       sizeof(d->parts[sid].ptype));
+				break;
+			}
+		}
 
 		/* Best-effort mknod so kindprobe can pread the partition. */
 		uint32_t dev = 0;
@@ -354,6 +380,7 @@ int anyfs_session_meta(AnyfsSession* d, AnyfsSessionMeta* out)
 		return -1;
 	out->logical_size = 0;
 	out->pt_type[0] = '\0';
+	out->fstype[0] = '\0';
 
 	/* Logical size: /sys/block/<vda>/size is in 512-byte sectors. */
 	char sysfs_path[128];
@@ -387,6 +414,8 @@ int anyfs_session_meta(AnyfsSession* d, AnyfsSessionMeta* out)
 	const char* pt = anyfs_probe_pttype_blkdev(blk_path);
 	strncpy(out->pt_type, pt, sizeof(out->pt_type) - 1);
 	out->pt_type[sizeof(out->pt_type) - 1] = '\0';
+	memcpy(out->fstype, d->whole_fstype_hint, sizeof(out->fstype));
+	out->fstype[sizeof(out->fstype) - 1] = '\0';
 	return 0;
 }
 
