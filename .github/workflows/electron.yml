@@ -26,6 +26,9 @@ name: electron
 #                      finds all four finished goes past `resolve`, and it
 #                      fails if one of them failed (a cancelled run, as
 #                      wasm.yml's superseded ones, only gives a notice).
+#                      The default branch's electron.yml runs for every
+#                      commit's runs; a commit with a different electron.yml
+#                      (an older one) is skipped with a notice.
 #   push (v* tag)      packages the tagged commit and publishes a release.
 #                      The commit must have been the head of a push to main,
 #                      so the build runs exist; re-run when they finish.
@@ -79,6 +82,7 @@ jobs:
           REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
           SHA: ${{ github.event.workflow_run.head_sha || inputs.sha || github.sha }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
         run: |
@@ -92,17 +96,17 @@ jobs:
             echo "release=false" >> "$GITHUB_OUTPUT"
           fi
 
-          # workflow_run always runs the default branch's electron.yml. A
-          # commit from before macos.yml existed has no macos run and lacks
-          # the scripts this version calls: skip it, with a notice. Commits
-          # that have the workflow files get the full check below.
-          for wf in linux mingw64 wasm macos; do
-            if ! gh api "repos/$REPO/contents/.github/workflows/$wf.yml?ref=$sha" --silent 2>/dev/null; then
-              echo "::notice::$sha predates .github/workflows/$wf.yml; this version of electron.yml does not package it"
-              echo "ready=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          done
+          # workflow_run always runs the default branch's electron.yml, also
+          # for the runs of an older commit. That commit may lack scripts or
+          # workflows this version uses: package only commits whose
+          # electron.yml is the one running now, and skip others with a
+          # notice. Their builds were checked when they ran.
+          blob() { gh api "repos/$REPO/contents/.github/workflows/electron.yml?ref=$1" --jq .sha 2>/dev/null || true; }
+          if [[ "$(blob "$sha")" != "$(blob "$WORKFLOW_SHA")" ]]; then
+            echo "::notice::$sha has a different electron.yml than this run ($WORKFLOW_SHA); not packaging it"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           pending=() failed=() cancelled=()
           for wf in linux mingw64 wasm macos; do
