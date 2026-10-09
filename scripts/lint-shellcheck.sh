@@ -59,6 +59,7 @@ ts/packages/anyfs-native/scripts/build-macos.sh
 ts/examples/electron-demo/scripts/stage-native-macos.sh
 tests/macos/run-tests.sh
 tests/macos/make-fixtures.sh
+tests/device/run-cli-device-tests.sh
 '
 # shellcheck disable=SC2046,SC2086
 # SC2046/SC2086: word-splitting on $checked and $(printf ...) is intentional —
