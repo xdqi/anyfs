@@ -26,6 +26,10 @@
 #                  "Permission denied" / "Access is denied" message, no
 #                  crash, no hang) instead of reading
 #
+# Every tool run, client fetch and server stop has a time limit (60-180 s;
+# ANYFS_TEST_STEP_TIMEOUT=S lowers them all to S): a hung step is killed with
+# what it started and fails on its own line, and the run goes on.
+#
 # Checks, for the whole disk (and on macOS the raw /dev/rdiskN node) with
 # both backends (ANYFS_BACKEND=raw and the default, QEMU where it can open
 # devices): anyfs-lspart prints the reference table; anyfs-ksmbd and
@@ -56,7 +60,7 @@ for a in "$@"; do
         --logdir=*) logdir="${a#--logdir=}" ;;
         --no-servers) servers=0 ;;
         --expect-denied) expect_denied=1 ;;
-        -h|--help) sed -n '2,44p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,48p' "$0"; exit 0 ;;
         *) echo "unknown argument: $a" >&2; exit 2 ;;
     esac
 done
@@ -103,6 +107,60 @@ used() {
     if [ "$1" = default ]; then echo "default=$b"; else echo "$b"; fi
 }
 
+# kill_tree PID: kill a child and what it started. On Windows taskkill needs
+# the Windows process id: the shell's pid numbers name other processes there.
+kill_tree() {
+    if [ $os = windows ]; then
+        local w
+        w=$(cat "/proc/$1/winpid" 2>/dev/null)
+        [ -n "$w" ] && taskkill //F //T //PID "$w" > /dev/null 2>&1
+    fi
+    pkill -KILL -P "$1" 2>/dev/null
+    kill -KILL "$1" 2>/dev/null
+}
+# gone PID SECONDS: wait until a child has ended, at most SECONDS; 1 if not.
+gone() {
+    local i=0
+    while kill -0 "$1" 2>/dev/null; do
+        [ $i -ge $(($2 * 10)) ] && return 1
+        sleep 0.1
+        i=$((i + 1))
+    done
+}
+# bounded SECONDS CMD...: run CMD, killing it (and what it started) when it
+# overruns; its status, or 124 on a timeout after $limit seconds. Nothing
+# here may stall the whole run: a hung step must fail on its own line.
+limit=0
+bounded() {
+    local pid
+    limit=$1
+    shift
+    [ "${ANYFS_TEST_STEP_TIMEOUT:-0}" -gt 0 ] && [ "$limit" -gt "$ANYFS_TEST_STEP_TIMEOUT" ] &&
+        limit=$ANYFS_TEST_STEP_TIMEOUT
+    "$@" &
+    pid=$!
+    if ! gone "$pid" "$limit"; then
+        kill_tree "$pid"
+        gone "$pid" 10 && wait "$pid" 2>/dev/null
+        return 124
+    fi
+    wait "$pid"
+}
+# Servers started and not yet stopped: a leftover one is a failure, and is
+# killed before the verdict (or when the script dies early).
+live_servers=""
+reap_servers() {
+    local p
+    for p in $live_servers; do
+        if kill -0 "$p" 2>/dev/null; then
+            bad "server pid $p still running at the end (killed)"
+            kill_tree "$p"
+        fi
+    done
+    live_servers=""
+}
+trap reap_servers EXIT
+
 # Reference files of parts.img: "<partition> <path> <size> <sha256>" lines,
 # without the CRs Windows' python writes (else every hash compared has a
 # trailing CR, invisible in the output).
@@ -140,10 +198,12 @@ part_ref() {
 lspart_check() { # lspart_check DEVICE BACKEND EXPECTED_FILE WHAT
     local dev=$1 backend=$2 want=$3 what=$4 log
     log="$logdir/lspart-$(tag "$dev")-$backend"
-    run_tool "$backend" "$log" "$tools/anyfs-lspart$exe" "$dev"
+    bounded 120 run_tool "$backend" "$log" "$tools/anyfs-lspart$exe" "$dev"
     local rc=$?
     tr -d '\r' < "$log.out" > "$log.txt"
-    if [ $rc -ne 0 ]; then
+    if [ $rc -eq 124 ]; then
+        bad "lspart $dev ($what, backend $backend): timed out after $limit s (killed); stderr: $(tr -d '\r' < "$log.err" | tail -1)"
+    elif [ $rc -ne 0 ]; then
         bad "lspart $dev ($what, backend $backend): exit $rc: $(grep -v '^\[' "$log.err" | tail -1)"
     elif diff -u "$want" "$log.txt" > "$log.diff"; then
         ok "lspart $dev ($what, backend $(used "$backend" "$log.err")): $(($(wc -l < "$log.txt") - 1)) row(s) match the reference"
@@ -164,17 +224,22 @@ wait_for() { # wait_for FILE PATTERN SECONDS PID
 }
 
 stop_server() { # stop_server PID LOG WHAT
-    local pid=$1 log=$2 what=$3 i=0
+    local pid=$1 log=$2 what=$3
+    live_servers=${live_servers/ $pid / }
     if [ $os = windows ]; then
-        taskkill //F //T //PID "$pid" > /dev/null 2>&1 || kill -9 "$pid" 2>/dev/null
-        wait "$pid" 2>/dev/null
-        skip "$what: clean shutdown (a Windows server can't be sent Ctrl-C from here; killed)"
+        kill_tree "$pid"
+        if gone "$pid" 30; then
+            wait "$pid" 2>/dev/null
+            skip "$what: clean shutdown (a Windows server can't be sent Ctrl-C from here; killed)"
+        else
+            bad "$what: still running 30 s after it was killed"
+        fi
         return
     fi
     kill -INT "$pid" 2>/dev/null
-    while kill -0 "$pid" 2>/dev/null && [ $i -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
-    if kill -0 "$pid" 2>/dev/null; then
-        kill -KILL "$pid" 2>/dev/null
+    if ! gone "$pid" 30; then
+        kill_tree "$pid"
+        gone "$pid" 10 && wait "$pid" 2>/dev/null
         bad "$what: still running 30 s after SIGINT (killed)"
         return
     fi
@@ -204,27 +269,27 @@ smb_fetch() {
         linux)
             while read -r _ path size want; do
                 mkdir -p "$dir/$(dirname "$path")"
-                smbclient -N -p "$port" //127.0.0.1/anyfs -c "get \"$path\" \"$dir/$path\"" \
-                    >> "$dir.client.log" 2>&1 || return 1
+                bounded 120 smbclient -N -p "$port" //127.0.0.1/anyfs -c "get \"$path\" \"$dir/$path\"" \
+                    >> "$dir.client.log" 2>&1 || return
             done < "$refs" ;;
         macos)
             local mnt="$dir.mnt"
             mkdir -p "$mnt"
-            mount_smbfs -N "//guest@127.0.0.1:$port/anyfs" "$mnt" >> "$dir.client.log" 2>&1 \
-                || mount_smbfs "//guest:guest@127.0.0.1:$port/anyfs" "$mnt" >> "$dir.client.log" 2>&1 \
-                || return 1
+            bounded 60 mount_smbfs -N "//guest@127.0.0.1:$port/anyfs" "$mnt" >> "$dir.client.log" 2>&1 \
+                || bounded 60 mount_smbfs "//guest:guest@127.0.0.1:$port/anyfs" "$mnt" >> "$dir.client.log" 2>&1 \
+                || return
             while read -r _ path size want; do
                 mkdir -p "$dir/$(dirname "$path")"
-                cp "$mnt/$path" "$dir/$path" 2>> "$dir.client.log"
+                bounded 120 cp "$mnt/$path" "$dir/$path" 2>> "$dir.client.log"
             done < "$refs"
-            umount "$mnt" >> "$dir.client.log" 2>&1 ;;
+            bounded 60 umount "$mnt" >> "$dir.client.log" 2>&1 ;;
         windows)
             local args=()
             while read -r _ path size want; do
                 mkdir -p "$dir/$(dirname "$path")"
                 args+=("$path" "$(cygpath -w "$dir/$path")")
             done < "$refs"
-            "$py" "$(pypath "$here/smb_get.py")" 127.0.0.1 "$port" anyfs "${args[@]}" >> "$dir.client.log" 2>&1 ;;
+            bounded 180 "$py" "$(pypath "$here/smb_get.py")" 127.0.0.1 "$port" anyfs "${args[@]}" >> "$dir.client.log" 2>&1 ;;
     esac
 }
 
@@ -244,8 +309,8 @@ nfs_fetch() {
         { echo "/proc/fs/nfsfs/servers after $((i * 100)) ms:"; cat /proc/fs/nfsfs/servers; } >> "$dir.client.log" 2>&1
     fi
     if ! case $os in
-        linux) sudo mount -t nfs4 -o "port=$port,ro" 127.0.0.1:/ "$mnt" ;;
-        macos) sudo mount -t nfs -o "vers=4,port=$port,ro,nobrowse" 127.0.0.1:/ "$mnt" ;;
+        linux) sudo timeout 150 mount -t nfs4 -o "port=$port,ro,soft,timeo=100,retrans=2" 127.0.0.1:/ "$mnt" ;;
+        macos) sudo mount -t nfs -o "vers=4,port=$port,ro,nobrowse,soft" 127.0.0.1:/ "$mnt" ;;
     esac >> "$dir.client.log" 2>&1; then
         # What the client saw, and whether the connection to the server's
         # TCP proxy is stuck with data queued.
@@ -257,10 +322,14 @@ nfs_fetch() {
     fi
     while read -r _ path size want; do
         mkdir -p "$dir/$(dirname "$path")"
-        cp "$mnt/$path" "$dir/$path" 2>> "$dir.client.log"
+        bounded 120 cp "$mnt/$path" "$dir/$path" 2>> "$dir.client.log"
     done < "$refs"
     # shellcheck disable=SC2024  # the log is ours; only umount runs as root
-    sudo umount "$mnt" >> "$dir.client.log" 2>&1
+    if [ $os = linux ]; then
+        sudo timeout 60 umount "$mnt" >> "$dir.client.log" 2>&1 || sudo umount -f -l "$mnt" >> "$dir.client.log" 2>&1
+    else
+        sudo umount "$mnt" >> "$dir.client.log" 2>&1
+    fi
 }
 
 port=14480
@@ -287,6 +356,7 @@ serve() {
         ANYFS_BACKEND=$backend "$@" > "$log.log" 2>&1 &
     fi
     pid=$!
+    live_servers="$live_servers $pid "
     if ! wait_for "$log.log" "$ready" 120 "$pid"; then
         if kill -0 "$pid" 2>/dev/null; then
             bad "$what: not ready after 120 s ($log.log: $(grep -iE 'error|fail' "$log.log" | tail -1))"
@@ -306,19 +376,22 @@ serve() {
         return
     fi
     if [ $kind = ksmbd ]; then smb_fetch "$port" "$dir"; else nfs_fetch "$port" "$dir"; fi
-    if [ $? -eq 0 ]; then
+    rc=$?
+    if [ $rc -eq 0 ]; then
         check_files "$dir" "$what"
     else
-        bad "$what: client failed ($dir.client.log)"
+        [ $rc -eq 124 ] && rc="timed out after $limit s (killed)" || rc="exit $rc"
+        bad "$what: client failed, $rc; the end of $dir.client.log:"
+        tr -d '\r' < "$dir.client.log" | tail -15 | sed 's/^/    | /'
     fi
     stop_server "$pid" "$log.log" "$what"
 }
 
 # denied DEVICE: each tool fails cleanly without access.
 denied() {
-    local dev=$1 log rc pid i
+    local dev=$1 log rc pid
     log="$logdir/denied-lspart-$(tag "$dev")"
-    run_tool default "$log" "$tools/anyfs-lspart$exe" "$dev"
+    bounded 120 run_tool default "$log" "$tools/anyfs-lspart$exe" "$dev"
     rc=$?
     if [ $rc -eq 1 ] && grep -qiE 'permission denied|access is denied|operation not permitted' "$log.err"; then
         ok "lspart $dev without access: exit 1, $(grep -iE 'denied|not permitted' "$log.err" | tail -1)"
@@ -331,11 +404,9 @@ denied() {
         port=$((port + 1))
         "$tools/anyfs-$kind$exe" "$dev" --share "disk0/p$fs_part" -P "$port" > "$log.log" 2>&1 &
         pid=$!
-        i=0
-        while kill -0 "$pid" 2>/dev/null && [ $i -lt 600 ]; do sleep 0.1; i=$((i + 1)); done
-        if kill -0 "$pid" 2>/dev/null; then
-            kill -KILL "$pid" 2>/dev/null
-            bad "$kind $dev without access: still running after 60 s"
+        if ! gone "$pid" 60; then
+            kill_tree "$pid"
+            bad "$kind $dev without access: still running after 60 s (killed)"
             continue
         fi
         wait "$pid"
@@ -387,6 +458,7 @@ else
     fi
 fi
 
+reap_servers
 echo
 if [ $nfail -eq 0 ]; then verdict=PASS; else verdict=FAIL; fi
 echo "$verdict ($npass ok, $nfail failed, $nskip skipped) — logs in $logdir"
