@@ -294,7 +294,7 @@ jobs:
   smoke:
     needs: [resolve, fixture, package]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -480,6 +480,7 @@ jobs:
       # an administrator). Either way the app must fail with a permission
       # error, not hang or crash.
       - name: Device I/O - app without access is denied
+        timeout-minutes: 4
         if: ${{ !cancelled() && (steps.attach-posix.outcome == 'success' || steps.attach-win.outcome == 'success') }}
         run: |
           run=()
@@ -489,6 +490,7 @@ jobs:
             ${{ matrix.platform }} "$RUNNER_TEMP/dev" "$RUNNER_TEMP/device-fixture" deny \
             "$RUNNER_TEMP/device-report-deny.json"
       - name: Device I/O - CLI without access is denied
+        timeout-minutes: 5
         if: ${{ !cancelled() && (steps.attach-posix.outcome == 'success' || steps.attach-win.outcome == 'success') }}
         run: |
           cli=(bash tests/device/run-cli-device-tests.sh --tools="$ANYFS_CLI_TOOLS"
@@ -500,6 +502,7 @@ jobs:
             "${cli[@]}"
           fi
       - name: Device I/O - app reads the device
+        timeout-minutes: 5
         if: ${{ !cancelled() && (steps.attach-posix.outcome == 'success' || steps.attach-win.outcome == 'success') }}
         run: |
           run=()
@@ -515,11 +518,13 @@ jobs:
               "$RUNNER_TEMP/device-report-allow-raw.json"
           fi
       - name: Device I/O - CLI reads the device
+        timeout-minutes: 8
         if: ${{ !cancelled() && (steps.attach-posix.outcome == 'success' || steps.attach-win.outcome == 'success') }}
         run: |
           bash tests/device/run-cli-device-tests.sh --tools="$ANYFS_CLI_TOOLS" \
             --device-env="$RUNNER_TEMP/dev/device.env" --logdir="$RUNNER_TEMP/cli-device-logs/allowed"
       - name: Device I/O - GUI picks the device (macOS, Windows)
+        timeout-minutes: 6
         if: ${{ !cancelled() && matrix.platform != 'linux' && (steps.attach-posix.outcome == 'success' || steps.attach-win.outcome == 'success') }}
         working-directory: ts/tests/e2e
         env:
@@ -533,6 +538,25 @@ jobs:
             export ANYFS_PACKAGED_EXE="$RUNNER_TEMP/pkg/$NAME/anyfs-demo.app/Contents/MacOS/anyfs-demo"
           fi
           npx playwright test -c packaged.config.ts device
+      # Each device step has its own time limit, so a hang leaves time for
+      # this, the detach and the artifact upload.
+      - name: Device I/O - diagnostics after a failure
+        if: failure()
+        timeout-minutes: 3
+        run: |
+          echo "--- processes"
+          if [[ "${{ matrix.platform }}" == win32 ]]; then
+            tasklist //v | grep -iE "anyfs|python|node|electron" || true
+            netstat -ano | grep -E ":(14[0-9]{3}|20049) " || true
+          else
+            # shellcheck disable=SC2009 # the whole command line is wanted
+            ps axo pid,ppid,etime,stat,command | grep -iE "anyfs|smbclient|mount|electron" | grep -v grep || true
+          fi
+          echo "--- newest CLI device logs"
+          find "$RUNNER_TEMP/cli-device-logs" -type f -name "*.log" -print0 2>/dev/null |
+            xargs -0 ls -1t 2>/dev/null | head -6 | while read -r f; do
+              echo "== $f"; tail -15 "$f"
+            done
       - name: Device I/O - detach (loop / hdiutil)
         if: always() && matrix.platform != 'win32'
         run: bash scripts/ci/test-device.sh detach "$RUNNER_TEMP/dev"
@@ -541,6 +565,7 @@ jobs:
         shell: pwsh
         run: ./scripts/ci/test-device.ps1 detach "$env:RUNNER_TEMP/dev"
       - name: Device I/O - GUI picks the device (Linux, nbd)
+        timeout-minutes: 6
         if: ${{ !cancelled() && matrix.platform == 'linux' }}
         working-directory: ts/tests/e2e
         env:
