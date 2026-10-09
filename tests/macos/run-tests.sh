@@ -56,6 +56,55 @@ check() { # check DESCRIPTION CMD...: ok when CMD succeeds
 }
 sha() { shasum -a 256 "$1" | awk '{print $1}'; }
 
+# kill_tree PID: a child and what it started (sudo-started ones via sudo -n).
+kill_tree() {
+    pkill -KILL -P "$1" 2>/dev/null || sudo -n pkill -KILL -P "$1" 2>/dev/null
+    kill -KILL "$1" 2>/dev/null || sudo -n kill -KILL "$1" 2>/dev/null
+}
+# gone PID SECONDS: wait until a child has ended, at most SECONDS; 1 if not.
+gone() {
+    local i=0
+    while kill -0 "$1" 2>/dev/null; do
+        [ $i -ge $(($2 * 10)) ] && return 1
+        sleep 0.1
+        i=$((i + 1))
+    done
+}
+# bounded SECONDS CMD...: run CMD, killing it (and what it started) when it
+# overruns; its status, or 124 after a timeout (a FAIL line says so). No
+# step may stall the run: CI then cancels the whole job without logs.
+bounded() {
+    local limit=$1 pid
+    shift
+    "$@" &
+    pid=$!
+    if ! gone "$pid" "$limit"; then
+        kill_tree "$pid"
+        gone "$pid" 10 && wait "$pid" 2>/dev/null
+        echo "FAIL timed out after $limit s (killed): $*" >&2
+        return 124
+    fi
+    wait "$pid"
+}
+# Mounts live outside $LOGDIR: a stuck one there would also hang whoever
+# copies or uploads the logs.
+MNTDIR="$(mktemp -d "${TMPDIR:-/tmp}/anyfs-mnt.XXXXXX")"
+servers=""
+cleanup() { # what a cancelled or failed run leaves: servers, mounts
+    local p m
+    for p in $servers; do kill -0 "$p" 2>/dev/null && kill_tree "$p"; done
+    for m in "$MNTDIR"/*; do
+        [ -d "$m" ] || continue
+        # Not a mount point any more: umount fails, harmlessly. (mount(8)
+        # shows $TMPDIR as /private/var/..., so don't grep for it.)
+        umount -f "$m" 2>/dev/null || sudo -n umount -f "$m" 2>/dev/null
+        rmdir "$m" 2>/dev/null
+    done
+    rmdir "$MNTDIR" 2>/dev/null
+}
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT TERM
+
 # wait_for FILE PATTERN SECONDS: until PATTERN appears in FILE.
 wait_for() {
     local i=0
@@ -69,12 +118,12 @@ wait_for() {
 
 # stop_server PID LOG NAME: SIGINT, then the exit status within 30 s.
 stop_server() {
-    local pid=$1 log=$2 name=$3 i=0
+    local pid=$1 log=$2 name=$3
+    servers=${servers/ $pid / }
     kill -INT "$pid" 2>/dev/null
-    while kill -0 "$pid" 2>/dev/null && [ $i -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
-    if kill -0 "$pid" 2>/dev/null; then
+    if ! gone "$pid" 30; then
         bad "$name: still running 30 s after SIGINT (killed)"
-        kill -KILL "$pid" 2>/dev/null
+        kill_tree "$pid"
         return
     fi
     wait "$pid"
@@ -99,20 +148,21 @@ fi
 for f in "$bin"/anyfs-lspart "$root"/lib/liblkl-kernel.dylib "$root"/native/anyfs_native.node; do
     [ -f "$f" ] || continue
     if [ "$bundle_arch" = arm64 ]; then
-        check "codesign -v $(basename "$f")" codesign -v "$f"
+        check "codesign -v $(basename "$f")" bounded 60 codesign -v "$f"
     fi
 done
-"$bin/anyfs-lspart" --help > "$LOGDIR/lspart-help.txt" 2>&1
+bounded 60 "$bin/anyfs-lspart" --help > "$LOGDIR/lspart-help.txt" 2>&1
 check "anyfs-lspart starts (dyld finds liblkl-kernel.dylib)" grep -q '^Usage:' "$LOGDIR/lspart-help.txt"
 
 # --- 1. core tests (the meson unit suite's programs) --------------------------
 run_core() { # run_core NAME ARGS...: exit 0 = ok, 77 = skip
     local name=$1; shift
     [ -x "$bin/$name" ] || { skip "$name (not in bundle)"; return; }
-    (cd "$LOGDIR" && "$bin/$name" "$@") > "$LOGDIR/$name${1:+-$1}.log" 2>&1
+    (cd "$LOGDIR" && bounded 300 "$bin/$name" "$@") > "$LOGDIR/$name${1:+-$1}.log" 2>&1
     local rc=$?
     case $rc in
         0)  ok "$name $*" ;;
+        124) bad "$name $* (timed out after 300 s, $LOGDIR/$name${1:+-$1}.log)" ;;
         77) skip "$name $* (needs a Linux-only tool, see its log)" ;;
         *)  bad "$name $* (exit $rc, $LOGDIR/$name${1:+-$1}.log)" ;;
     esac
@@ -128,7 +178,7 @@ ANYFS_QEMU_TIMEOUT_MS=2000 run_core test_qemu_thread watchdog
 for img in parts.img parts-zlib.dmg parts-bz2.dmg ubuntu-26.10.qcow2; do
     [ -f "$fix/$img" ] || { skip "lspart $img (fixture not in bundle)"; continue; }
     for run in 1 2; do
-        "$bin/anyfs-lspart" "$fix/$img" > "$LOGDIR/lspart-$img-$run.txt" 2> "$LOGDIR/lspart-$img-$run.err"
+        bounded 120 "$bin/anyfs-lspart" "$fix/$img" > "$LOGDIR/lspart-$img-$run.txt" 2> "$LOGDIR/lspart-$img-$run.err"
         rc=$?
         if [ $rc -ne 0 ]; then bad "lspart $img run $run: exit $rc"; continue; fi
         if diff -u "$here/lspart/$img.txt" "$LOGDIR/lspart-$img-$run.txt" > "$LOGDIR/lspart-$img-$run.diff"; then
@@ -144,31 +194,37 @@ files_for() { awk -v img="$1" '$1 == img' "$here/expected-files.txt"; }
 
 # --- 3. anyfs-ksmbd: start, mount_smbfs as guest, read, unmount, stop -----------
 smb_test() { # smb_test FIXTURE PARTITION PORT
-    local img=$1 part=$2 port=$3 log="$LOGDIR/ksmbd-$1.log" mnt="$LOGDIR/smb-$1"
+    local img=$1 part=$2 port=$3 log="$LOGDIR/ksmbd-$1.log" mnt="$MNTDIR/smb-$1"
     [ -f "$fix/$img" ] || { skip "ksmbd $img (fixture not in bundle)"; return; }
     mkdir -p "$mnt"
     "$bin/anyfs-ksmbd" "$fix/$img" --share "anyfs=disk0/p$part" -P "$port" > "$log" 2>&1 &
     local pid=$!
+    servers="$servers $pid "
     if ! wait_for "$log" "SMB server ready" 120; then
         bad "ksmbd $img: no 'SMB server ready' within 120 s ($log)"
         stop_server $pid "$log" "ksmbd $img"
         return
     fi
     ok "ksmbd $img: server ready on port $port"
-    if mount_smbfs -N "//guest@127.0.0.1:$port/anyfs" "$mnt" > "$LOGDIR/mount_smbfs-$img.log" 2>&1 \
-       || mount_smbfs "//guest:guest@127.0.0.1:$port/anyfs" "$mnt" >> "$LOGDIR/mount_smbfs-$img.log" 2>&1; then
+    if bounded 60 mount_smbfs -N "//guest@127.0.0.1:$port/anyfs" "$mnt" > "$LOGDIR/mount_smbfs-$img.log" 2>&1 \
+       || bounded 60 mount_smbfs "//guest:guest@127.0.0.1:$port/anyfs" "$mnt" >> "$LOGDIR/mount_smbfs-$img.log" 2>&1; then
         ok "ksmbd $img: mount_smbfs //guest@127.0.0.1:$port/anyfs"
-        ls -la "$mnt" > "$LOGDIR/smb-ls-$img.txt" 2>&1
+        bounded 60 ls -la "$mnt" > "$LOGDIR/smb-ls-$img.txt" 2>&1
         local _img _part path size want got
         while read -r _img _part path size want; do
             [ "$_part" = "$part" ] || continue
-            got="$(sha "$mnt/$path" 2>/dev/null)"
+            got="$(bounded 300 sha "$mnt/$path" 2>> "$LOGDIR/mount_smbfs-$img.log")"
             check "ksmbd $img: /$path over SMB ($size bytes) sha256 matches" [ "$got" = "$want" ]
         done <<EOF
 $(files_for "$img")
 EOF
-        cp "$mnt/$(files_for "$img" | awk -v p="$part" '$2 == p {print $3; exit}')" "$LOGDIR/smb-copy-$img.bin" 2>/dev/null
-        check "ksmbd $img: umount" umount "$mnt"
+        bounded 300 cp "$mnt/$(files_for "$img" | awk -v p="$part" '$2 == p {print $3; exit}')" "$LOGDIR/smb-copy-$img.bin" 2>/dev/null
+        if bounded 60 umount "$mnt"; then
+            ok "ksmbd $img: umount"
+        else
+            bad "ksmbd $img: umount"
+            umount -f "$mnt" 2>/dev/null
+        fi
     else
         bad "ksmbd $img: mount_smbfs failed ($LOGDIR/mount_smbfs-$img.log); try Finder > Go > Connect to Server > smb://guest@127.0.0.1:$port/anyfs"
     fi
@@ -179,12 +235,13 @@ smb_test ubuntu-26.10.qcow2 1 14456
 
 # --- 4. anyfs-nfsd: start, mount_nfs (NFSv4, needs sudo), read, unmount, stop ---
 nfs_test() { # nfs_test FIXTURE PARTITION PORT
-    local img=$1 part=$2 port=$3 log="$LOGDIR/nfsd-$1.log" mnt="$LOGDIR/nfs-$1"
+    local img=$1 part=$2 port=$3 log="$LOGDIR/nfsd-$1.log" mnt="$MNTDIR/nfs-$1"
     [ -f "$fix/$img" ] || { skip "nfsd $img (fixture not in bundle)"; return; }
     if [ $skip_nfs -eq 1 ]; then skip "nfsd $img (--skip-nfs)"; return; fi
     mkdir -p "$mnt"
     "$bin/anyfs-nfsd" "$fix/$img" --share "disk0/p$part" -P "$port" > "$log" 2>&1 &
     local pid=$!
+    servers="$servers $pid "
     if ! wait_for "$log" "NFSv4 server ready" 120; then
         bad "nfsd $img: not ready within 120 s ($log)"
         stop_server $pid "$log" "nfsd $img"
@@ -192,19 +249,26 @@ nfs_test() { # nfs_test FIXTURE PARTITION PORT
     fi
     ok "nfsd $img: server up on port $port"
     echo "nfsd: mounting needs root; sudo may ask for your password"
+    # soft: a stalled server fails reads instead of hanging them; soft + ro
+    # alone means local locks, which macOS refuses for NFSv4, hence "locks".
     # shellcheck disable=SC2024  # the log is the user's; only mount runs as root
-    if sudo mount -t nfs -o "vers=4,port=$port,ro,nobrowse" "127.0.0.1:/" "$mnt" > "$LOGDIR/mount_nfs-$img.log" 2>&1; then
+    if bounded 150 sudo mount -t nfs -o "vers=4,port=$port,ro,nobrowse,soft,locks" "127.0.0.1:/" "$mnt" > "$LOGDIR/mount_nfs-$img.log" 2>&1; then
         ok "nfsd $img: mount -t nfs -o vers=4,port=$port 127.0.0.1:/"
-        ls -la "$mnt" > "$LOGDIR/nfs-ls-$img.txt" 2>&1
+        bounded 60 ls -la "$mnt" > "$LOGDIR/nfs-ls-$img.txt" 2>&1
         local _img _part path size want got
         while read -r _img _part path size want; do
             [ "$_part" = "$part" ] || continue
-            got="$(sha "$mnt/$path" 2>/dev/null)"
+            got="$(bounded 300 sha "$mnt/$path" 2>> "$LOGDIR/mount_nfs-$img.log")"
             check "nfsd $img: /$path over NFS ($size bytes) sha256 matches" [ "$got" = "$want" ]
         done <<EOF
 $(files_for "$img")
 EOF
-        check "nfsd $img: umount" sudo umount "$mnt"
+        if bounded 60 sudo umount "$mnt"; then
+            ok "nfsd $img: umount"
+        else
+            bad "nfsd $img: umount"
+            sudo umount -f "$mnt" 2>/dev/null
+        fi
     else
         bad "nfsd $img: mount failed ($LOGDIR/mount_nfs-$img.log)"
     fi
@@ -215,7 +279,7 @@ nfs_test ubuntu-26.10.qcow2 1 20050
 
 # --- 4b. anyfs-fuse through macFUSE (an external dependency) ------------------
 fuse_test() { # fuse_test FIXTURE PARTITION
-    local img=$1 part=$2 log="$LOGDIR/fuse-$1.log" mnt="$LOGDIR/fuse-$1"
+    local img=$1 part=$2 log="$LOGDIR/fuse-$1.log" mnt="$MNTDIR/fuse-$1"
     [ -f "$fix/$img" ] || { skip "fuse $img (fixture not in bundle)"; return; }
     mkdir -p "$mnt"
     "$bin/anyfs-fuse" -f -o "ro,part=$part" "$fix/$img" "$mnt" > "$log" 2>&1 &
@@ -273,7 +337,7 @@ if [ -z "$addon_runner" ]; then
     skip "addon test (no --app and no node on PATH)"
 else
     # shellcheck disable=SC2086  # addon_runner is a command line
-    $addon_runner "$here/native-smoke.mjs" --addon "$addon" --fixtures "$fix" \
+    bounded 900 $addon_runner "$here/native-smoke.mjs" --addon "$addon" --fixtures "$fix" \
         --expected "$here/expected.json" --loops "$loops" > "$LOGDIR/native-smoke.log" 2>&1
     rc=$?
     grep -E '^(ok|FAIL|skip|PASS|native-smoke)' "$LOGDIR/native-smoke.log" | sed 's/^/    /' | tail -12
@@ -288,7 +352,7 @@ if [ -n "$app" ]; then
     rm -f "$out"
     ANYFS_NATIVE_SMOKE=1 ANYFS_NATIVE_IMAGE="$fix/parts.img" ANYFS_NATIVE_PART=fixroot \
         ANYFS_NATIVE_READ=hello.txt ANYFS_NATIVE_OUT="$out" \
-        "$exe" > "$LOGDIR/electron-native-smoke.log" 2>&1
+        bounded 300 "$exe" > "$LOGDIR/electron-native-smoke.log" 2>&1
     rc=$?
     check "Electron main process: native smoke exit $rc" [ $rc -eq 0 ]
     check "Electron main process: report ok" grep -Eq '"ok": *true' "$out"
