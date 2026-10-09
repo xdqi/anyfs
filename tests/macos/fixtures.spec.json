@@ -3,32 +3,55 @@
     {
       "file": "parts.img",
       "enter": 3,
-      "dirs": [{ "path": "", "contains": ["hello.txt", "lost+found"] }],
-      "files": [{ "path": "hello.txt" }]
+      "dirs": [
+        {
+          "path": "",
+          "contains": [
+            "hello.txt",
+            "lost+found"
+          ]
+        }
+      ],
+      "files": [
+        {
+          "path": "hello.txt"
+        }
+      ]
     },
     {
       "file": "parts-zlib.dmg",
       "enter": 3,
-      "dirs": [{ "path": "", "contains": ["hello.txt", "lost+found"] }],
-      "files": [{ "path": "hello.txt" }]
+      "dirs": [
+        {
+          "path": "",
+          "contains": [
+            "hello.txt",
+            "lost+found"
+          ]
+        }
+      ],
+      "files": [
+        {
+          "path": "hello.txt"
+        }
+      ]
     },
     {
       "file": "parts-bz2.dmg",
       "enter": 3,
-      "dirs": [{ "path": "", "contains": ["hello.txt", "lost+found"] }],
-      "files": [{ "path": "hello.txt" }]
-    },
-    {
-      "file": "ubuntu-26.10.qcow2",
-      "enter": 1,
       "dirs": [
-        { "path": "", "contains": ["etc", "usr", "boot"] },
-        { "path": "etc", "contains": ["os-release", "passwd", "hostname"] }
+        {
+          "path": "",
+          "contains": [
+            "hello.txt",
+            "lost+found"
+          ]
+        }
       ],
       "files": [
-        { "path": "usr/lib/os-release" },
-        { "path": "etc/passwd" },
-        { "path": "usr/bin/bash" }
+        {
+          "path": "hello.txt"
+        }
       ]
     }
   ]

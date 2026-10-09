@@ -1,0 +1,37 @@
+{
+  "images": [
+    {
+      "file": "ubuntu-26.10.qcow2",
+      "enter": 1,
+      "dirs": [
+        {
+          "path": "",
+          "contains": [
+            "etc",
+            "usr",
+            "boot"
+          ]
+        },
+        {
+          "path": "etc",
+          "contains": [
+            "os-release",
+            "passwd",
+            "hostname"
+          ]
+        }
+      ],
+      "files": [
+        {
+          "path": "usr/lib/os-release"
+        },
+        {
+          "path": "etc/passwd"
+        },
+        {
+          "path": "usr/bin/bash"
+        }
+      ]
+    }
+  ]
+}

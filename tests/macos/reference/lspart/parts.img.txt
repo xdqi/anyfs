@@ -1,0 +1,4 @@
+PATH               SIZE       KIND    FSTYPE  LABEL        UUID        
+disk0/p1           1.0 MB     FS      ?       ?            ?           
+disk0/p2           33.0 MB    FS      vfat    ESP          2A2A-2A2A   
+disk0/p3           32.0 MB    FS      ext4    fixroot      5c502e71-caaf-4fb7-810e-7578df86ca8e

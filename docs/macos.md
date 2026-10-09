@@ -134,7 +134,15 @@ Host tools:
 
 - zig 0.16.0;
 - LLVM 19 or 20: `llvm-nm`, `llvm-otool`, `llvm-objdump`, `llvm-objcopy`, `llvm-lipo`,
-  `llvm-readtapi`, `lld` (ld.lld + ld64.lld), `clang`;
+  `llvm-readtapi`, `ld.lld`, `clang`;
+- **LLVM 19's `ld64.lld`** (Debian/Ubuntu package `lld-19`) for the kernel conversion.
+  LLD 20 puts every `pure_instructions` section first in `__TEXT`, so `__lkl_text` lands
+  before `__lkl_const`. Each section then sits away from its ELF address + 0x4000.
+  `elf2dylib.py` refuses LLD ≥ 20 up front, and its output check would catch the shift
+  anyway. Reproduce with two sections in `__TEXT`: LLD 19 keeps the input order, LLD 20
+  moves the code section first, and without `pure_instructions` both keep the order. The
+  attribute stays, because the Macs verified the kernel with it and debuggers use it;
+  `ld64.lld-19` is in the Ubuntu 26.04 archive;
 - `aarch64-linux-gnu-gcc` for the arm64 kernel;
 - meson, ninja, pkg-config, perl, python3, curl;
 - bsdtar and cpio, for macfuse only.
@@ -175,15 +183,22 @@ and nothing here has been tried against it. The SMB and NFS servers need no exte
 
 ## Testing on a Mac
 
-`scripts/macho/package_macos_tests.sh --arch=<arch> [--ubuntu=<qcow2>] [--app=<staged .app>]`
-builds `build/macos/anyfs-macos-test-<arch>.tar.gz`. It holds:
+`scripts/macho/package_macos_tests.sh --arch=<arch> [--build-dir=DIR] [--native-dir=DIR]
+[--ubuntu=<qcow2>] [--app=<staged .app>]` builds `build/macos/anyfs-macos-test-<arch>.tar.gz`
+(about 65 MB without the Ubuntu image and the app). It holds:
 
 - the tools and core test programs;
 - the addon;
-- fixtures: a GPT raw image, the same wrapped as zlib and bzip2 DMGs, and optionally the
-  Ubuntu 26.10 qcow2;
+- fixtures from `tests/macos/make-fixtures.sh`: a GPT raw image and the same wrapped as zlib
+  and bzip2 DMGs, plus the Ubuntu 26.10 qcow2 if given;
 - the app, if given;
-- reference data computed by the Linux build on the same fixture bytes.
+- reference data.
+
+The fixtures are byte-for-byte reproducible (fixed UUIDs and volume ids), so their reference
+data is committed in `tests/macos/reference/`. It was computed by the Linux build, and the
+script re-checks it whenever a Linux build is present. Packaging therefore needs no Linux
+build, except for the Ubuntu image, whose reference is computed when it is packaged.
+`--build-dir` and `--native-dir` take the inputs from CI artifacts.
 
 `tests/macos/README.md` gives the exact steps. In short, on the Mac:
 

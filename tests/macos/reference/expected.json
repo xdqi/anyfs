@@ -1,0 +1,193 @@
+{
+  "images": [
+    {
+      "file": "parts.img",
+      "enter": 3,
+      "dirs": [
+        {
+          "path": "",
+          "contains": [
+            "hello.txt",
+            "lost+found"
+          ]
+        }
+      ],
+      "files": [
+        {
+          "path": "hello.txt",
+          "size": 35,
+          "sha256": "322d136f6301dcdbe970b08aedf2aed7df127eb7b0ff7d99ec413bc20876a298"
+        }
+      ],
+      "meta": {
+        "logical_size": 73400320,
+        "pt_type": "gpt",
+        "fstype": ""
+      },
+      "parts": [
+        {
+          "slot_id": 0,
+          "parent": -1,
+          "index": 1,
+          "offset": 1048576,
+          "size": 1048576,
+          "ptype": "21686148-6449-6e6f-744e-656564454649",
+          "kind": "FS",
+          "fstype": "",
+          "label": "",
+          "uuid": ""
+        },
+        {
+          "slot_id": 1,
+          "parent": -1,
+          "index": 2,
+          "offset": 2097152,
+          "size": 34603008,
+          "ptype": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+          "kind": "FS",
+          "fstype": "vfat",
+          "label": "ESP",
+          "uuid": "2A2A-2A2A"
+        },
+        {
+          "slot_id": 2,
+          "parent": -1,
+          "index": 3,
+          "offset": 36700160,
+          "size": 33554432,
+          "ptype": "4f68bce3-e8cd-4db1-96e7-fbcaf984b709",
+          "kind": "FS",
+          "fstype": "ext4",
+          "label": "fixroot",
+          "uuid": "5c502e71-caaf-4fb7-810e-7578df86ca8e"
+        }
+      ]
+    },
+    {
+      "file": "parts-zlib.dmg",
+      "enter": 3,
+      "dirs": [
+        {
+          "path": "",
+          "contains": [
+            "hello.txt",
+            "lost+found"
+          ]
+        }
+      ],
+      "files": [
+        {
+          "path": "hello.txt",
+          "size": 35,
+          "sha256": "322d136f6301dcdbe970b08aedf2aed7df127eb7b0ff7d99ec413bc20876a298"
+        }
+      ],
+      "meta": {
+        "logical_size": 73400320,
+        "pt_type": "gpt",
+        "fstype": ""
+      },
+      "parts": [
+        {
+          "slot_id": 0,
+          "parent": -1,
+          "index": 1,
+          "offset": 1048576,
+          "size": 1048576,
+          "ptype": "21686148-6449-6e6f-744e-656564454649",
+          "kind": "FS",
+          "fstype": "",
+          "label": "",
+          "uuid": ""
+        },
+        {
+          "slot_id": 1,
+          "parent": -1,
+          "index": 2,
+          "offset": 2097152,
+          "size": 34603008,
+          "ptype": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+          "kind": "FS",
+          "fstype": "vfat",
+          "label": "ESP",
+          "uuid": "2A2A-2A2A"
+        },
+        {
+          "slot_id": 2,
+          "parent": -1,
+          "index": 3,
+          "offset": 36700160,
+          "size": 33554432,
+          "ptype": "4f68bce3-e8cd-4db1-96e7-fbcaf984b709",
+          "kind": "FS",
+          "fstype": "ext4",
+          "label": "fixroot",
+          "uuid": "5c502e71-caaf-4fb7-810e-7578df86ca8e"
+        }
+      ]
+    },
+    {
+      "file": "parts-bz2.dmg",
+      "enter": 3,
+      "dirs": [
+        {
+          "path": "",
+          "contains": [
+            "hello.txt",
+            "lost+found"
+          ]
+        }
+      ],
+      "files": [
+        {
+          "path": "hello.txt",
+          "size": 35,
+          "sha256": "322d136f6301dcdbe970b08aedf2aed7df127eb7b0ff7d99ec413bc20876a298"
+        }
+      ],
+      "meta": {
+        "logical_size": 73400320,
+        "pt_type": "gpt",
+        "fstype": ""
+      },
+      "parts": [
+        {
+          "slot_id": 0,
+          "parent": -1,
+          "index": 1,
+          "offset": 1048576,
+          "size": 1048576,
+          "ptype": "21686148-6449-6e6f-744e-656564454649",
+          "kind": "FS",
+          "fstype": "",
+          "label": "",
+          "uuid": ""
+        },
+        {
+          "slot_id": 1,
+          "parent": -1,
+          "index": 2,
+          "offset": 2097152,
+          "size": 34603008,
+          "ptype": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+          "kind": "FS",
+          "fstype": "vfat",
+          "label": "ESP",
+          "uuid": "2A2A-2A2A"
+        },
+        {
+          "slot_id": 2,
+          "parent": -1,
+          "index": 3,
+          "offset": 36700160,
+          "size": 33554432,
+          "ptype": "4f68bce3-e8cd-4db1-96e7-fbcaf984b709",
+          "kind": "FS",
+          "fstype": "ext4",
+          "label": "fixroot",
+          "uuid": "5c502e71-caaf-4fb7-810e-7578df86ca8e"
+        }
+      ]
+    }
+  ]
+}
