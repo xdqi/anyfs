@@ -316,7 +316,15 @@ jobs:
           curl -sf http://localhost:4173/ -o /dev/null
           curl -sI http://localhost:4173/ | grep -i 'cross-origin-opener-policy'
           curl -sI http://localhost:4173/ | grep -i 'cross-origin-embedder-policy'
-          curl -sf http://localhost:4173/wasm/anyfs.worker.js -o /dev/null
+          # The wasm set lives under /wasm/<content hash>/ (vite.config.ts);
+          # find it through the app bundle, as the browser does.
+          INDEX_JS=$(curl -sf http://localhost:4173/ | grep -oE '/assets/index-[^"]+\.js' | head -1)
+          WASM_DIR=$(curl -sf "http://localhost:4173$INDEX_JS" | grep -oE '/wasm/[0-9a-f]{16}/' | head -1)
+          [ -n "$WASM_DIR" ] || { echo "no /wasm/<hash>/ in $INDEX_JS" >&2; exit 1; }
+          for f in anyfs.worker.js anyfs.mjs anyfs.wasm; do
+            curl -sfI "http://localhost:4173$WASM_DIR$f" | grep -i 'cache-control: .*immutable'
+          done
+          curl -sI http://localhost:4173/ | grep -i 'cache-control: no-cache'
           docker stop anyfs-web-smoke
 
   electron-package:
