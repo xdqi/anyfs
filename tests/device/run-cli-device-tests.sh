@@ -227,8 +227,19 @@ smb_fetch() {
 
 # nfs_fetch PORT DIR: mount the NFSv4 export read-only and copy the files.
 nfs_fetch() {
-    local port=$1 dir=$2 mnt="$2.mnt" path size want
+    local port=$1 dir=$2 mnt="$2.mnt" path size want i=0
     mkdir -p "$mnt"
+    if [ $os = linux ]; then
+        # Linux' NFSv4.0 client sends SETCLIENTID_CONFIRM for a new server
+        # to every client record it still holds, whatever its address: one
+        # left from the previous (stopped) server makes the mount hang for
+        # minutes. Wait until the earlier unmounts have dropped theirs.
+        while grep -q ' 127\.0\.0\.1$' /proc/fs/nfsfs/servers 2>/dev/null && [ $i -lt 150 ]; do
+            sleep 0.1
+            i=$((i + 1))
+        done
+        { echo "/proc/fs/nfsfs/servers after $((i * 100)) ms:"; cat /proc/fs/nfsfs/servers; } >> "$dir.client.log" 2>&1
+    fi
     case $os in
         linux) sudo mount -t nfs4 -o "port=$port,ro" 127.0.0.1:/ "$mnt" ;;
         macos) sudo mount -t nfs -o "vers=4,port=$port,ro,nobrowse" 127.0.0.1:/ "$mnt" ;;

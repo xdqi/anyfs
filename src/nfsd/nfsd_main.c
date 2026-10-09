@@ -418,6 +418,13 @@ static struct cache_channel channels[] = {
 };
 #define NUM_CHANNELS (sizeof(channels) / sizeof(channels[0]))
 
+/* Set once the handler thread has opened every channel. Until then an
+ * upcall finds no reader and the kernel caches a negative entry, so the
+ * server must not take clients before. */
+static pthread_mutex_t channels_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t channels_cv = PTHREAD_COND_INITIALIZER;
+static int channels_open;
+
 static void* cache_handler_thread(void* arg)
 {
 	(void)arg;
@@ -435,6 +442,10 @@ static void* cache_handler_thread(void* arg)
 			       fds[i]);
 		}
 	}
+	pthread_mutex_lock(&channels_lock);
+	channels_open = 1;
+	pthread_cond_signal(&channels_cv);
+	pthread_mutex_unlock(&channels_lock);
 
 	while (anyfs_server_running) {
 		struct lkl_pollfd pfds[NUM_CHANNELS];
@@ -844,6 +855,10 @@ int main(int argc, char** argv)
 		perror("pthread_create");
 		goto halt;
 	}
+	pthread_mutex_lock(&channels_lock);
+	while (!channels_open)
+		pthread_cond_wait(&channels_cv, &channels_lock);
+	pthread_mutex_unlock(&channels_lock);
 
 	/*
 	 * nfsd is now listening on lo:NFS_PORT inside LKL. Start the host
