@@ -432,6 +432,8 @@ jobs:
             ;;
           esac
       # ── Virtual block device I/O ──────────────────────────────────────────
+      # Once the device is attached, each check runs even if an earlier one
+      # failed (the job still fails), so one failure does not hide the rest.
       # make-device-fixture.sh's parts.img attached READ-ONLY as a block
       # device this job creates: Linux loop (plus an nbd export of the same
       # file for the GUI, because drivelist hides loop devices), macOS
@@ -465,9 +467,11 @@ jobs:
           esac
           { command -v python3 && python3 --version; } || echo "python3 not on PATH"
       - name: Device I/O - attach (loop / hdiutil)
+        id: attach-posix
         if: matrix.platform != 'win32'
         run: bash scripts/ci/test-device.sh attach "$RUNNER_TEMP/device-fixture/parts.img" "$RUNNER_TEMP/dev"
       - name: Device I/O - attach (read-only VHDX)
+        id: attach-win
         if: matrix.platform == 'win32'
         shell: pwsh
         run: ./scripts/ci/test-device.ps1 attach "$env:RUNNER_TEMP/device-fixture/parts.vhdx" "$env:RUNNER_TEMP/device-fixture/parts.img" "$env:RUNNER_TEMP/dev"
@@ -476,6 +480,7 @@ jobs:
       # an administrator). Either way the app must fail with a permission
       # error, not hang or crash.
       - name: Device I/O - app without access is denied
+        if: ${{ !cancelled() && (steps.attach-posix.outcome == 'success' || steps.attach-win.outcome == 'success') }}
         run: |
           run=()
           [[ "${{ matrix.platform }}" == linux ]] && run=(xvfb-run -a)
@@ -484,6 +489,7 @@ jobs:
             ${{ matrix.platform }} "$RUNNER_TEMP/dev" "$RUNNER_TEMP/device-fixture" deny \
             "$RUNNER_TEMP/device-report-deny.json"
       - name: Device I/O - CLI without access is denied
+        if: ${{ !cancelled() && (steps.attach-posix.outcome == 'success' || steps.attach-win.outcome == 'success') }}
         run: |
           cli=(bash tests/device/run-cli-device-tests.sh --tools="$ANYFS_CLI_TOOLS"
                --device-env="$RUNNER_TEMP/dev/device.env" --expect-denied
@@ -494,6 +500,7 @@ jobs:
             "${cli[@]}"
           fi
       - name: Device I/O - app reads the device
+        if: ${{ !cancelled() && (steps.attach-posix.outcome == 'success' || steps.attach-win.outcome == 'success') }}
         run: |
           run=()
           [[ "${{ matrix.platform }}" == linux ]] && run=(xvfb-run -a)
@@ -508,11 +515,12 @@ jobs:
               "$RUNNER_TEMP/device-report-allow-raw.json"
           fi
       - name: Device I/O - CLI reads the device
+        if: ${{ !cancelled() && (steps.attach-posix.outcome == 'success' || steps.attach-win.outcome == 'success') }}
         run: |
           bash tests/device/run-cli-device-tests.sh --tools="$ANYFS_CLI_TOOLS" \
             --device-env="$RUNNER_TEMP/dev/device.env" --logdir="$RUNNER_TEMP/cli-device-logs/allowed"
       - name: Device I/O - GUI picks the device (macOS, Windows)
-        if: matrix.platform != 'linux'
+        if: ${{ !cancelled() && matrix.platform != 'linux' && (steps.attach-posix.outcome == 'success' || steps.attach-win.outcome == 'success') }}
         working-directory: ts/tests/e2e
         env:
           ANYFS_DEVICE_JSON: ${{ runner.temp }}/dev/device.json
@@ -533,7 +541,7 @@ jobs:
         shell: pwsh
         run: ./scripts/ci/test-device.ps1 detach "$env:RUNNER_TEMP/dev"
       - name: Device I/O - GUI picks the device (Linux, nbd)
-        if: matrix.platform == 'linux'
+        if: ${{ !cancelled() && matrix.platform == 'linux' }}
         working-directory: ts/tests/e2e
         env:
           ANYFS_DEVICE_JSON: ${{ runner.temp }}/dev-nbd/device.json
