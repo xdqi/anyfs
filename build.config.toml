@@ -18,6 +18,10 @@ wasm_sysroot= ""            # "" => <repo>/wasm-sysroot
 # scripts/build_linux_sysroot.sh.
 # "" => ${XDG_CACHE_HOME:-~/.cache}/anyfs-linux-sysroot/x86_64-linux-gnu.2.11
 linux_sysroot = ""
+# Static dependency sysroots for macOS, one per arch (<dir>/arm64, <dir>/x86_64),
+# built by scripts/build_macos_sysroot.sh with zig cc.
+# "" => ${XDG_CACHE_HOME:-~/.cache}/anyfs-macos-sysroot
+macos_sysroot = ""
 
 [toolchains]
 emsdk        = ""           # "" => discover via $EMSDK or `which emcc`
@@ -25,7 +29,7 @@ msys2_cross  = "/opt/msys2-cross"   # mingw cross toolchain + sysroot + binutils
 # Patched wasm-ld (built from xdqi/llvm-wasm). "" => .toolchain/wasm-ld/ when
 # fetched (scripts/fetch_wasm_ld.sh), else <deps_root>/llvm-wasm/.../wasm-ld
 wasm_ld      = ""
-# zig builds every linux-amd64 artifact (scripts/lib/zig-cc.sh). "" =>
+# zig builds every linux-amd64 and macOS artifact (scripts/lib/zig-cc.sh). "" =>
 # $HOME/zig-<zig_version>/zig, where scripts/fetch_zig.sh installs it.
 zig          = ""
 zig_version  = "0.16.0"

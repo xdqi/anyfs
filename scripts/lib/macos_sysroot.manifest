@@ -1,0 +1,22 @@
+# scripts/lib/macos_sysroot.manifest — static libs scripts/build_macos_sysroot.sh
+# installs under <macos_sysroot>/<arch>/lib. The script's parity check diffs the
+# built set against this list.
+libblkid.a
+libbz2.a
+libcharset.a
+libcrypto.a
+libcurl.a
+libffi.a
+libglib-2.0.a
+libgmodule-2.0.a
+libgobject-2.0.a
+libgthread-2.0.a
+libiconv.a
+libintl.a
+libpcre2-16.a
+libpcre2-32.a
+libpcre2-8.a
+libpcre2-posix.a
+libssl.a
+libz.a
+libzstd.a

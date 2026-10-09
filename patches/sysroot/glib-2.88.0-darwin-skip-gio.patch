@@ -1,0 +1,20 @@
+diff -urN glib-2.88.0.orig/meson.build glib-2.88.0/meson.build
+--- glib-2.88.0.orig/meson.build	2026-10-09 17:40:09.217426192 +0800
++++ glib-2.88.0/meson.build	2026-10-09 17:40:09.269424957 +0800
+@@ -2734,9 +2734,16 @@
+ subdir('gobject')
+ subdir('gthread')
+ subdir('gmodule')
++# anyfs-reader (patches/sysroot): the macOS sysroot is cross-built with zig,
++# which ships no SDK resolver headers (arpa/nameser.h, resolv.h) and no
++# libresolv, both of which gio requires. Nothing anyfs links on macOS uses gio
++# (QEMU is built without system emulators), so that build sets
++# anyfs_skip_gio in its cross file and gets glib, gobject, gthread, gmodule.
++if not meson.get_external_property('anyfs_skip_gio', false)
+ subdir('gio')
+ subdir('girepository')
+ subdir('fuzzing')
++endif
+ if get_option('tests')
+   subdir('tests')
+ endif

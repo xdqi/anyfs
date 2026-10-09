@@ -50,6 +50,7 @@ PY
     : "${ANYFS_TOOLCHAINS_WASM_LD:=$pfx$deps/llvm-wasm/workspace/install/llvm/bin/wasm-ld}"
     : "${ANYFS_TOOLCHAINS_EMSDK:=${EMSDK:-}}"
     : "${ANYFS_PATHS_LINUX_SYSROOT:=${XDG_CACHE_HOME:-$HOME/.cache}/anyfs-linux-sysroot/x86_64-linux-gnu.2.11}"
+    : "${ANYFS_PATHS_MACOS_SYSROOT:=${XDG_CACHE_HOME:-$HOME/.cache}/anyfs-macos-sysroot}"
     : "${ANYFS_TOOLCHAINS_ZIG:=$HOME/zig-$ANYFS_TOOLCHAINS_ZIG_VERSION/zig}"
     # scripts/lib/zig-cc.sh finds zig through this link, so build trees these
     # scripts configured keep working when ninja or `meson test` runs them
@@ -65,6 +66,6 @@ PY
     export ANYFS_PATHS_LINUX_SRC ANYFS_PATHS_QEMU_SRC ANYFS_PATHS_UTIL_LINUX \
            ANYFS_PATHS_KSMBD_TOOLS ANYFS_PATHS_WASM_SYSROOT \
            ANYFS_TOOLCHAINS_WASM_LD ANYFS_TOOLCHAINS_EMSDK \
-           ANYFS_PATHS_LINUX_SYSROOT ANYFS_TOOLCHAINS_ZIG
+           ANYFS_PATHS_LINUX_SYSROOT ANYFS_PATHS_MACOS_SYSROOT ANYFS_TOOLCHAINS_ZIG
 }
 anyfs_load_config

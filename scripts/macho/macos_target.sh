@@ -1,10 +1,12 @@
-# macOS deployment targets for the Mach-O build, sourced by
-# build_kernel_dylib.sh, build_host_lib.sh, build_smoke.sh and
-# test_elf2dylib.sh.
+# macOS deployment targets for the Mach-O build, sourced by every macOS build
+# script (the kernel dylib, the host library, the dependency sysroot, QEMU,
+# anyfs and the Node addon) and by the <arch>-macos-cc launchers.
 #
 #   arm64   11.0   the first macOS on Apple Silicon, so the arm64 floor.
-#   x86_64  10.12  the host library calls clock_gettime(CLOCK_MONOTONIC),
-#                  which macOS 10.12 introduced. It goes below 11.0 only
+#   x86_64  10.13  GLib (scripts/lib/sysroot_sources.sh), which QEMU and
+#                  anyfs link, refuses to configure for anything older. The
+#                  host library alone would run on 10.12, the first macOS with
+#                  clock_gettime(CLOCK_MONOTONIC). It goes below 11.0 only
 #                  because patch 08 (patches/linux/macho/) replaces
 #                  preadv()/pwritev(), which need 11.0, with a pread()/pwrite()
 #                  loop when the deployment target is older.
@@ -14,7 +16,7 @@
 # shellcheck shell=bash
 
 MACOS_MIN_arm64=11.0
-MACOS_MIN_x86_64=10.12
+MACOS_MIN_x86_64=10.13
 
 # Both functions exit on an unknown arch. Assign their output to a variable
 # (v="$(macos_min "$arch")") rather than using it inline in a command's
@@ -30,7 +32,7 @@ macos_min() {
 }
 
 # macos_zig_target ARCH: print zig's -target for ARCH, e.g.
-# x86_64-macos.10.12.0. zig wants all three version components.
+# x86_64-macos.10.13.0. zig wants all three version components.
 macos_zig_target() {
     local min
     min="$(macos_min "$1")" || exit 1

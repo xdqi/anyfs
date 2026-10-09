@@ -10,7 +10,7 @@
 #   --out-prefix=PFX    Build-dir prefix inside qemu-src (default: build-anyfs)
 #                       Produces <qemu-src>/<PFX>-<target>/.
 #   --targets=LIST      Comma-separated subset of:
-#                         linux-amd64,mingw32,mingw64
+#                         linux-amd64,mingw32,mingw64,macos-arm64,macos-x86_64
 #                       (default: linux-amd64,mingw32,mingw64)
 #   --reconfigure       Wipe build dir and re-run configure
 #   --cc=CMD            C compiler override passed to configure as --cc= for
@@ -23,6 +23,10 @@
 # linux-amd64 builds with scripts/lib/zig-cc (glibc floor, baseline x86-64)
 # against the static sysroot from scripts/build_linux_sysroot.sh; mingw uses
 # msys2-cross's per-target pkg-config wrappers (msys-cross-pkgconfig).
+# macos-arm64/macos-x86_64 cross-build with zig (scripts/macho/<arch>-macos-cc,
+# deployment targets in scripts/macho/macos_target.sh) against
+# scripts/build_macos_sysroot.sh's sysroot, and stop at the static archives:
+# anyfs links them statically, as on linux-amd64.
 #
 # Prereqs:
 #   - QEMU source tree at $QEMU_SRC (qemu_src in build.config.toml).
@@ -36,6 +40,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/config.sh
 source "$SCRIPT_DIR/lib/config.sh"
+# shellcheck source=macho/llvm_tools.sh
+source "$SCRIPT_DIR/macho/llvm_tools.sh"
 
 QEMU_SRC="${QEMU_SRC:-$ANYFS_PATHS_QEMU_SRC}"
 OUT_PFX="build-anyfs"
@@ -77,7 +83,7 @@ fi
 IFS=',' read -ra TARGETS_ARR <<< "$TARGETS_REQ"
 for T in "${TARGETS_ARR[@]}"; do
     case "$T" in
-        linux-amd64|mingw32|mingw64) ;;
+        linux-amd64|mingw32|mingw64|macos-arm64|macos-x86_64) ;;
         *) echo "Unknown target: $T" >&2; exit 1 ;;
     esac
 done
@@ -108,6 +114,10 @@ QEMU_LIBS=(
 )
 
 # Per-target configure / link helpers ---------------------------------------
+
+# macOS arch of a macos-* target; the sysroot lives in a per-arch directory.
+macos_arch_for() { echo "${1#macos-}"; }
+macos_sysroot_for() { echo "$ANYFS_PATHS_MACOS_SYSROOT/$(macos_arch_for "$1")"; }
 # build_one runs as `if ! build_one …`, where bash suspends `set -e`; every
 # step that can fail therefore carries an explicit `|| return 1`.
 
@@ -152,6 +162,32 @@ configure_for() {
                 '--disable-png' \
                 "--extra-cflags=-I$ANYFS_TOOLCHAINS_MSYS2_CROSS/mingw64/include" \
                 "--extra-ldflags=-L$ANYFS_TOOLCHAINS_MSYS2_CROSS/mingw64/lib"
+            ;;
+        macos-arm64|macos-x86_64)
+            # zig for the arch's deployment target against the macOS sysroot.
+            # --cross-prefix only makes configure write a cross file (the
+            # tools come from the environment, see build_one). -F: QEMU's
+            # meson requires the CoreFoundation framework on darwin and zig
+            # ships none; scripts/macho/sdk-stubs has a link stub. Without
+            # IOKit headers file-posix.c compiles no host-device code, so
+            # nothing calls into it. QEMU uses ObjC only for system
+            # emulators; zig cc stands in as the ObjC compiler.
+            local arch sys cpu
+            arch="$(macos_arch_for "$target")"
+            sys="$(macos_sysroot_for "$target")"
+            case "$arch" in arm64) cpu=aarch64 ;; x86_64) cpu=x86_64 ;; esac
+            printf '%s\n' \
+                "--cross-prefix=$cpu-apple-darwin-" \
+                "--cc=$SCRIPT_DIR/macho/$arch-macos-cc" \
+                "--cxx=$SCRIPT_DIR/macho/$arch-macos-c++" \
+                "--objcc=$SCRIPT_DIR/macho/$arch-macos-cc" \
+                '--disable-pixman' '--disable-png' \
+                '--enable-bzip2' '--enable-zstd' \
+                '--disable-pie' '--disable-werror' \
+                "--extra-cflags=-I$sys/include" \
+                "--extra-cflags=-F$SCRIPT_DIR/macho/sdk-stubs/Frameworks" \
+                "--extra-ldflags=-L$sys/lib" \
+                "--extra-ldflags=-F$SCRIPT_DIR/macho/sdk-stubs/Frameworks"
             ;;
     esac
 }
@@ -261,6 +297,19 @@ build_one() {
     # $PKG_CONFIG into config-meson.cross, the native file meson re-reads on
     # every regen, so a later ninja-triggered regen can't find host .pc files.
     local pkgcfg_env=()
+    if [[ "$target" == macos-* ]]; then
+        local msys
+        msys="$(macos_sysroot_for "$target")"
+        if [[ ! -f "$msys/lib/pkgconfig/glib-2.0.pc" ]]; then
+            echo "ERROR: no macOS sysroot at $msys — run scripts/build_macos_sysroot.sh --arch=$(macos_arch_for "$target")" >&2
+            return 1
+        fi
+        local nm strip
+        nm="$(llvm_tool llvm-nm)" && strip="$(llvm_tool llvm-strip)" || return 1
+        pkgcfg_env=(PKG_CONFIG="env PKG_CONFIG_LIBDIR=$msys/lib/pkgconfig pkg-config"
+                    AR="$SCRIPT_DIR/macho/macos-ar" RANLIB="$SCRIPT_DIR/macho/macos-ranlib"
+                    NM="$nm" STRIP="$strip")
+    fi
     if [[ "$target" == linux-amd64 ]]; then
         pkgcfg_env=(PKG_CONFIG="env PKG_CONFIG_LIBDIR=$ANYFS_PATHS_LINUX_SYSROOT/lib/pkgconfig pkg-config")
         if [[ ! -f "$ANYFS_PATHS_LINUX_SYSROOT/lib/pkgconfig/glib-2.0.pc" ]]; then
@@ -292,7 +341,7 @@ build_one() {
         # configure just ran (QEMU's pyvenv): when the system meson is too old
         # (Ubuntu 24.04 apt: 1.3.2), configure installs a newer one there, and
         # the system meson cannot read its build.dat.
-        if [[ "$target" != linux-amd64 ]]; then
+        if [[ "$target" == mingw* ]]; then
             "$builddir/pyvenv/bin/meson" configure "$builddir" \
                 -Db_pie=false -Dwerror=false || return 1
         fi
@@ -308,6 +357,21 @@ build_one() {
             return 1
         fi
     done
+
+    # macOS: anyfs links the archives; check they are Mach-O for the arch and
+    # its deployment target, and carry the drivers anyfs advertises.
+    if [[ "$target" == macos-* ]]; then
+        "$SCRIPT_DIR/macho/check_macho.sh" --arch="$(macos_arch_for "$target")" \
+            "${QEMU_LIBS[@]/#/$builddir/}" || return 1
+        local drv members
+        members="$("$SCRIPT_DIR/macho/macos-ar" t "$builddir/libblock.a")"
+        for drv in qcow2 vmdk vdi vpc vhdx dmg dmg-bz2 raw-format file-posix curl; do
+            grep -qx "block_$drv.c.o" <<<"$members" \
+                || { echo "ERROR: libblock.a has no block/$drv.c" >&2; return 1; }
+        done
+        echo "Built: static archives in $builddir (${QEMU_LIBS[*]})"
+        return 0
+    fi
 
     # Link the shared object -------------------------------------------------
     local cc out

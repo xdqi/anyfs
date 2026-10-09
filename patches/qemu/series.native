@@ -1,6 +1,8 @@
-# Patches build_qemu.sh applies to native (linux / mingw) QEMU trees.
+# Patches build_qemu.sh applies to native (linux / mingw / macos) QEMU trees.
 # Everything else in this directory is emscripten-only and is applied by
 # build_qemu_wasm.sh, which applies every *.patch here (these included).
 0010-main-loop-embedder-gcontext.patch
 0011-thread-pool-inline-embedder.patch
 0012-win32-utf8-filenames.patch
+0013-file-posix-darwin-sys-mount.patch
+0014-osdep-darwin-jit-write-protect-availability.patch

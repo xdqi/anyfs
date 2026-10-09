@@ -9,8 +9,10 @@
 #              OUT/<arch>/liblkl-host.a
 #
 # Needs the Darwin host patches in $LINUX_DIR (scripts/oot_fs.sh stage --macho).
-# Compiles for the arch's deployment target in macos_target.sh. ZIG and NM
-# (llvm-nm) override the tool lookup. A failed run leaves no archive.
+# Compiles with the <arch>-macos-cc launcher next to this script (zig cc for the
+# arch's deployment target in macos_target.sh, through scripts/lib/zig-cc.sh,
+# which undoes zig's NDEBUG/UBSan/DWARF defaults). ZIG overrides the pinned
+# zig, NM (llvm-nm) the tool lookup. A failed run leaves no archive.
 # The kernel is liblkl-kernel.dylib (build_kernel_dylib.sh), reached through
 # lkl_macho_shim.c.
 set -euo pipefail
@@ -71,7 +73,7 @@ case "$arch" in
     x86_64) target=linux-amd64 ;;
     *)      die "--arch=arm64|x86_64 is required" ;;
 esac
-zt="$(macos_zig_target "$arch")"
+macos_zig_target "$arch" > /dev/null
 
 # Fail closed: from here on, a failed run leaves no archive and no objects.
 lib="$out/$arch/liblkl-host.a"
@@ -98,26 +100,30 @@ gen="$lkl_out/tools/lkl/include/lkl_autoconf.h"
 if [[ -f $gen ]] && grep -qE "$mmu" "$gen" && ! grep -qE "$mmu" "$HERE/autoconf/lkl_autoconf.h"; then
     die "$gen defines LKL_HOST_CONFIG_MMU but the Darwin profile $HERE/autoconf/lkl_autoconf.h does not"
 fi
-ZIG="$(tool ZIG zig /opt/zig/zig)"
-NM="$(tool NM llvm-nm-19 llvm-nm)"
+if [[ -n ${ZIG:-} ]]; then
+    ANYFS_ZIG="$(tool ZIG)"
+    export ANYFS_ZIG
+fi
+CC="$HERE/$arch-macos-cc"
+NM="$(tool NM llvm-nm-20 llvm-nm-19 llvm-nm)"
 
 mkdir -p "$dir"
 # -Werror=unguarded-availability: fail on calls to APIs newer than the
 # deployment target at compile time. -g and -fno-strict-aliasing as in
 # tools/lkl/Makefile.
-cflags=(-target "$zt" -O2 -g -Wall -fno-strict-aliasing -Werror=unguarded-availability
+cflags=(-O2 -g -Wall -fno-strict-aliasing -Werror=unguarded-availability
         -Werror=deprecated-declarations -D_FILE_OFFSET_BITS=64 -I"$HERE/autoconf"
         -I"$LINUX_DIR/tools/lkl/include" -I"$lkl_out/tools/lkl/include")
 objs=()
 for s in "${SOURCES[@]}"; do
-    "$ZIG" cc "${cflags[@]}" -c "$LINUX_DIR/tools/lkl/lib/$s.c" -o "$dir/$s.o"
+    "$CC" "${cflags[@]}" -c "$LINUX_DIR/tools/lkl/lib/$s.c" -o "$dir/$s.o"
     objs+=("$dir/$s.o")
 done
 for s in darwin-netdev-stubs lkl_macho_shim; do
-    "$ZIG" cc "${cflags[@]}" -c "$HERE/$s.c" -o "$dir/$s.o"
+    "$CC" "${cflags[@]}" -c "$HERE/$s.c" -o "$dir/$s.o"
     objs+=("$dir/$s.o")
 done
-"$ZIG" ar rcs "$lib.tmp" "${objs[@]}"
+"$HERE/macos-ar" rcs "$lib.tmp" "${objs[@]}"
 
 imports="$("$NM" -u "$lib.tmp" | awk '$NF ~ /^_lklk_/ { print $NF }' | LC_ALL=C sort -u)"
 want="$(printf '_lklk_%s\n' "${KERNEL_EXPORTS[@]#lkl_}" | LC_ALL=C sort)"

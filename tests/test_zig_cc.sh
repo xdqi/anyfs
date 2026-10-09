@@ -2,7 +2,7 @@
 # Gate for scripts/lib/zig-cc.sh: GNU-style -dumpmachine, no host library
 # dirs, none of zig's NDEBUG/UBSan/DWARF defaults (an explicit flag still
 # wins), the gcc-isms LKL's makefiles use, baseline x86-64 predefines and a
-# glibc floor that holds for both targets. Skips (77) when the pinned zig
+# glibc floor that holds for both targets; and the macOS launchers. Skips (77) when the pinned zig
 # isn't installed.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -57,4 +57,35 @@ for floor in 2.11 2.25; do
 done
 unset ANYFS_ZIG_TARGET
 
-echo "OK: zig-cc.sh gives gcc-like defaults at the pinned floors"
+# macOS launchers (scripts/macho/<arch>-macos-cc/-c++): the same defaults,
+# the deployment target from macos_target.sh, a darwin -dumpmachine, and a
+# stdin input that still sees the Darwin headers, not the host's.
+# The Mach-O checks need LLVM 19/20's binutils; without them only that part
+# is skipped.
+# shellcheck source=../scripts/macho/macos_target.sh
+source "$root/scripts/macho/macos_target.sh"
+# shellcheck source=../scripts/macho/llvm_tools.sh
+source "$root/scripts/macho/llvm_tools.sh"
+macos_archs=(arm64 x86_64)
+for t in llvm-nm llvm-otool llvm-objdump; do
+    llvm_tool "$t" >/dev/null 2>&1 || { echo "skip macOS launcher checks: no $t"; macos_archs=(); break; }
+done
+mnm="$(llvm_tool llvm-nm 2>/dev/null || true)"
+for arch in "${macos_archs[@]}"; do
+    mcc="$root/scripts/macho/$arch-macos-cc"
+    case $arch in arm64) cpu=aarch64 ;; x86_64) cpu=x86_64 ;; esac
+    [[ "$("$mcc" -dumpmachine)" == "$cpu-apple-darwin" ]] || fail "$arch: -dumpmachine"
+    defs="$("$mcc" -O2 -dM -E -x c /dev/null)"
+    if grep -q '#define NDEBUG ' <<<"$defs"; then fail "$arch: NDEBUG at -O2"; fi
+    min="$(macos_min "$arch")"
+    want="$(printf '%d%02d00' "${min%%.*}" "${min#*.}")"
+    grep -q "__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__ $want$" <<<"$defs" || fail "$arch: deployment target $min"
+    echo '#include <TargetConditionals.h>' | "$mcc" -E - >/dev/null 2>&1 || fail "$arch: stdin input misses the Darwin headers"
+    "$mcc" -O2 "$tmp/f.c" -c -o "$tmp/m-$arch.o"
+    nm_out="$("$mnm" "$tmp/m-$arch.o" 2>/dev/null || true)"
+    grep -q '___assert_rtn' <<<"$nm_out" || fail "$arch: assert() compiled out at -O2"
+    "$mcc" -O2 "$tmp/h.c" -o "$tmp/m-$arch"
+    "$root/scripts/macho/check_macho.sh" --arch="$arch" "$tmp/m-$arch" >/dev/null || fail "$arch: Mach-O gate"
+done
+
+echo "OK: zig-cc.sh gives gcc-like defaults at the pinned floors and macOS targets"

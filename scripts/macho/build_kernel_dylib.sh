@@ -67,7 +67,7 @@ tool() {
 # failing that, it is the lib/ next to the real zig binary.
 zig_libsystem() {
     local zig lib
-    zig="$(tool ZIG zig /opt/zig/zig)" || exit 1
+    zig="$(tool ZIG "$REPO_DIR/.toolchain/zig/zig" zig)" || exit 1
     lib="$("$zig" env 2>/dev/null \
         | grep -oE '("lib_dir"|\.lib_dir)[[:space:]]*[:=][[:space:]]*"[^"]*"' \
         | head -n 1 | sed -E 's/.*"([^"]*)"$/\1/')" || lib=""

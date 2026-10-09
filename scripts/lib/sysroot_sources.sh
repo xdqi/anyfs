@@ -1,8 +1,9 @@
 # shellcheck shell=bash disable=SC2034  # the pins are read by the sourcing scripts
 # scripts/lib/sysroot_sources.sh — pinned upstream sources for
-# scripts/build_wasm_sysroot.sh and scripts/build_linux_sysroot.sh, so a
-# library both sysroots carry has one version. Also the download helpers both
-# use. Callers set WORK (download + unpack dir) before calling fetch/unpack.
+# scripts/build_wasm_sysroot.sh, scripts/build_linux_sysroot.sh and
+# scripts/build_macos_sysroot.sh, so a library several sysroots carry has
+# one version. Also the download helpers they all use. Callers set WORK
+# (download + unpack dir) before calling fetch/unpack.
 
 # fetch <url> <sha256> <dest> — download (with cache) and verify.
 fetch() {
@@ -46,7 +47,7 @@ UL_V=2.40.4
 UL_URL="https://www.kernel.org/pub/linux/utils/util-linux/v${UL_V%.*}/util-linux-$UL_V.tar.xz"
 UL_SHA=5c1daf733b04e9859afdc3bd87cc481180ee0f88b5c0946b16fdec931975fb79
 
-# ── linux sysroot only ───────────────────────────────────────────────────
+# ── linux sysroot (OpenSSL and curl: macos too) ──────────────────────────
 AIO_V=0.3.113
 AIO_URL="https://releases.pagure.org/libaio/libaio-$AIO_V.tar.gz"
 AIO_SHA=2c44d1c5fd0d43752287c9ae1eb9c023f04ef848ea8d4aafa46e9aedb678200b
@@ -62,3 +63,15 @@ OPENSSL_SHA=603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a
 CURL_V=8.22.0
 CURL_URL="https://curl.se/download/curl-$CURL_V.tar.xz"
 CURL_SHA=f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
+
+# ── macos sysroot only ───────────────────────────────────────────────────
+# libSystem has no iconv (it is /usr/lib/libiconv.2.dylib, which zig ships no
+# stub for); GLib needs one.
+ICONV_V=1.18
+ICONV_URL="https://ftp.gnu.org/pub/gnu/libiconv/libiconv-$ICONV_V.tar.gz"
+ICONV_SHA=3b08f5f4f9b4eb82f151a7040bfd6fe6c6fb922efe4b1659c66ea933276965e8
+# macFUSE: only its libfuse3 headers and a link stub of libfuse3 are taken
+# (build_macos_sysroot.sh --only=macfuse); users install macFUSE themselves.
+MACFUSE_V=5.4.0
+MACFUSE_URL="https://github.com/macfuse/macfuse/releases/download/macfuse-$MACFUSE_V/macfuse-$MACFUSE_V.dmg"
+MACFUSE_SHA=861814f0ac7fa8f6547ea40cdd49a36ac84bcc7d34f38a1fa74e8cf68b0401c5

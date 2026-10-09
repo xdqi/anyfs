@@ -1,0 +1,4 @@
+#!/bin/sh
+# zig ar (llvm-ar) for the macOS builds: it writes the Darwin archive symbol
+# table that Mach-O linkers read, which GNU ar does not.
+exec "$(cd "$(dirname "$0")/../.." && pwd)/.toolchain/zig/zig" ar "$@"

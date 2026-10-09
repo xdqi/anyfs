@@ -10,7 +10,7 @@
 # copy of --image (default: <repo>/tests/images/ext4.img, made by
 # tests/setup.sh). --image must be an unpartitioned ext4 image: the test
 # mounts partition 0, the whole disk. Copy that directory to a Mac and follow
-# scripts/macho/smoke/README.md. ZIG overrides the tool lookup. A failed run
+# scripts/macho/smoke/README.md. ZIG overrides the pinned zig. A failed run
 # leaves no smoke directory.
 set -euo pipefail
 
@@ -59,7 +59,7 @@ case "$arch" in
     x86_64) target=linux-amd64 ;;
     *)      die "--arch=arm64|x86_64 is required" ;;
 esac
-zt="$(macos_zig_target "$arch")"
+macos_zig_target "$arch" > /dev/null
 
 # Fail closed: the bundle is built in smoke.tmp and renamed to smoke only when
 # complete, so a failed run leaves neither.
@@ -72,12 +72,15 @@ lkl_out="${lkl_out:-$REPO_DIR/lkl-$target}"
 for f in "$out/$arch/liblkl-kernel.dylib" "$out/$arch/liblkl-host.a" "$image"; do
     [[ -f $f ]] || die "$f not found"
 done
-ZIG="$(tool ZIG zig /opt/zig/zig)"
+if [[ -n ${ZIG:-} ]]; then
+    ANYFS_ZIG="$(tool ZIG)"
+    export ANYFS_ZIG
+fi
 
 mkdir -p "$dir.tmp"
 # The flags of build_host_lib.sh: -Werror=unguarded-availability fails on calls
 # to APIs newer than the deployment target at compile time.
-"$ZIG" cc -target "$zt" -O2 -g -Wall -fno-strict-aliasing -Werror=unguarded-availability \
+"$HERE/$arch-macos-cc" -O2 -g -Wall -fno-strict-aliasing -Werror=unguarded-availability \
     -Werror=deprecated-declarations -I"$HERE/autoconf" -I"$LINUX_DIR/tools/lkl/include" \
     -I"$lkl_out/tools/lkl/include" "$HERE/smoke/lkl_macos_smoke.c" \
     "$out/$arch/liblkl-host.a" -L"$out/$arch" -llkl-kernel \

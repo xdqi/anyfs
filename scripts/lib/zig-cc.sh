@@ -1,7 +1,8 @@
 #!/bin/sh
 # scripts/lib/zig-cc.sh — body of the zig-cc / zig-c++ compiler wrappers that
-# build every linux-amd64 artifact. Build systems get the two launchers next
-# to this file (scripts/lib/zig-cc, scripts/lib/zig-c++), never this script.
+# build every linux-amd64 and macOS artifact. Build systems get the launchers
+# (scripts/lib/zig-cc, scripts/lib/zig-c++, and scripts/macho/<arch>-macos-cc
+# / -c++, which set a Darwin ANYFS_ZIG_TARGET), never this script.
 #
 # Environment:
 #   ANYFS_ZIG_TARGET   zig target; default x86_64-linux-gnu.2.11, the glibc
@@ -33,6 +34,11 @@
 #   -g0                 zig emits DWARF even without -g. Added only when the
 #                       caller asks for no debug info: zig doesn't let a later
 #                       plain -g undo -g0.
+#   - (stdin), no -x    zig hands an input of unknown language straight to
+#                       clang, without the target's sysroot: macOS targets
+#                       then preprocess against the HOST /usr/include as
+#                       macosx10.4 (meson's `cc -v -E -` framework probe).
+#                       Darwin targets get -x c / -x c++ in front of it.
 # These go before the caller's flags, so an explicit -DNDEBUG or -fsanitize
 # still wins.
 mode=$1
@@ -42,11 +48,14 @@ zig=${ANYFS_ZIG:-$(cd "$(dirname "$0")/../.." && pwd)/.toolchain/zig/zig}
 
 shared=
 nodebug=-g0
+lang=
 for a in "$@"; do
     case $a in
+    -x*) lang=1 ;;
     -dumpmachine)
         case $target in
         *-linux-gnu*) echo "${target%%-*}-unknown-linux-gnu" ;;
+        *-macos*) echo "${target%%-*}-apple-darwin" ;;
         *) echo "${target%%.*}" ;;
         esac
         exit 0
@@ -66,6 +75,15 @@ for a in "$@"; do
     case $a in
     -Wp,-v) a=-v ;;
     -pie) [ -n "$shared" ] && continue ;;
+    -)
+        case $target in
+        *-macos*)
+            if [ -z "$lang" ]; then
+                if [ "$mode" = c++ ]; then set -- "$@" -x c++; else set -- "$@" -x c; fi
+            fi
+            ;;
+        esac
+        ;;
     esac
     set -- "$@" "$a"
 done

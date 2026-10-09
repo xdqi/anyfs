@@ -1,0 +1,24 @@
+From: anyfs-reader <noreply@anyfs.invalid>
+Subject: [PATCH] block/file-posix: include <sys/mount.h> on macOS without IOKit
+
+raw_refresh_limits() calls fstatfs() under __APPLE__ unconditionally, but
+<sys/mount.h> was only included together with the IOKit headers, i.e. when
+HAVE_HOST_BLOCK_DEVICE is set. A macOS build without the IOKit headers (the
+anyfs-reader cross build with zig, which has no SDK frameworks) then fails
+with an incomplete struct statfs. Include it for every macOS build.
+
+--- a/block/file-posix.c	2026-10-09 17:48:01.091441425 +0800
++++ b/block/file-posix.c	2026-10-09 17:48:01.099442825 +0800
+@@ -45,10 +45,10 @@
+ 
+ #if defined(__APPLE__) && (__MACH__)
+ #include <sys/ioctl.h>
++#include <sys/param.h>
++#include <sys/mount.h>          /* fstatfs() in raw_refresh_limits() */
+ #if defined(HAVE_HOST_BLOCK_DEVICE)
+ #include <paths.h>
+-#include <sys/param.h>
+-#include <sys/mount.h>
+ #include <IOKit/IOKitLib.h>
+ #include <IOKit/IOBSD.h>
+ #include <IOKit/storage/IOMediaBSDClient.h>
