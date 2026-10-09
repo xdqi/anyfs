@@ -1028,3 +1028,30 @@ wine (`tests/wine/u8-cli.sh`) it exits with 5 before the fix and passes after. T
 vmdk and snapshot opens from non-ASCII paths) pass under wine with `xvfb-run`. Running Electron
 under wine needs the wine session started inside the X display: `wineserver -k` first, or a
 display-less `explorer.exe` from an earlier `winepath` call makes Electron die in `hwnd_util.cc`.
+
+## F22 — web: after a deploy the kernel boot hung behind the CDN (✅ FIXED 2026-10-09, was High)
+
+**Observed (anyfs.kosaka.moe right after the sha-7bcf2cf rollout, fresh headless Chromium):** the
+landing prewarm never finished. The last kernel line was `gfs2: GFS2 installed` (the next step,
+OpenZFS init, spawns kthreads), the status stayed `attaching`, and no partition appeared. The same
+image served directly, bypassing Cloudflare, booted in about 3 s.
+
+**Root cause:** version skew between the files of the wasm bundle, which had fixed names under
+`/wasm/`. Cloudflare caches by extension: it kept `/wasm/anyfs.worker.js` (a `.js`) for its default
+4 hours (`cf-cache-status: HIT`, `max-age=14400`) while passing `anyfs.mjs` and `anyfs.wasm` through
+(`DYNAMIC`). Browsers got the old worker driving the new shim and kernel; the old worker predates the
+QEMU/API-thread protocol, and the boot deadlocked once kthreads were spawned. Reproduced locally by
+serving the new image with only `wasm/anyfs.worker.js` swapped for the old one: same hang, same last
+line.
+
+**Fix:** `vite build` moves the bundle into `/wasm/<content hash>/` and the app loads its worker and
+shim from there (`vite.config.ts`, `__ANYFS_WASM_DIR__`). Everything else resolves relative to that
+directory (pthread workers via `new URL("anyfs.mjs", import.meta.url)`, the `.wasm` via
+`locateFile`), so one build's files can no longer mix with another's. The Caddyfile marks
+`/assets/` and `/wasm/<hash>/` immutable and everything else `no-cache`, so the CDN and browsers
+revalidate `index.html`.
+
+**Tests:** a cold Playwright Chromium against the image built from the fixed dist: prewarm boot,
+the Ubuntu 26.10 cloud image's partitions (GPT, ext4 `cloudimg-rootfs` / `BOOT`, BIOS boot, vfat
+`UEFI`), mount #1, download `/etc/os-release` (`VERSION_ID="26.10"`); every wasm request goes to
+`/wasm/<hash>/`. The web flows and the electron-wasm smoke flows pass.

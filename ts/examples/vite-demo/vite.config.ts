@@ -1,6 +1,9 @@
 import { defineConfig } from 'vite';
+import type { Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
-import { readFileSync } from 'fs';
+import { createHash } from 'crypto';
+import { existsSync, mkdirSync, readFileSync, renameSync } from 'fs';
+import path from 'path';
 
 // COOP+COEP are required for SharedArrayBuffer (which -pthread wasm needs).
 // `credentialless` lets us serve our own static assets without needing each
@@ -76,8 +79,58 @@ function reactDomFindDOMNodeRollupPlugin() {
     };
 }
 
+// The wasm bundle (public/wasm/anyfs.{worker.js,mjs,wasm}) has fixed names
+// and must be loaded as one matched set: an anyfs.worker.js from one build
+// driving the anyfs.mjs/anyfs.wasm of another deadlocks the kernel boot. A
+// CDN caches by extension — Cloudflare kept the old .js for hours while it
+// passed the new .mjs/.wasm through — so a deploy served exactly that mix.
+// The build moves the set into wasm/<content hash>/ and points the app at it
+// (__ANYFS_WASM_DIR__). Everything inside resolves relative to that directory
+// (the shim's `new URL("anyfs.mjs", import.meta.url)` pthread workers, the
+// .wasm via locateFile), so no stale file can mix in. `vite dev` serves
+// /wasm/ as-is.
+const WASM_SET = ['anyfs.worker.js', 'anyfs.mjs', 'anyfs.wasm'];
+
+function versionedWasmPlugin(): Plugin {
+    let wasmDir = '/wasm/';
+    let outDir = 'dist';
+    return {
+        name: 'anyfs-versioned-wasm',
+        config(_config, { command }) {
+            if (command === 'build') {
+                const src = path.resolve(__dirname, 'public/wasm');
+                const hash = createHash('sha256');
+                for (const f of WASM_SET) {
+                    const p = path.join(src, f);
+                    if (!existsSync(p)) {
+                        throw new Error(
+                            `missing ${p}; run scripts/sync_wasm_bundle.sh before vite build`,
+                        );
+                    }
+                    hash.update(readFileSync(p));
+                }
+                wasmDir = `/wasm/${hash.digest('hex').slice(0, 16)}/`;
+            }
+            return { define: { __ANYFS_WASM_DIR__: JSON.stringify(wasmDir) } };
+        },
+        configResolved(config) {
+            outDir = path.resolve(config.root, config.build.outDir);
+        },
+        // Runs after Vite has copied public/ into outDir.
+        closeBundle() {
+            if (wasmDir === '/wasm/') return;
+            const dst = path.join(outDir, wasmDir);
+            mkdirSync(dst, { recursive: true });
+            for (const f of [...WASM_SET, 'anyfs.worker.js.map']) {
+                const p = path.join(outDir, 'wasm', f);
+                if (existsSync(p)) renameSync(p, path.join(dst, f));
+            }
+        },
+    };
+}
+
 export default defineConfig({
-    plugins: [react(), reactDomFindDOMNodeRollupPlugin()],
+    plugins: [react(), reactDomFindDOMNodeRollupPlugin(), versionedWasmPlugin()],
     server: { headers: devServerHeaders },
     preview: {
         headers: devServerHeaders,

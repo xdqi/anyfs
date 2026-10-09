@@ -14,7 +14,11 @@ import { clearNavHash, sourceName, sourceKey, fileToSource } from './utils';
 import { usePathProxy } from './usePathProxy';
 import { TestStateBridge, e2eEnabled } from './test-bridge';
 
-const WORKER_URL = new URL('/wasm/anyfs.worker.js', window.location.href).href;
+// Content-hashed in production builds (see vite.config.ts) so the worker,
+// shim and .wasm always come from the same build.
+declare const __ANYFS_WASM_DIR__: string;
+const WASM_DIR = __ANYFS_WASM_DIR__;
+const WORKER_URL = new URL(`${WASM_DIR}anyfs.worker.js`, window.location.href).href;
 
 interface ConfirmCfg {
     title: string;
@@ -201,7 +205,7 @@ export function App() {
             <AnyfsProvider
                 source={providerSource}
                 workerUrl={WORKER_URL}
-                wasmBaseUrl="/wasm/"
+                wasmBaseUrl={WASM_DIR}
                 wasmModuleName="anyfs.mjs"
                 mountOpts={mountOpts}
                 prewarm
