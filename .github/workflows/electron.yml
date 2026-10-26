@@ -414,6 +414,7 @@ jobs:
         env:
           ANYFS_PACKAGED_FIXTURE: ${{ runner.temp }}/fixture
           ANYFS_SCREENSHOT_DIR: ${{ runner.temp }}/screenshots
+          ANYFS_UI_THEME: dark
         run: |
           (cd ../.. && pnpm install --frozen-lockfile --filter @anyfs/e2e)
           mkdir -p "$ANYFS_SCREENSHOT_DIR"
@@ -531,6 +532,7 @@ jobs:
           ANYFS_DEVICE_JSON: ${{ runner.temp }}/dev/device.json
           ANYFS_DEVICE_FIXTURE: ${{ runner.temp }}/device-fixture
           ANYFS_SCREENSHOT_DIR: ${{ runner.temp }}/screenshots
+          ANYFS_UI_THEME: dark
         run: |
           if [[ "${{ matrix.platform }}" == win32 ]]; then
             export ANYFS_PACKAGED_EXE="$RUNNER_TEMP/pkg/$NAME/anyfs-demo.exe"

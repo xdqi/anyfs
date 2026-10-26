@@ -1,0 +1,54 @@
+name: ui-dark
+
+# Fast renderer-level dark theme regression. The packaged Electron smoke also
+# runs with ANYFS_UI_THEME=dark on real Linux, Windows and macOS runners and
+# uploads dark desktop screenshots.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  web-dark:
+    name: web dark theme
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+          package_json_file: ts/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
+      - name: Install
+        working-directory: ts
+        run: pnpm install --frozen-lockfile --filter '!electron-demo' --filter '!@anyfs/native'
+      - name: Build workspace packages
+        working-directory: ts
+        run: pnpm -r --filter './packages/*' --filter '!@anyfs/native' build
+      - name: Install Playwright Chromium
+        working-directory: ts
+        run: pnpm --filter @anyfs/e2e exec playwright install --with-deps chromium
+      - name: Run dark theme test
+        working-directory: ts
+        env:
+          ANYFS_UI_SCREENSHOT_DIR: ${{ runner.temp }}/ui-dark
+        run: |
+          mkdir -p "$ANYFS_UI_SCREENSHOT_DIR"
+          pnpm --filter @anyfs/e2e exec playwright test \
+            -c playwright.dark.config.ts \
+            flows/theme.spec.ts
+      - name: Upload dark UI screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: anyfs-ui-dark
+          path: ${{ runner.temp }}/ui-dark/
+          if-no-files-found: ignore
+          retention-days: 14

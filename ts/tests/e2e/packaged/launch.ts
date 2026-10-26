@@ -1,13 +1,7 @@
-import { _electron, type ElectronApplication } from '@playwright/test';
+import { _electron, type ElectronApplication, type Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { basename } from 'node:path';
 
-// Launch a packaged app for Playwright. On windows-2025, electron.launch has
-// timed out with the app already running and CDP connected (electron run
-// 37937273260's GUI smoke, first attempt; 37955347237's device spec). A
-// launch timeout fails the test even when caught, so the retry is
-// packaged.config.ts's `retries` (reported as flaky); this only bounds the
-// launch, prints what was running and kills a stray app first.
 export async function launchPackaged(
     exe: string,
     env: Record<string, string>,
@@ -22,9 +16,34 @@ export async function launchPackaged(
         });
     } catch (e) {
         const first = (e instanceof Error ? e.message : String(e)).split('\n')[0];
-        console.warn(`[launchPackaged] ${first}`);
+        console.warn('[launchPackaged] ' + first);
         killStray(exe);
         throw e;
+    }
+}
+
+/** Apply ANYFS_UI_THEME through the same persisted setting used by Settings. */
+export async function applyPackagedTheme(page: Page): Promise<void> {
+    const theme = process.env.ANYFS_UI_THEME;
+    if (theme !== 'dark' && theme !== 'light' && theme !== 'system') return;
+    await page.evaluate((value) => {
+        let current: Record<string, unknown> = {};
+        try {
+            current = JSON.parse(localStorage.getItem('anyfs.settings.v1') ?? '{}');
+        } catch {
+            // Start with defaults if the profile has no valid settings.
+        }
+        localStorage.setItem('anyfs.settings.v1', JSON.stringify({ ...current, theme: value }));
+    }, theme);
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 120_000 });
+    if (theme === 'dark') {
+        await page.waitForFunction(
+            () => document.documentElement.classList.contains('dark'),
+            undefined,
+            { timeout: 30_000 },
+        );
+    } else {
+        await page.waitForSelector('#root > *', { timeout: 30_000 });
     }
 }
 
@@ -32,14 +51,14 @@ function killStray(exe: string): void {
     try {
         const list =
             process.platform === 'win32'
-                ? execFileSync('tasklist', ['/v', '/fi', `IMAGENAME eq ${basename(exe)}`], {
+                ? execFileSync('tasklist', ['/v', '/fi', 'IMAGENAME eq ' + basename(exe)], {
                       encoding: 'utf8',
                   })
                 : execFileSync('ps', ['axo', 'pid,ppid,etime,stat,command'], { encoding: 'utf8' })
                       .split('\n')
                       .filter((l) => l.includes(basename(exe)))
                       .join('\n');
-        console.warn(`[launchPackaged] processes before cleanup:\n${list}`);
+        console.warn('[launchPackaged] processes before cleanup:\n' + list);
     } catch {
         // listing is best effort
     }
