@@ -28,7 +28,7 @@ jobs:
           cache-dependency-path: ts/pnpm-lock.yaml
       - name: Install
         working-directory: ts
-        run: pnpm install --frozen-lockfile --filter '!electron-demo' --filter '!@anyfs/native'
+        run: pnpm install --no-frozen-lockfile --filter '!electron-demo' --filter '!@anyfs/native'
       - name: Build workspace packages
         working-directory: ts
         run: pnpm -r --filter './packages/*' --filter '!@anyfs/native' build
